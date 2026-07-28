@@ -7,9 +7,12 @@ import { useEffect, useRef, useState } from "react";
 // fenster) und werden in localStorage gemerkt; "workspace:reset" (Knopf in
 // der TopBar) stellt die Standard-Anordnung wieder her.
 //
-// Mobil (< md) bleibt die Tab-Ansicht: genau ein Panel vollflächig. In
-// beiden Modi bleiben alle Panels dauerhaft gemountet (nur versteckt),
-// damit Chat-Zustand und SSH-Sessions Wechsel überleben.
+// Mobil (< md) bleibt die Tab-Ansicht: genau ein Panel vollflächig. Die
+// gleiche Darstellung gibt es am Desktop als wählbaren Tab-Modus
+// (viewMode="tabs", Umschalter in der TopBar) — z. B. um zwischen Chat und
+// einem externen noVNC-Fenster hin- und herzuschalten. In allen Modi
+// bleiben alle Panels dauerhaft gemountet (nur versteckt), damit
+// Chat-Zustand und SSH-Sessions Wechsel überleben.
 
 const LS_KEY = "workspace-layout-v1";
 
@@ -56,7 +59,7 @@ function loadLayout() {
   }
 }
 
-export default function Workspace({ tab, panels }) {
+export default function Workspace({ tab, viewMode = "windows", panels }) {
   const containerRef = useRef(null);
   const [layout, setLayout] = useState(loadLayout);
   const layoutRef = useRef(layout);
@@ -99,6 +102,9 @@ export default function Workspace({ tab, panels }) {
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
   }, []);
+  // Fenster-Manager nur am Desktop im Fenster-Modus; sonst (mobil oder
+  // Tab-Modus) genau ein Panel vollflächig über `tab`.
+  const windowed = isDesktop && viewMode === "windows";
 
   useEffect(() => {
     const onReset = () => {
@@ -209,7 +215,7 @@ export default function Workspace({ tab, panels }) {
         // Fallback für den ersten Render nach einer Panel-Änderung — der
         // Materialisierungs-Effekt läuft erst danach.
         const r = layout[id] || defaultRect(id, index);
-        const style = isDesktop
+        const style = windowed
           ? {
               left: `${r.x}%`,
               top: `${r.y}%`,
@@ -220,7 +226,7 @@ export default function Workspace({ tab, panels }) {
               minHeight: `${MIN_H_PX}px`,
             }
           : undefined;
-        const cls = isDesktop
+        const cls = windowed
           ? "absolute flex flex-col overflow-hidden rounded-lg border border-slate-300 shadow-lg dark:border-slate-700"
           : tab === id
             ? "absolute inset-0 flex flex-col"
@@ -230,9 +236,9 @@ export default function Workspace({ tab, panels }) {
             key={id}
             style={style}
             className={cls}
-            onPointerDownCapture={isDesktop ? () => raise(id) : undefined}
+            onPointerDownCapture={windowed ? () => raise(id) : undefined}
           >
-            {isDesktop && (
+            {windowed && (
               <header
                 onPointerDown={(e) => startGesture(e, id, "move")}
                 onDoubleClick={() => toggleMax(id)}
@@ -243,7 +249,7 @@ export default function Workspace({ tab, panels }) {
               </header>
             )}
             <div className={`flex min-h-0 flex-1 flex-col ${bodyClass}`}>{body}</div>
-            {isDesktop && (
+            {windowed && (
               <>
                 <div
                   onPointerDown={(e) => startGesture(e, id, "e")}

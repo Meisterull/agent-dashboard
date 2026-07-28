@@ -14,11 +14,13 @@ import { authCheck, getSettings } from "./api";
 
 // Dashboard-Layout: auf dem Desktop (md+) sind die vier Panels frei
 // verschieb- und größenveränderbare Fenster (Workspace.jsx); Standard-
-// Anordnung entspricht dem alten festen Raster aus PROJECT.md.
+// Anordnung entspricht dem alten festen Raster aus PROJECT.md. Alternativ
+// gibt es dort einen Tab-Modus (Umschalter in der TopBar, persistiert):
+// ein Panel vollflächig, Wechsel über die Tab-Leiste — z. B. Chat ↔ VNC.
 //
-// Mobil (< md) gibt es stattdessen eine Tab-Leiste unten, die genau ein
-// Panel vollflächig zeigt. Alle Panels bleiben dabei gemountet (nur per
-// CSS versteckt), damit Chat-Zustand und SSH-Sessions Tab-Wechsel überleben.
+// Mobil (< md) gibt es immer die Tab-Leiste unten, die genau ein Panel
+// vollflächig zeigt. In beiden Modi bleiben alle Panels gemountet (nur per
+// CSS versteckt), damit Chat-Zustand und SSH-Sessions Wechsel überleben.
 
 const TABS = [
   ["chat", "Chat"],
@@ -71,6 +73,16 @@ export default function App() {
     localStorage.setItem("theme", theme);
   }, [theme]);
 
+  // Desktop-Ansicht: freie Fenster oder ein Panel vollflächig mit Tabs
+  const [viewMode, setViewMode] = useState(
+    () => localStorage.getItem("workspace-view-mode") || "windows",
+  );
+  useEffect(() => {
+    localStorage.setItem("workspace-view-mode", viewMode);
+    // xterm neu fitten, sobald der Moduswechsel gerendert ist
+    setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+  }, [viewMode]);
+
   const bump = () => setRefreshKey((k) => k + 1);
 
   // Nach dem Umschalten einmal "resize" feuern, damit xterm das Terminal
@@ -95,11 +107,16 @@ export default function App() {
         onOpenSettings={() => setShowSettings(true)}
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        viewMode={viewMode}
+        onToggleViewMode={() =>
+          setViewMode((m) => (m === "windows" ? "tabs" : "windows"))
+        }
       />
       <QuestionsBanner refreshKey={refreshKey} onAnswered={bump} />
 
       <Workspace
         tab={tab}
+        viewMode={viewMode}
         panels={[
           {
             id: "dateien",
@@ -132,8 +149,12 @@ export default function App() {
         ]}
       />
 
-      {/* Mobil: Tab-Leiste unten */}
-      <nav className="flex shrink-0 overflow-x-auto border-t bg-white md:hidden dark:border-slate-700 dark:bg-slate-900">
+      {/* Tab-Leiste unten: mobil immer, am Desktop nur im Tab-Modus */}
+      <nav
+        className={`flex shrink-0 overflow-x-auto border-t bg-white dark:border-slate-700 dark:bg-slate-900 ${
+          viewMode === "windows" ? "md:hidden" : ""
+        }`}
+      >
         {[...TABS, ...extWindows.map((w) => [`ext:${w.name}`, w.name])].map(([id, label]) => (
           <button
             key={id}
