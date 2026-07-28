@@ -14,6 +14,7 @@ Beispiel integrations.yaml:
         auth_header: Authorization
         auth_prefix: "token "
         allowed_methods: [GET]         # read-only als Default
+        timeout: 900                   # optional, Sekunden (sonst INTEGRATION_TIMEOUT/600)
       jira:
         base_url: https://firma.atlassian.net
         auth_env: JIRA_TOKEN
@@ -32,6 +33,11 @@ from typing import Any
 DATA_CONFIG_DIR = Path(os.environ.get("DATA_CONFIG_DIR", "/workspace/config"))
 INTEGRATIONS_YAML = DATA_CONFIG_DIR / "integrations.yaml"
 MAX_BODY_CHARS = 100_000
+# Manche Integrationen (z. B. Browser-Automationen) laufen minutenlang —
+# Default darum großzügig. Global per env INTEGRATION_TIMEOUT, je Integration
+# per `timeout:` in integrations.yaml übersteuerbar (Sekunden).
+INTEGRATION_TIMEOUT = float(os.environ.get("INTEGRATION_TIMEOUT", "600"))
+CONNECT_TIMEOUT = 15  # Verbindungsaufbau bleibt kurz — toter Host soll schnell scheitern
 
 
 class IntegrationError(Exception):
@@ -91,8 +97,9 @@ def call_integration(
         headers[header] = f"{prefix}{os.environ[auth_env]}"
 
     url = cfg["base_url"].rstrip("/") + "/" + path.lstrip("/")
+    timeout = httpx.Timeout(float(cfg.get("timeout", INTEGRATION_TIMEOUT)), connect=CONNECT_TIMEOUT)
     try:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=timeout) as client:
             resp = client.request(method, url, headers=headers, json=body if body else None)
     except Exception as exc:  # noqa: BLE001
         raise IntegrationError(f"Aufruf fehlgeschlagen: {exc}") from exc

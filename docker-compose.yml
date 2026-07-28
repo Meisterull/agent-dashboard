@@ -8,8 +8,10 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8443:443"
-      - "8080:80"
+      # Extern belegte Ports per .env übersteuerbar (z. B. wenn 8080 schon
+      # von einem anderen Dienst belegt ist).
+      - "${EXTERNAL_HTTPS_PORT:-8443}:443"
+      - "${EXTERNAL_HTTP_PORT:-8080}:80"
       # 5000 (FastAPI) und 9000 (MCP) sind bewusst NICHT veröffentlicht —
       # nur intern hinter nginx erreichbar.
 
@@ -37,7 +39,8 @@ services:
     environment:
       - APP_ENV=production
       # Muss zum Host-Mapping "8443:443" oben passen (HTTP->HTTPS-Redirect).
-      - EXTERNAL_HTTPS_PORT=8443
+      # muss zum Port-Mapping oben passen (nginx baut daraus den Redirect)
+      - EXTERNAL_HTTPS_PORT=${EXTERNAL_HTTPS_PORT:-8443}
       - WORKSPACE_DIR=/workspace
       - CONFIG_DIR=/app/config
       - DATA_CONFIG_DIR=/workspace/config

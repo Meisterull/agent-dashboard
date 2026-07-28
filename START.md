@@ -108,7 +108,8 @@ https://localhost:8443
 ```
 
 Der Browser warnt wegen des **self-signed Zertifikats** — das ist im MVP normal,
-einmal akzeptieren. (`8443` → Container-443; `8080` → Container-80 leitet auf HTTPS um.)
+einmal akzeptieren. (`8443` → Container-443; `8080` → Container-80 leitet auf HTTPS um.
+Beide Ports sind per `.env` übersteuerbar: `EXTERNAL_HTTPS_PORT`, `EXTERNAL_HTTP_PORT`.)
 
 Schnelltest vom Host aus:
 
