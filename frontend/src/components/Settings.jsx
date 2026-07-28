@@ -103,7 +103,7 @@ export default function Settings({ onClose }) {
                   <input
                     value={w.url || ""}
                     onChange={(e) => updateWindow(i, { url: e.target.value })}
-                    placeholder="192.168.2.50:6080/vnc.html?autoconnect=1"
+                    placeholder="192.168.1.40:6080/vnc.html?autoconnect=1"
                     className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1.5 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
                   />
                   <button
