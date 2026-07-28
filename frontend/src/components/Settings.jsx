@@ -19,13 +19,28 @@ export default function Settings({ onClose }) {
 
   async function save() {
     try {
-      const result = await putSettings(settings);
+      // leere Fenster-Zeilen (frisch hinzugefügt, nie ausgefüllt) nicht speichern
+      const cleaned = {
+        ...settings,
+        external_windows: (settings.external_windows || []).filter(
+          (w) => w.name?.trim() && w.url?.trim(),
+        ),
+      };
+      const result = await putSettings(cleaned);
       setSettings(result);
       setSaved(true);
+      window.dispatchEvent(new Event("settings:changed"));
     } catch {
       setSaved(false);
     }
   }
+
+  const extWindows = settings?.external_windows || [];
+  const updateWindow = (i, patch) =>
+    update(
+      "external_windows",
+      extWindows.map((w, j) => (j === i ? { ...w, ...patch } : w)),
+    );
 
   return (
     <Modal title="Einstellungen" onClose={onClose}>
@@ -66,6 +81,52 @@ export default function Settings({ onClose }) {
             />
             <span className="text-slate-600 dark:text-slate-300">Telegram-Bot aktiviert</span>
           </label>
+
+          <div>
+            <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+              Externe Fenster
+            </span>
+            <p className="mb-2 text-xs text-slate-400">
+              Zusätzliche Fenster im Workspace, z.&nbsp;B. noVNC. Adresse als
+              <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">IP:Port/pfad</code>
+              (LAN, läuft über das Dashboard — auch WebSocket) oder volle https://-URL.
+            </p>
+            <div className="space-y-2">
+              {extWindows.map((w, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={w.name || ""}
+                    onChange={(e) => updateWindow(i, { name: e.target.value })}
+                    placeholder="Name"
+                    className="w-28 rounded border border-slate-300 px-2 py-1.5 dark:border-slate-600 dark:bg-slate-800"
+                  />
+                  <input
+                    value={w.url || ""}
+                    onChange={(e) => updateWindow(i, { url: e.target.value })}
+                    placeholder="192.168.2.50:6080/vnc.html?autoconnect=1"
+                    className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1.5 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
+                  />
+                  <button
+                    onClick={() =>
+                      update("external_windows", extWindows.filter((_, j) => j !== i))
+                    }
+                    title="Fenster entfernen"
+                    className="shrink-0 rounded border border-slate-300 px-2 text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-600 dark:hover:bg-red-950"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={() =>
+                  update("external_windows", [...extWindows, { name: "", url: "" }])
+                }
+                className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                + Fenster hinzufügen
+              </button>
+            </div>
+          </div>
 
           <p className="text-xs text-slate-400">
             API-Keys und Tokens werden hier nicht verwaltet — sie bleiben in

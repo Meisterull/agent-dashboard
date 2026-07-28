@@ -99,6 +99,16 @@ class LoginIn(BaseModel):
     password: str
 
 
+@app.get("/api/auth/verify")
+async def auth_verify() -> Response:
+    """nginx auth_request für /ext/ (externe Fenster, z. B. noVNC).
+
+    Die Session-Middleware hat den Cookie hier schon geprüft (Pfad ist nicht
+    öffentlich) — kommt die Anfrage bis hierher, ist sie autorisiert.
+    """
+    return Response(status_code=204)
+
+
 @app.get("/api/auth/check")
 async def auth_check(request: Request) -> dict:
     return {
@@ -153,11 +163,17 @@ class ChatOut(BaseModel):
     tool_calls: list[dict]
 
 
+class ExternalWindowIn(BaseModel):
+    name: str
+    url: str
+
+
 class SettingsIn(BaseModel):
     llm_provider: str | None = None
     language: str | None = None
     telegram_enabled: bool | None = None
     orch_model: str | None = None
+    external_windows: list[ExternalWindowIn] | None = None
 
 
 # --- Health / Agenten / Tasks ---------------------------------------------
@@ -303,6 +319,9 @@ async def file_content(path: str) -> dict:
 class FileWriteIn(BaseModel):
     path: str
     content: str
+    # Kodierung aus dem Lese-Ergebnis (utf-8/utf-8-sig/utf-16/cp1252) —
+    # so bleibt eine Windows-Datei beim Speichern eine Windows-Datei.
+    encoding: str = "utf-8"
 
 
 def _attachment(filename: str) -> dict[str, str]:
@@ -314,7 +333,7 @@ def _attachment(filename: str) -> dict[str, str]:
 @app.put("/api/files/content")
 async def file_write(body: FileWriteIn) -> dict:
     try:
-        return write_file(body.path, body.content)
+        return write_file(body.path, body.content, body.encoding)
     except FilesError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -395,7 +414,7 @@ async def remote_read(name: str, path: str) -> dict:
 @app.put("/api/remote/{name}/file")
 async def remote_write(name: str, body: FileWriteIn) -> dict:
     try:
-        return await remote_files.write_file(name, body.path, body.content)
+        return await remote_files.write_file(name, body.path, body.content, body.encoding)
     except RemoteFilesError as exc:
         raise HTTPException(502, str(exc)) from exc
 

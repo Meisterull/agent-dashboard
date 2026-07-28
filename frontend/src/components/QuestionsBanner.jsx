@@ -1,11 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getQuestions, answerQuestion } from "../api";
 
 // Offene Rückfragen (needs_confirm) über alle Agenten. Hier beantwortet der
 // Mensch eine Worker-Rückfrage, ohne ins jeweilige Fenster zu wechseln.
+// Antwort-Inputs sind UNcontrolled (refs statt value-Prop): kontrollierte
+// Inputs lassen angetippte Wortvorschläge der Handy-Tastatur den Text
+// doppelt einfügen; außerdem übersteht der Entwurf so das 5-s-Polling.
 export default function QuestionsBanner({ refreshKey, onAnswered }) {
   const [questions, setQuestions] = useState([]);
-  const [drafts, setDrafts] = useState({});
+  const inputsRef = useRef({}); // q.id -> <input>-Element
 
   function load() {
     getQuestions()
@@ -20,11 +23,12 @@ export default function QuestionsBanner({ refreshKey, onAnswered }) {
   }, [refreshKey]);
 
   async function submit(q) {
-    const text = (drafts[q.id] || "").trim();
+    const el = inputsRef.current[q.id];
+    const text = (el?.value || "").trim();
     if (!text) return;
     try {
       await answerQuestion(q.agent, q.id, text);
-      setDrafts((d) => ({ ...d, [q.id]: "" }));
+      if (el) el.value = "";
       load();
       onAnswered?.();
     } catch {
@@ -49,8 +53,10 @@ export default function QuestionsBanner({ refreshKey, onAnswered }) {
             </div>
             <div className="mt-1 flex gap-2">
               <input
-                value={drafts[q.id] || ""}
-                onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
+                ref={(el) => {
+                  if (el) inputsRef.current[q.id] = el;
+                  else delete inputsRef.current[q.id];
+                }}
                 onKeyDown={(e) => e.key === "Enter" && submit(q)}
                 placeholder="Antwort…"
                 className="flex-1 rounded border border-amber-300 px-2 py-1 text-sm focus:outline-none dark:border-amber-800 dark:bg-slate-900 dark:text-slate-100"

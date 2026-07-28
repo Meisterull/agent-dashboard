@@ -145,6 +145,15 @@ verifiziert ist und was nicht.
   Die Domain (Default `agent-dashboard.local`) muss im lokalen DNS auf den
   Docker-Host zeigen, z.B. per Pi-hole (`pihole-FTL --config dns.hosts`).
 
+- **Datei-Editor & Kodierung:** `files.decode_text` liest utf-8 (auch BOM), utf-16 (BOM)
+  und cp1252 tolerant — nur echte Binärdaten (NUL-Bytes) werden abgelehnt. Das
+  `encoding` aus dem Lese-Ergebnis geht beim Speichern mit zurück, die Datei bleibt
+  also in ihrer Kodierung (Windows-Agenten-PCs!). Gilt für Workspace UND SFTP.
+- **Externe Fenster** (`settings.external_windows`, Settings-Dialog): `IP:Port[/pfad]`
+  wird im Frontend zu `/ext/<ip>/<port>/…` — nginx proxyt das per `auth_request`
+  (Session-Cookie) NUR auf private IPv4-Ziele, WebSocket-fähig (noVNC/websockify,
+  Mixed-Content-Problem gelöst). Volle `https://`-URLs landen direkt im iframe.
+  Location-Regex mit `{}`-Quantifiern muss in nginx gequotet sein.
 - `app/` ist ein Namespace-Package; Backend mit cwd `backend/` oder `PYTHONPATH=backend` starten.
 - FastAPI-Port 5000 und MCP-Port 9000 sind **intern** — nicht in docker-compose gemappt.
 - `config/` ist read-only gemountet; editierbare Settings liegen in `/workspace/config/settings.json`

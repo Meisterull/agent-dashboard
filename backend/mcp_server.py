@@ -22,6 +22,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from app import integrations
+from app.files import decode_text
 from app.mailbox import Mailbox, Task, new_id, normalize_envelope
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/workspace")).resolve()
@@ -150,7 +151,8 @@ def write_project_file(project: str, relpath: str, content: str) -> dict:
 @mcp.tool()
 def read_project_file(project: str, relpath: str) -> str:
     """Liest eine Datei unter /workspace/projects/<project>/<relpath>."""
-    return _safe(PROJECTS_ROOT, project, relpath).read_text(encoding="utf-8")
+    data = _safe(PROJECTS_ROOT, project, relpath).read_bytes()
+    return decode_text(data)[0]
 
 
 # --- Integrationen (config-getrieben, generisch) ---------------------------

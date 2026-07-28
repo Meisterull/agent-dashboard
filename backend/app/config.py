@@ -28,6 +28,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Leer = Env-Default (OLLAMA_MODEL / ORCH_MODEL). Gesetzt = Live-Override
     # des Orchestrator-Modells über das Dashboard.
     "orch_model": "",
+    # Externe Fenster im Workspace (z. B. noVNC): [{"name": …, "url": …}].
+    # url = "IP:Port[/pfad]" (läuft über den nginx-Proxy /ext/, auch WebSocket)
+    # oder eine volle https://-URL, die direkt eingebettet wird.
+    "external_windows": [],
 }
 
 # Editierbare Felder (Whitelist) — verhindert, dass das UI beliebige Keys setzt.

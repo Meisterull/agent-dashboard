@@ -44,7 +44,12 @@ function Message({ msg }) {
 export default function Chat({ sessionId, setSessionId, onActivity }) {
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
-  const [input, setInput] = useState("");
+  // Eingabe bewusst UNcontrolled (ref statt value-Prop): kontrollierte
+  // Inputs bringen die Wortvorschläge der Handy-Tastatur (GBoard/Samsung)
+  // aus dem Takt — ein angetippter Vorschlag fügt dann den ganzen Text
+  // doppelt ein. canSend spiegelt nur den Leer-Zustand für den Button.
+  const inputRef = useRef(null);
+  const [canSend, setCanSend] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const scrollRef = useRef(null);
@@ -86,10 +91,11 @@ export default function Chat({ sessionId, setSessionId, onActivity }) {
   }
 
   async function send() {
-    const text = input.trim();
+    const text = (inputRef.current?.value || "").trim();
     if (!text || loading) return;
     setError(null);
-    setInput("");
+    if (inputRef.current) inputRef.current.value = "";
+    setCanSend(false);
     setMessages((m) => [...m, { role: "user", text }]);
     setLoading(true);
     try {
@@ -164,8 +170,8 @@ export default function Chat({ sessionId, setSessionId, onActivity }) {
       <div className="border-t bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
         <div className="flex gap-2">
           <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
+            ref={inputRef}
+            onChange={(e) => setCanSend(e.target.value.trim().length > 0)}
             onKeyDown={onKeyDown}
             rows={2}
             placeholder="Nachricht an den Orchestrator…"
@@ -173,7 +179,7 @@ export default function Chat({ sessionId, setSessionId, onActivity }) {
           />
           <button
             onClick={send}
-            disabled={loading || !input.trim()}
+            disabled={loading || !canSend}
             className="self-end rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
           >
             Senden

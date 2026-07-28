@@ -62,7 +62,7 @@ export const downloadUrl = (source, path) =>
     ? `/api/files/download?path=${encodeURIComponent(path)}`
     : `/api/remote/${encodeURIComponent(source)}/download?path=${encodeURIComponent(path)}`;
 
-export async function saveFile(source, path, content) {
+export async function saveFile(source, path, content, encoding = "utf-8") {
   const url =
     source === "ws"
       ? "/api/files/content"
@@ -70,7 +70,7 @@ export async function saveFile(source, path, content) {
   const res = await fetch(url, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path, content }),
+    body: JSON.stringify({ path, content, encoding }),
   });
   if (!res.ok) {
     notifyUnauthorized(res);

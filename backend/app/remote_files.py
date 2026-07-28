@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from app.files import FilesError, decode_text, encode_text
 from app.ssh_bridge import _agent_connection
 from app.ssh_connect import connect_ssh
 
@@ -85,28 +86,36 @@ async def read_file(agent_name: str, path: str) -> dict[str, Any]:
                 data = await f.read(MAX_READ_BYTES)
         except Exception as exc:  # noqa: BLE001
             raise RemoteFilesError(f"nicht lesbar: {path} ({exc})") from exc
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            raise RemoteFilesError("keine Textdatei — nutze Download")
         size = attrs.size or 0
+        truncated = size > MAX_READ_BYTES
+        try:
+            text, encoding = decode_text(data, truncated)
+        except FilesError as exc:
+            raise RemoteFilesError(str(exc)) from exc
         return {
             "path": path,
             "content": text,
-            "truncated": size > MAX_READ_BYTES,
+            "truncated": truncated,
             "size": size,
+            "encoding": encoding,
         }
 
 
-async def write_file(agent_name: str, path: str, content: str) -> dict[str, Any]:
-    """Editor-Speichern: Datei komplett überschreiben (UTF-8)."""
+async def write_file(
+    agent_name: str, path: str, content: str, encoding: str = "utf-8"
+) -> dict[str, Any]:
+    """Editor-Speichern: Datei komplett überschreiben (Kodierung der Datei erhalten)."""
+    try:
+        data = encode_text(content, encoding)
+    except FilesError as exc:
+        raise RemoteFilesError(str(exc)) from exc
     async with sftp_client(agent_name) as sftp:
         try:
             async with sftp.open(path, "wb") as f:
-                await f.write(content.encode("utf-8"))
+                await f.write(data)
         except Exception as exc:  # noqa: BLE001
             raise RemoteFilesError(f"nicht schreibbar: {path} ({exc})") from exc
-        return {"path": path, "size": len(content.encode("utf-8"))}
+        return {"path": path, "size": len(data)}
 
 
 async def stream_file(agent_name: str, path: str) -> AsyncIterator[bytes]:

@@ -21,6 +21,9 @@ export default function EditorModal({ source, path, onClose }) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [readonly, setReadonly] = useState(false);
+  // Kodierung aus dem Lese-Ergebnis — beim Speichern zurückgeben, damit
+  // z. B. eine cp1252-Datei vom Windows-PC nicht still UTF-8 wird.
+  const [encoding, setEncoding] = useState("utf-8");
 
   const filename = path.split("/").pop();
 
@@ -30,7 +33,7 @@ export default function EditorModal({ source, path, onClose }) {
     setStatus("speichert…");
     setError(null);
     try {
-      await saveFile(source, path, view.state.doc.toString());
+      await saveFile(source, path, view.state.doc.toString(), encoding);
       setDirty(false);
       setStatus("gespeichert");
     } catch (e) {
@@ -63,6 +66,7 @@ export default function EditorModal({ source, path, onClose }) {
 
       const ro = !!data.truncated;
       setReadonly(ro);
+      setEncoding(data.encoding || "utf-8");
       setStatus(ro ? "read-only (Datei gekürzt geladen)" : "");
 
       const dark = document.documentElement.classList.contains("dark");
@@ -127,6 +131,14 @@ export default function EditorModal({ source, path, onClose }) {
           {filename}
           {dirty && <span className="ml-1 text-amber-500">●</span>}
         </span>
+        {encoding !== "utf-8" && (
+          <span
+            title="Datei-Kodierung — wird beim Speichern beibehalten"
+            className="shrink-0 rounded bg-slate-200 px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+          >
+            {encoding}
+          </span>
+        )}
         <span className="shrink-0 text-xs text-slate-400 dark:text-slate-500">
           {status}
         </span>

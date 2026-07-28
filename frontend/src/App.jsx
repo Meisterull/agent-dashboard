@@ -5,16 +5,16 @@ import Chat from "./components/Chat";
 import FilesPanel from "./components/FilesPanel";
 import AgentsPanel from "./components/AgentsPanel";
 import TerminalPanel from "./components/TerminalPanel";
+import Workspace from "./components/Workspace";
+import ExternalFrame from "./components/ExternalFrame";
 import Settings from "./components/Settings";
 import EditorModal from "./components/EditorModal";
 import Login from "./components/Login";
-import { authCheck } from "./api";
+import { authCheck, getSettings } from "./api";
 
-// Vollständiges Dashboard-Layout nach PROJECT.md:
-//   Top-Bar
-//   ┌ links: Dateibaum ┬ Mitte oben: Chat        ┬ rechts: MCP-Monitor ┐
-//   │                  ├ Mitte unten: SSH-Terminal┤                     │
-//   └──────────────────┴───────────────────────────┴─────────────────────┘
+// Dashboard-Layout: auf dem Desktop (md+) sind die vier Panels frei
+// verschieb- und größenveränderbare Fenster (Workspace.jsx); Standard-
+// Anordnung entspricht dem alten festen Raster aus PROJECT.md.
 //
 // Mobil (< md) gibt es stattdessen eine Tab-Leiste unten, die genau ein
 // Panel vollflächig zeigt. Alle Panels bleiben dabei gemountet (nur per
@@ -34,6 +34,19 @@ export default function App() {
   const [openFile, setOpenFile] = useState(null);
   const [tab, setTab] = useState("chat"); // mobil aktives Panel
   const [authed, setAuthed] = useState(null); // null = prüft noch
+  // Externe Fenster (z. B. noVNC) aus den Settings; Settings-Dialog feuert
+  // nach dem Speichern "settings:changed".
+  const [extWindows, setExtWindows] = useState([]);
+  useEffect(() => {
+    if (!authed) return;
+    const load = () =>
+      getSettings()
+        .then((s) => setExtWindows((s.external_windows || []).filter((w) => w?.name && w?.url)))
+        .catch(() => {});
+    load();
+    window.addEventListener("settings:changed", load);
+    return () => window.removeEventListener("settings:changed", load);
+  }, [authed]);
 
   // Login-Gate: initiale Prüfung + globales 401-Event aus api.js
   useEffect(() => {
@@ -85,55 +98,43 @@ export default function App() {
       />
       <QuestionsBanner refreshKey={refreshKey} onAnswered={bump} />
 
-      <div className="flex min-h-0 flex-1">
-        {/* Links: Dateibaum (mobil: Tab "Dateien") */}
-        <aside
-          className={`${
-            tab === "dateien" ? "flex" : "hidden"
-          } w-full flex-col bg-white md:flex md:w-60 md:shrink-0 md:border-r dark:bg-slate-900 dark:md:border-slate-700`}
-        >
-          <FilesPanel refreshKey={refreshKey} onOpenFile={setOpenFile} />
-        </aside>
-
-        {/* Mitte: Chat (oben) + SSH-Terminal (unten); mobil je ein Tab */}
-        <main
-          className={`${
-            tab === "chat" || tab === "terminal" ? "flex" : "hidden"
-          } min-w-0 flex-1 flex-col md:flex`}
-        >
-          <div
-            className={`${
-              tab === "chat" ? "flex" : "hidden"
-            } min-h-0 flex-1 flex-col md:flex md:border-b dark:md:border-slate-700`}
-          >
-            <Chat
-              sessionId={sessionId}
-              setSessionId={setSessionId}
-              onActivity={bump}
-            />
-          </div>
-          <div
-            className={`${
-              tab === "terminal" ? "flex" : "hidden"
-            } min-h-0 flex-1 flex-col md:flex md:h-64 md:flex-none`}
-          >
-            <TerminalPanel />
-          </div>
-        </main>
-
-        {/* Rechts: MCP-Monitor / Aufgaben (mobil: Tab "Agenten") */}
-        <aside
-          className={`${
-            tab === "agenten" ? "flex" : "hidden"
-          } w-full flex-col bg-white md:flex md:w-72 md:shrink-0 md:border-l dark:bg-slate-900 dark:md:border-slate-700`}
-        >
-          <AgentsPanel refreshKey={refreshKey} />
-        </aside>
-      </div>
+      <Workspace
+        tab={tab}
+        panels={[
+          {
+            id: "dateien",
+            title: "Dateien",
+            body: <FilesPanel refreshKey={refreshKey} onOpenFile={setOpenFile} />,
+          },
+          {
+            id: "chat",
+            title: "Chat",
+            body: (
+              <Chat
+                sessionId={sessionId}
+                setSessionId={setSessionId}
+                onActivity={bump}
+              />
+            ),
+            bodyClass: "bg-slate-100 dark:bg-slate-950",
+          },
+          { id: "terminal", title: "Terminal", body: <TerminalPanel /> },
+          {
+            id: "agenten",
+            title: "Agenten",
+            body: <AgentsPanel refreshKey={refreshKey} />,
+          },
+          ...extWindows.map((w) => ({
+            id: `ext:${w.name}`,
+            title: w.name,
+            body: <ExternalFrame url={w.url} />,
+          })),
+        ]}
+      />
 
       {/* Mobil: Tab-Leiste unten */}
-      <nav className="flex shrink-0 border-t bg-white md:hidden dark:border-slate-700 dark:bg-slate-900">
-        {TABS.map(([id, label]) => (
+      <nav className="flex shrink-0 overflow-x-auto border-t bg-white md:hidden dark:border-slate-700 dark:bg-slate-900">
+        {[...TABS, ...extWindows.map((w) => [`ext:${w.name}`, w.name])].map(([id, label]) => (
           <button
             key={id}
             onClick={() => switchTab(id)}

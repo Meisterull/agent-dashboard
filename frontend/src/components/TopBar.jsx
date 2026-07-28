@@ -7,6 +7,13 @@ export default function TopBar({ sessionId, onOpenSettings, theme, onToggleTheme
       <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
         <span>{sessionId ? `Session ${sessionId.slice(0, 8)}…` : "neue Session"}</span>
         <button
+          onClick={() => window.dispatchEvent(new Event("workspace:reset"))}
+          title="Fensteranordnung auf Standard zurücksetzen"
+          className="hidden rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 md:block dark:border-slate-600 dark:hover:bg-slate-800"
+        >
+          Fenster anordnen
+        </button>
+        <button
           onClick={onToggleTheme}
           title={theme === "dark" ? "Hell-Modus" : "Dunkel-Modus"}
           className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-800"
