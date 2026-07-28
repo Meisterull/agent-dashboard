@@ -1,0 +1,23 @@
+# Agenten-Vorlage (generisch — die Einträge unten sind nur Beispiele).
+# Beim ersten Start nach /workspace/config/agents.yaml kopiert (dort editierbar).
+# Credentials NICHT im Klartext — key_file referenziert eine Datei in /run/secrets.
+#
+# MCP-Tunnel (MCP_TUNNEL_ENABLED=true): Für jeden SSH-Agenten, dessen key_file
+# existiert, öffnet der Container einen Reverse-Forward — auf dem Agenten-PC
+# lauscht dann 127.0.0.1:<mcp_port> (Default 9000) auf den Dashboard-MCP-Server.
+# Optional pro Agent `mcp_port: 9100` in der connection, falls 9000 dort belegt
+# ist. Registrierung auf dem Agenten-PC: scripts/setup_agent_pc.sh [port].
+
+agents:
+#  - name: beispiel
+#    description: "Beispiel-Eintrag"
+#    role: worker
+#    mode: mailbox
+#    connection:
+#      type: ssh
+#      host: 192.168.2.99
+#      port: 22
+#      user: dev
+#      auth: key
+#      key_file: /run/secrets/beispiel_ed25519
+#      mcp_port: 9100   # optional, falls 9000 auf dem Zielrechner belegt ist

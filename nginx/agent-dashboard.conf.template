@@ -1,0 +1,61 @@
+# Wird vom entrypoint per envsubst gerendert (${EFFECTIVE_SSL_DIR}).
+# Externe Ports: 80 (redirect) und 443 (TLS). API/MCP bleiben intern.
+
+# HTTP -> HTTPS. Browser muss auf den extern veröffentlichten HTTPS-Port
+# (${EXTERNAL_HTTPS_PORT}) — der ist NICHT 443, sondern das Host-Mapping.
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host:${EXTERNAL_HTTPS_PORT}$request_uri;
+}
+
+server {
+    # http2 als listen-Parameter (nginx < 1.25; "http2 on;" gibt es erst ab 1.25.1).
+    listen 443 ssl http2;
+    server_name _;
+
+    ssl_certificate     ${EFFECTIVE_SSL_DIR}/fullchain.pem;
+    ssl_certificate_key ${EFFECTIVE_SSL_DIR}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    # HSTS erst aktivieren, wenn echtes Zertifikat steht.
+    # add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+
+    client_max_body_size 50m;
+
+    # CA-Zertifikat zum Installieren auf Handys (nur der öffentliche Teil).
+    # Content-Type stößt auf Android direkt den Zertifikat-Import an.
+    location = /ca.crt {
+        alias ${EFFECTIVE_SSL_DIR}/ca.crt;
+        default_type application/x-x509-ca-cert;
+    }
+
+    # Frontend (statisches Vite-Build, SPA-Fallback)
+    root /app/frontend/dist;
+    index index.html;
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # REST-API
+    location /api/ {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # WebSocket (SSH-Terminal + Live-Events)
+    location /ws/ {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 86400s;
+    }
+}

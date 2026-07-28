@@ -1,0 +1,82 @@
+services:
+  agent-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-dashboard:latest
+    container_name: agent-dashboard
+    restart: unless-stopped
+
+    ports:
+      - "8443:443"
+      - "8080:80"
+      # 5000 (FastAPI) und 9000 (MCP) sind bewusst NICHT veröffentlicht —
+      # nur intern hinter nginx erreichbar.
+
+    volumes:
+      # Laufzeit-Daten (DB, Mailboxes, Projekte, Logs): beschreibbar.
+      - ./workspace:/workspace
+      # Statische Vorlagen-Config (vom User per Hand gepflegt): read-only.
+      - ./config:/app/config:ro
+      # Vom Dashboard editierbare Settings landen in /workspace/config (s.u.),
+      # NICHT im read-only /app/config.
+      - ./ssl:/app/ssl:ro
+      # SSH-Keys als Secrets, read-only.
+      - ./secrets:/run/secrets:ro
+      # HINWEIS: /var/run/docker.sock wird bewusst NICHT gemountet.
+      # Ein gemounteter Docker-Socket = effektiv Root auf dem Host und
+      # wird vom Konzept nirgends gebraucht.
+
+    # Linux: macht den Host (und damit Ollama auf :11435) als
+    # host.docker.internal aus dem Container erreichbar.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=production
+      # Muss zum Host-Mapping "8443:443" oben passen (HTTP->HTTPS-Redirect).
+      - EXTERNAL_HTTPS_PORT=8443
+      - WORKSPACE_DIR=/workspace
+      - CONFIG_DIR=/app/config
+      - DATA_CONFIG_DIR=/workspace/config
+      - SSL_DIR=/app/ssl
+      - SECRETS_DIR=/run/secrets
+      - MCP_HOST=127.0.0.1
+      - MCP_PORT=9000
+      - API_PORT=5000
+
+    # Defense in depth — nichts davon kostet etwas im MVP.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - NET_BIND_SERVICE
+      # nginx-Master läuft als root, muss aber die von www-data (640) und
+      # root angelegten Log-/Pid-Dateien beschreiben. Ohne DAC_OVERRIDE
+      # verhält sich root wie ein normaler User und scheitert daran.
+      - DAC_OVERRIDE
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.5"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsk", "https://localhost:443/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    networks:
+      - agent-dashboard-net
+
+networks:
+  agent-dashboard-net:
+    driver: bridge

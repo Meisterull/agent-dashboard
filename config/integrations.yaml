@@ -1,0 +1,25 @@
+# Integrationen-Vorlage (config-getrieben, workflow-agnostisch).
+# Jeder Workflow hängt hier seine eigenen HTTP-Endpunkte an; der MCP-Server
+# stellt sie generisch über call_integration(name, method, path, body) bereit.
+# Secrets kommen aus .env (auth_env) und werden serverseitig injiziert.
+
+integrations: {}
+
+# Beispiele — Block einkommentieren und `integrations: {}` oben ersetzen
+# (read-only, also nur GET, als sicherer Default):
+#
+# integrations:
+#   warenwirtschaft:
+#     base_url: http://mein-erp:8000
+#     auth_env: ERP_API_KEY          # Wert steht in .env, nie im Frontend
+#     auth_header: Authorization
+#     auth_prefix: "token "
+#     allowed_methods: [GET]
+#   jira:
+#     base_url: https://firma.atlassian.net
+#     auth_env: JIRA_TOKEN
+#     allowed_methods: [GET, POST]
+#   gitea:
+#     base_url: http://gitea:3000/api/v1
+#     auth_env: GITEA_TOKEN
+#     allowed_methods: [GET]

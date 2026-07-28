@@ -1,0 +1,12 @@
+# Secrets & Laufzeitdaten — NIE committen
+.env
+secrets/
+ssl/
+workspace/
+
+# Build-Artefakte / Abhängigkeiten
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.venv/

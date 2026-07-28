@@ -1,0 +1,31 @@
+# Web / API
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+pydantic-settings==2.*
+python-multipart==0.0.*
+
+# LLM-Clients (gemeinsames Adapter-Interface)
+anthropic==0.39.*
+openai==1.*           # für OpenRouter (OpenAI-kompatibel)
+httpx==0.27.*         # für Ollama
+
+# MCP — Tools für den Orchestrator
+mcp==1.*
+
+# SSH / Terminal-Bridge
+asyncssh==2.*
+
+# Mailbox / Dateisystem
+aiofiles==24.*
+watchfiles==0.24.*    # inotify statt Polling
+
+# Persistenz
+sqlalchemy==2.*
+aiosqlite==0.20.*
+
+# Auth / Config
+bcrypt==4.*
+pyyaml==6.*
+
+# Telegram (optional)
+python-telegram-bot==21.*
