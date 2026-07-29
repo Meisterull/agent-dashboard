@@ -68,6 +68,42 @@ export default function Terminal({ name, visible = true }) {
     term.open(ref.current);
     fit.fit();
 
+    // Kopieren: Strg+C mit aktiver Auswahl kopiert in die Zwischenablage
+    // (statt SIGINT an die Shell); ohne Auswahl bleibt Strg+C das gewohnte
+    // Abbrechen. Deckt auch Strg+Shift+C (sonst DevTools) und Strg+Einfg ab.
+    const copySelection = () => {
+      const text = term.getSelection();
+      if (!text) return false;
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      } else {
+        // Zugriff per HTTP/IP ohne TLS: keine Clipboard-API → execCommand
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      term.clearSelection();
+      return true;
+    };
+    term.attachCustomKeyEventHandler((e) => {
+      if (
+        e.type === "keydown" &&
+        e.ctrlKey &&
+        !e.altKey &&
+        (e.key?.toLowerCase() === "c" || e.key === "Insert") &&
+        copySelection()
+      ) {
+        e.preventDefault();
+        return false;
+      }
+      return true;
+    });
+
     let gone = false; // Komponente weg oder Session endgültig zu
     let retry = 0;
     let retryTimer = null;
