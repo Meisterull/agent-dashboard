@@ -4,10 +4,13 @@ Frontend -> Server: JSON {type:"data",data} | {type:"resize",cols,rows} | {type:
 Server -> Frontend: rohe Terminal-Ausgabe als Text.
 
 Die SSH-Session lebt unabhängig vom WebSocket: bricht die Verbindung ab
-(Handy gesperrt, Netzwechsel), läuft die Shell GRACE_SECONDS weiter und
-puffert ihren Output; der Client verbindet sich mit derselben sid
-(?sid=… in der WS-URL) neu und bekommt den Puffer nachgespielt.
-Explizites Schließen im UI beendet die Session (kill / DELETE-Endpoint).
+(Handy gesperrt, Netzwechsel) oder wird das Fenster geschlossen, läuft die
+Shell GRACE_SECONDS weiter und puffert ihren Output; der Client verbindet
+sich mit derselben sid (?sid=… in der WS-URL) neu und bekommt den Puffer
+nachgespielt. Da das Frontend eine stabile sid pro Verbindung nutzt, klappt
+das auch von einem anderen PC/Browser aus. Beendet wird nur noch explizit
+(kill / DELETE-Endpoint) oder durch Shell-Exit; list_sessions() speist
+GET /api/ssh/sessions (Badge + Auto-Reopen im UI).
 
 Close-Codes Richtung Client:
   4401  nicht angemeldet (main.py, vor der Bridge)
@@ -18,19 +21,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
 import uuid
 from collections import deque
 
 from app.config import agent_connection as _agent_connection  # auch von remote_files genutzt
 from app.ssh_connect import connect_ssh
 
-GRACE_SECONDS = 900          # Überlebenszeit ohne verbundenen Client
+# Überlebenszeit ohne verbundenen Client; 0 = unbegrenzt (nur explizites
+# Beenden oder Shell-Exit räumen auf). Env: SSH_GRACE_SECONDS.
+GRACE_SECONDS = int(os.getenv("SSH_GRACE_SECONDS", "86400"))
 BUFFER_LIMIT = 256 * 1024    # Replay-Puffer pro Session
 
 
 class _Session:
-    def __init__(self, key: str, conn, proc):
+    def __init__(self, key: str, agent: str, sid: str, conn, proc):
         self.key = key
+        self.agent = agent
+        self.sid = sid
         self.conn = conn
         self.proc = proc
         self.buffer: deque[str] = deque()
@@ -39,6 +48,8 @@ class _Session:
         self.expire_task: asyncio.Task | None = None
         self.pump_task: asyncio.Task | None = None
         self.closed = False
+        self.started = time.time()
+        self.detached_at: float | None = None  # None = Client hängt dran
 
 
 _sessions: dict[str, _Session] = {}
@@ -75,6 +86,8 @@ async def _kill(sess: _Session, notify: bool = True) -> None:
 
 
 async def _expire_later(sess: _Session) -> None:
+    if GRACE_SECONDS <= 0:
+        return  # unbegrenzt: Session lebt bis kill oder Shell-Exit
     try:
         await asyncio.sleep(GRACE_SECONDS)
     except asyncio.CancelledError:
@@ -96,7 +109,13 @@ async def _pump(sess: _Session) -> None:
                 try:
                     await ws.send_text(data)
                 except Exception:
+                    # Client tot, ohne dass die Bridge es schon gemerkt hat:
+                    # hier detachen, sonst startet nie ein Expiry-Timer.
                     sess.ws = None
+                    sess.detached_at = time.time()
+                    if sess.expire_task:
+                        sess.expire_task.cancel()
+                    sess.expire_task = asyncio.create_task(_expire_later(sess))
     except Exception:
         pass
     if not sess.closed:  # Shell hat sich beendet (exit)
@@ -110,6 +129,22 @@ async def kill_session(agent_name: str, sid: str) -> bool:
         return False
     await _kill(sess)
     return True
+
+
+def list_sessions() -> list[dict]:
+    """Laufende Sessions für GET /api/ssh/sessions (Badge + Auto-Reopen)."""
+    now = time.time()
+    return [
+        {
+            "name": s.agent,
+            "sid": s.sid,
+            "attached": s.ws is not None,
+            "age": int(now - s.started),
+            "idle": int(now - s.detached_at) if s.detached_at else 0,
+        }
+        for s in list(_sessions.values())
+        if not s.closed
+    ]
 
 
 async def bridge(websocket, agent_name: str) -> None:
@@ -138,6 +173,7 @@ async def bridge(websocket, agent_name: str) -> None:
         except Exception:
             return
         sess.ws = websocket
+        sess.detached_at = None
     else:
         conn_cfg = _agent_connection(agent_name)
         if not conn_cfg or not conn_cfg.get("host"):
@@ -153,7 +189,7 @@ async def bridge(websocket, agent_name: str) -> None:
             await websocket.close(code=4404)
             return
 
-        sess = _Session(key, conn, proc)
+        sess = _Session(key, agent_name, sid, conn, proc)
         _sessions[key] = sess
         sess.ws = websocket
         sess.pump_task = asyncio.create_task(_pump(sess))
@@ -179,6 +215,7 @@ async def bridge(websocket, agent_name: str) -> None:
         if sess.ws is websocket:
             sess.ws = None
             if not sess.closed:
+                sess.detached_at = time.time()
                 sess.expire_task = asyncio.create_task(_expire_later(sess))
         try:
             await websocket.close()

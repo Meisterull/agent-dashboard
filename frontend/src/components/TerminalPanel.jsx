@@ -1,15 +1,21 @@
 import { useEffect, useState } from "react";
 import { getConnections } from "../api";
-import Terminal, { sidFor, clearSid } from "./Terminal";
+import Terminal, { DEFAULT_SID } from "./Terminal";
 import ConnectionsModal from "./ConnectionsModal";
 
 // SSH-Verbindungen als Tabs. Einmal geöffnete Terminals bleiben gemountet
 // (nur versteckt), damit die SSH-Session — z.B. ein laufendes Claude-Code —
-// den Tab-Wechsel überlebt. Schließen beendet die Session explizit
-// (serverseitig via DELETE, sonst lebt sie die Grace-Zeit weiter).
+// den Tab-Wechsel überlebt. Fenster schließen (×) detacht nur: die Shell
+// läuft serverseitig weiter (SSH_GRACE_SECONDS) und wird beim nächsten
+// Öffnen — auch von einem anderen PC — samt Output-Replay wieder angehängt.
+// Beendet wird nur über den eigenen ⏻-Knopf (DELETE-Endpoint) oder Shell-Exit.
+// Ein Punkt am Tab markiert Verbindungen mit laufender Session; beim Mount
+// und bei Fokus-Rückkehr werden laufende Sessions automatisch wieder geöffnet.
 export default function TerminalPanel() {
   const [connections, setConnections] = useState([]);
-  const [open, setOpen] = useState([]); // Namen mit laufender Session
+  const [open, setOpen] = useState([]); // Namen mit geöffnetem Terminal-Fenster
+  const [running, setRunning] = useState([]); // Namen mit serverseitiger Session
+  const [pendingOpen, setPendingOpen] = useState([]); // beim Mount gefundene Sessions
   const [active, setActive] = useState(null);
   const [showManage, setShowManage] = useState(false);
 
@@ -23,19 +29,64 @@ export default function TerminalPanel() {
     return () => window.removeEventListener("connections:changed", load);
   }, []);
 
+  // autoOpen NUR beim Mount (Browser-Neustart/Login): dann kommen laufende
+  // Terminals von selbst zurück — auch von einem anderen PC (Übernahme via
+  // Close-Code 4000). Bei Fokus-Rückkehr wird nur das Badge aktualisiert:
+  // sonst würde ein bloß im Hintergrund offenes Dashboard die Session eines
+  // anderen PCs klauen, sobald es Fokus bekommt. Reattach dann per Tab-Klick.
+  const loadSessions = (autoOpen = false) =>
+    fetch("/api/ssh/sessions")
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        const names = [...new Set(d.sessions.map((s) => s.name))];
+        setRunning(names);
+        if (autoOpen) setPendingOpen(names);
+      })
+      .catch(() => {});
+
+  useEffect(() => {
+    loadSessions(true);
+    const onFocus = () => loadSessions();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
+  // Auto-Reopen, sobald auch die Verbindungsliste da ist; nur für Verbindungen,
+  // die es (noch) gibt — sonst gäbe es Terminals ohne Tab.
+  useEffect(() => {
+    const names = pendingOpen.filter((n) => connections.some((c) => c.name === n));
+    if (!names.length) return;
+    setOpen((o) => [...o, ...names.filter((n) => !o.includes(n))]);
+    setPendingOpen((p) => p.filter((n) => !names.includes(n)));
+  }, [pendingOpen, connections]);
+
   const activate = (name) => {
     setActive(name);
     setOpen((o) => (o.includes(name) ? o : [...o, name]));
   };
 
+  // × — nur das Fenster schließen; die Session läuft serverseitig weiter.
   const close = (name) => {
-    const sid = sidFor(name);
-    fetch(`/api/ssh/${encodeURIComponent(name)}/session?sid=${sid}`, {
-      method: "DELETE",
-    }).catch(() => {});
-    clearSid(name); // nächstes Öffnen = frische Session
     setOpen((o) => o.filter((n) => n !== name));
     setActive((a) => (a === name ? null : a));
+  };
+
+  // ⏻ — Session serverseitig beenden (killt die Shell auf dem Agenten-PC).
+  const endSession = (name) => {
+    fetch(`/api/ssh/${encodeURIComponent(name)}/session?sid=${DEFAULT_SID}`, {
+      method: "DELETE",
+    })
+      .catch(() => {})
+      .finally(() => {
+        setRunning((r) => r.filter((n) => n !== name));
+        close(name);
+      });
+  };
+
+  // Shell hat sich selbst beendet (exit) oder wurde anderweitig gekillt.
+  const ended = (name) => {
+    close(name);
+    loadSessions();
   };
 
   return (
@@ -58,16 +109,31 @@ export default function TerminalPanel() {
                     : "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
               }`}
             >
+              {running.includes(c.name) && (
+                <span
+                  title="Session läuft"
+                  className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 align-middle"
+                />
+              )}
               {c.name}
             </button>
             {open.includes(c.name) && (
-              <button
-                onClick={() => close(c.name)}
-                title="Session beenden"
-                className="ml-0.5 rounded px-1 text-xs text-slate-400 hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
-              >
-                ×
-              </button>
+              <>
+                <button
+                  onClick={() => close(c.name)}
+                  title="Fenster schließen (Session läuft weiter)"
+                  className="ml-0.5 rounded px-1 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+                >
+                  ×
+                </button>
+                <button
+                  onClick={() => endSession(c.name)}
+                  title="Session beenden"
+                  className="rounded px-1 text-xs text-slate-400 hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
+                >
+                  ⏻
+                </button>
+              </>
             )}
           </span>
         ))}
@@ -91,7 +157,11 @@ export default function TerminalPanel() {
             key={name}
             className={`absolute inset-0 ${active === name ? "" : "invisible"}`}
           >
-            <Terminal name={name} visible={active === name} />
+            <Terminal
+              name={name}
+              visible={active === name}
+              onEnded={() => ended(name)}
+            />
           </div>
         ))}
       </div>

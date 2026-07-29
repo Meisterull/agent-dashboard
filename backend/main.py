@@ -24,6 +24,8 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/connections            SSH-Verbindungen (ohne Credentials)
   GET  /api/settings               Editierbare UI-Settings
   PUT  /api/settings               Settings speichern
+  GET  /api/ssh/sessions           laufende Terminal-Sessions (Badge/Auto-Reopen)
+  DEL  /api/ssh/{name}/session     Terminal-Session explizit beenden (?sid=…)
   WS   /ws/ssh/{name}              SSH-Terminal-Bridge (xterm.js)
 
 Start (lokal):  cd backend && uvicorn main:app --host 127.0.0.1 --port 5000
@@ -67,7 +69,7 @@ from app.remote_files import RemoteFilesError
 from app.integrations import list_integrations
 from app.mailbox import Mailbox, atomic_write_json, normalize_envelope
 from app.orchestrator_core import mcp_session, run_turn
-from app.ssh_bridge import bridge as ssh_bridge, kill_session
+from app.ssh_bridge import bridge as ssh_bridge, kill_session, list_sessions
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/workspace"))
 MAILBOXES = WORKSPACE / "mailboxes"
@@ -589,9 +591,15 @@ async def put_settings(body: SettingsIn) -> dict:
 
 # --- SSH-Terminal ----------------------------------------------------------
 
+@app.get("/api/ssh/sessions")
+async def ssh_sessions() -> dict:
+    """Laufende Terminal-Sessions — fürs UI (Badge an den Tabs, Auto-Reopen)."""
+    return {"sessions": list_sessions()}
+
+
 @app.delete("/api/ssh/{name}/session")
 async def ssh_session_kill(name: str, sid: str) -> dict:
-    """Persistente Terminal-Session explizit beenden (Schließen-Button im UI)."""
+    """Persistente Terminal-Session explizit beenden (Beenden-Button im UI)."""
     return {"killed": await kill_session(name, sid)}
 
 

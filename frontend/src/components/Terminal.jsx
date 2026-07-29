@@ -7,37 +7,32 @@ import { encodeKey, encodeChar } from "../keys";
 
 // Ein SSH-Terminal pro Verbindung. Spricht /ws/ssh/<name>?sid=… — die sid
 // identifiziert eine serverseitig persistente Session: bricht der WebSocket
-// ab (Handy gesperrt, Netzwechsel), verbindet sich das Terminal automatisch
-// neu und bekommt den gepufferten Output nachgespielt. Die sid liegt in
-// localStorage, damit auch ein Seiten-Reload die Session wiederfindet.
-// Explizit beendet wird die Session vom TerminalPanel (DELETE-Endpoint).
+// ab (Handy gesperrt, Netzwechsel) oder wird das Fenster geschlossen, läuft
+// die Shell serverseitig weiter; beim nächsten Öffnen wird der gepufferte
+// Output nachgespielt. Die sid ist bewusst eine Konstante pro Verbindung
+// (nicht pro Browser): so hängt sich auch ein anderer PC/Browser an dieselbe
+// Session — der bisherige Client wird per Close-Code 4000 übernommen.
+// Explizit beendet wird die Session vom TerminalPanel (DELETE-Endpoint);
+// endet die Shell (exit/kill), meldet das Terminal das über onEnded.
 //
 // Für Mobilgeräte gibt es eine KeyBar mit Sondertasten und Sticky-Modifikatoren
 // (Strg/Alt/Shift): ein aktiver Modifikator wirkt auf die nächste Taste — egal
 // ob aus der Leiste oder von der Bildschirmtastatur — und schaltet sich danach
 // selbst ab.
 
-export function sidFor(name) {
-  const key = `term-sid-${name}`;
-  let sid = localStorage.getItem(key);
-  if (!sid) {
-    sid = crypto.randomUUID();
-    localStorage.setItem(key, sid);
-  }
-  return sid;
-}
+export const DEFAULT_SID = "main";
 
-export function clearSid(name) {
-  localStorage.removeItem(`term-sid-${name}`);
-}
-
-export default function Terminal({ name, visible = true }) {
+export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEnded }) {
   const ref = useRef(null);
   const fitRef = useRef(null);
   const wsRef = useRef(null);
   const [mods, setMods] = useState({ ctrl: false, alt: false, shift: false });
   const modsRef = useRef(mods);
   modsRef.current = mods;
+  // Callback in einer Ref, damit ein neuer onEnded pro Re-Render nicht den
+  // Verbindungs-Effect (und damit den WebSocket) neu aufbaut.
+  const onEndedRef = useRef(onEnded);
+  onEndedRef.current = onEnded;
 
   const clearMods = () => setMods({ ctrl: false, alt: false, shift: false });
   const toggleMod = (name) => setMods((m) => ({ ...m, [name]: !m[name] }));
@@ -107,7 +102,6 @@ export default function Terminal({ name, visible = true }) {
     let gone = false; // Komponente weg oder Session endgültig zu
     let retry = 0;
     let retryTimer = null;
-    const sid = sidFor(name);
 
     const sendResize = (ws) => {
       if (ws.readyState === WebSocket.OPEN)
@@ -135,9 +129,9 @@ export default function Terminal({ name, visible = true }) {
           return;
         }
         if (ev.code === 4404) {
-          // Shell beendet / Session gekillt: neue sid für den nächsten Start
+          // Shell beendet / Session gekillt — Panel räumt den Tab auf
           gone = true;
-          clearSid(name);
+          onEndedRef.current?.();
           return;
         }
         if (ev.code === 4000) {
@@ -200,7 +194,7 @@ export default function Terminal({ name, visible = true }) {
       wsRef.current = null;
       term.dispose();
     };
-  }, [name]);
+  }, [name, sid]);
 
   return (
     <div className="flex h-full w-full flex-col">

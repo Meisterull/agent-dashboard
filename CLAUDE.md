@@ -37,7 +37,10 @@ backend/
                            /workspace/config/known_hosts) — von bridge/SFTP/tunnel genutzt
     config.py              Settings (settings.json) + Verbindungen (agents.yaml)
     integrations.py        config-getriebene HTTP-Tools (integrations.yaml), generisch
-    ssh_bridge.py          WebSocket ↔ asyncssh (Terminal)
+    ssh_bridge.py          WebSocket ↔ asyncssh (Terminal); Sessions überleben
+                           das Fenster-Schließen (stabile sid "main" pro
+                           Verbindung, SSH_GRACE_SECONDS Default 24 h, 0 = ∞;
+                           GET /api/ssh/sessions fürs UI-Badge/Auto-Reopen)
     mcp_tunnel.py          Reverse-SSH-Tunnel: MCP-Server auf die Agenten-PCs
                            (supervisord `mcp-tunnel`, Gate MCP_TUNNEL_ENABLED)
   requirements.txt

@@ -157,7 +157,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `components/FileTree.jsx` | lazy-ladender Dateibaum über `/api/files` |
 | `components/FileViewer.jsx` | Datei-Inhalt im Modal |
 | `components/AgentsPanel.jsx` | MCP-Monitor: Inbox/Outbox je Agent mit Status-Badges |
-| `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh` |
+| `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
 | `components/Settings.jsx` | Einstellungen-Modal (Provider/Sprache/Telegram) |
 | `components/Modal.jsx` | generischer Modal-Container |
 
@@ -188,6 +188,8 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `GET` | `/api/connections` | SSH-Verbindungen aus `agents.yaml` (ohne Credentials) |
 | `GET` | `/api/settings` | editierbare UI-Settings |
 | `PUT` | `/api/settings` | Settings speichern (Whitelist) |
+| `GET` | `/api/ssh/sessions` | laufende Terminal-Sessions (`name`, `sid`, `attached`, `age`, `idle`) |
+| `DELETE` | `/api/ssh/{name}/session?sid=` | Terminal-Session explizit beenden (⏻-Knopf) |
 | `WS` | `/ws/ssh/{name}` | SSH-Terminal-Bridge (JSON `{type:"data"/"resize"}` rein, Text raus) |
 
 ---
