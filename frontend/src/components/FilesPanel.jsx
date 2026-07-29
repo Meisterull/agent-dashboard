@@ -29,6 +29,7 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [localKey, setLocalKey] = useState(0); // ↻-Button: Listing neu laden
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -52,7 +53,7 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
     return () => {
       stale = true;
     };
-  }, [source, path, refreshKey]);
+  }, [source, path, refreshKey, localKey]);
 
   const switchSource = (s) => {
     setSource(s);
@@ -170,6 +171,14 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
         >
           {source === "ws" ? `/${path}` : data?.path || "…"}
         </span>
+        <button
+          onClick={() => setLocalKey((k) => k + 1)}
+          disabled={busy}
+          title="Liste aktualisieren"
+          className="shrink-0 rounded px-1.5 py-0.5 text-slate-500 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-400 dark:hover:bg-slate-800"
+        >
+          ↻
+        </button>
         <button
           onClick={onNewFile}
           disabled={busy || !data}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getAgents, getTasks } from "../api";
 
 const STATUS_COLORS = {
@@ -23,34 +23,79 @@ function StatusBadge({ status }) {
   );
 }
 
-export default function AgentsPanel({ refreshKey }) {
+// Pollt alle 8 s die Mailboxen ALLER Agenten (nicht nur des angezeigten):
+// die Anzeige aktualisiert sich so von selbst, und Statuswechsel auf
+// done/error/needs_confirm melden sich über onAttention nach oben (App lässt
+// dann den Agenten-Reiter rot blinken). Der erste Durchlauf ist nur Basis —
+// alte fertige Tasks sollen beim Laden der Seite nicht blinken.
+const ALERT_STATUS = ["done", "error", "needs_confirm"];
+
+export default function AgentsPanel({ refreshKey, onAttention }) {
   const [agents, setAgents] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [tasks, setTasks] = useState(null);
+  const [tasksByAgent, setTasksByAgent] = useState({});
+  const [localKey, setLocalKey] = useState(0); // ↻-Button
+  const prevRef = useRef(null); // "agent/box/task_id" -> status
+  const onAttentionRef = useRef(onAttention);
+  onAttentionRef.current = onAttention;
 
   useEffect(() => {
-    getAgents()
-      .then((d) => {
+    let stale = false;
+    const load = async () => {
+      try {
+        const d = await getAgents();
+        if (stale) return;
         setAgents(d.agents);
         setSelected((s) => s || d.agents[0] || null);
-      })
-      .catch(() => setAgents([]));
-  }, [refreshKey]);
+        const pairs = await Promise.all(
+          d.agents.map((a) =>
+            getTasks(a)
+              .then((t) => [a, t])
+              .catch(() => null),
+          ),
+        );
+        if (stale) return;
+        const byAgent = Object.fromEntries(pairs.filter(Boolean));
+        setTasksByAgent(byAgent);
+        const snap = {};
+        for (const [a, t] of Object.entries(byAgent))
+          for (const box of ["inbox", "outbox"])
+            for (const task of t[box] || [])
+              snap[`${a}/${box}/${task.task_id}`] = task.status;
+        const prev = prevRef.current;
+        if (
+          prev &&
+          Object.entries(snap).some(
+            ([k, st]) => ALERT_STATUS.includes(st) && prev[k] !== st,
+          )
+        )
+          onAttentionRef.current?.();
+        prevRef.current = snap;
+      } catch {
+        if (!stale) setAgents([]);
+      }
+    };
+    load();
+    const t = setInterval(load, 8000);
+    return () => {
+      stale = true;
+      clearInterval(t);
+    };
+  }, [refreshKey, localKey]);
 
-  useEffect(() => {
-    if (!selected) {
-      setTasks(null);
-      return;
-    }
-    getTasks(selected)
-      .then(setTasks)
-      .catch(() => setTasks(null));
-  }, [selected, refreshKey]);
+  const tasks = selected ? tasksByAgent[selected] : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
-        MCP-Monitor · Aufgaben
+      <div className="flex items-center border-b bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+        <span className="flex-1">MCP-Monitor · Aufgaben</span>
+        <button
+          onClick={() => setLocalKey((k) => k + 1)}
+          title="jetzt aktualisieren"
+          className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
+        >
+          ↻
+        </button>
       </div>
       <div className="flex flex-wrap gap-1 border-b p-2 dark:border-slate-700">
         {agents.length === 0 && (

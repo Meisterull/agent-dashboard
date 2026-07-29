@@ -11,6 +11,23 @@
   color-scheme: dark;
 }
 
+/* Aufmerksamkeit: Fenster-Titel bzw. Tab blinkt rot, wenn in dem Panel etwas
+   fertig ist oder eine Rückfrage wartet — Klick ins Panel/auf den Tab löscht es
+   (App.jsx "attention"). Nach dem Tailwind-Import definiert, damit die rote
+   Farbe die Utility-Textfarben der Tabs überstimmt. */
+@keyframes attention-blink {
+  50% {
+    opacity: 0.2;
+  }
+}
+.attention-blink {
+  color: #dc2626;
+  animation: attention-blink 1s ease-in-out infinite;
+}
+.dark .attention-blink {
+  color: #f87171;
+}
+
 /* Markdown in Orchestrator-Antworten (Chat.jsx, Klasse "md") */
 .md > * + * {
   margin-top: 0.5rem;

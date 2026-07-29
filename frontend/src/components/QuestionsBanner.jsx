@@ -6,13 +6,23 @@ import { getQuestions, answerQuestion } from "../api";
 // Antwort-Inputs sind UNcontrolled (refs statt value-Prop): kontrollierte
 // Inputs lassen angetippte Wortvorschläge der Handy-Tastatur den Text
 // doppelt einfügen; außerdem übersteht der Entwurf so das 5-s-Polling.
-export default function QuestionsBanner({ refreshKey, onAnswered }) {
+export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
   const [questions, setQuestions] = useState([]);
   const inputsRef = useRef({}); // q.id -> <input>-Element
+  const prevIdsRef = useRef(null); // erste Antwort = Basis, kein Blinken beim Laden
+  const onNewRef = useRef(onNew);
+  onNewRef.current = onNew;
 
   function load() {
     getQuestions()
-      .then((d) => setQuestions(d.questions))
+      .then((d) => {
+        setQuestions(d.questions);
+        const ids = d.questions.map((q) => `${q.agent}/${q.id}`);
+        // neue Rückfrage aufgetaucht → Agenten-Reiter blinken lassen
+        if (prevIdsRef.current && ids.some((id) => !prevIdsRef.current.includes(id)))
+          onNewRef.current?.();
+        prevIdsRef.current = ids;
+      })
       .catch(() => setQuestions([]));
   }
 

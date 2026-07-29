@@ -59,7 +59,13 @@ function loadLayout() {
   }
 }
 
-export default function Workspace({ tab, viewMode = "windows", panels }) {
+export default function Workspace({
+  tab,
+  viewMode = "windows",
+  panels,
+  attention = {},
+  onFocusPanel,
+}) {
   const containerRef = useRef(null);
   const [layout, setLayout] = useState(loadLayout);
   const layoutRef = useRef(layout);
@@ -236,7 +242,10 @@ export default function Workspace({ tab, viewMode = "windows", panels }) {
             key={id}
             style={style}
             className={cls}
-            onPointerDownCapture={windowed ? () => raise(id) : undefined}
+            onPointerDownCapture={() => {
+              onFocusPanel?.(id); // Blinken löschen: Nutzer hat es gesehen
+              if (windowed) raise(id);
+            }}
           >
             {windowed && (
               <header
@@ -245,7 +254,7 @@ export default function Workspace({ tab, viewMode = "windows", panels }) {
                 title="Ziehen: verschieben · Doppelklick: maximieren"
                 className="flex shrink-0 cursor-move touch-none select-none items-center border-b bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
               >
-                {title}
+                <span className={attention[id] ? "attention-blink" : ""}>{title}</span>
               </header>
             )}
             <div className={`flex min-h-0 flex-1 flex-col ${bodyClass}`}>{body}</div>

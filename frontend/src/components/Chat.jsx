@@ -41,7 +41,7 @@ function Message({ msg }) {
   );
 }
 
-export default function Chat({ sessionId, setSessionId, onActivity }) {
+export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
   // Eingabe bewusst UNcontrolled (ref statt value-Prop): kontrollierte
@@ -108,6 +108,7 @@ export default function Chat({ sessionId, setSessionId, onActivity }) {
       ]);
       refreshSessions();
       onActivity?.(); // Mailboxes / Dateibaum können sich geändert haben
+      onDone?.(); // Antwort fertig → Chat-Reiter blinkt, bis reingeklickt wird
     } catch (e) {
       setError(String(e.message || e));
     } finally {

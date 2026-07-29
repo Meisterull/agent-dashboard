@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import TopBar from "./components/TopBar";
 import QuestionsBanner from "./components/QuestionsBanner";
 import Chat from "./components/Chat";
@@ -85,10 +85,30 @@ export default function App() {
 
   const bump = () => setRefreshKey((k) => k + 1);
 
+  // Aufmerksamkeit pro Panel: Fenster-Titel/Tab blinkt rot, bis der Nutzer
+  // hineinklickt bzw. den Tab wählt. Quellen: Chat-Antwort fertig,
+  // Task-Statuswechsel (AgentsPanel) und neue Rückfragen (QuestionsBanner).
+  const [attention, setAttention] = useState({});
+  const flag = useCallback(
+    (id) => setAttention((a) => (a[id] ? a : { ...a, [id]: true })),
+    [],
+  );
+  const clearAttention = useCallback(
+    (id) =>
+      setAttention((a) => {
+        if (!a[id]) return a;
+        const next = { ...a };
+        delete next[id];
+        return next;
+      }),
+    [],
+  );
+
   // Nach dem Umschalten einmal "resize" feuern, damit xterm das Terminal
   // neu fittet, sobald es wieder sichtbar ist (Listener in Terminal.jsx).
   const switchTab = (t) => {
     setTab(t);
+    clearAttention(t);
     setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   };
 
@@ -112,11 +132,17 @@ export default function App() {
           setViewMode((m) => (m === "windows" ? "tabs" : "windows"))
         }
       />
-      <QuestionsBanner refreshKey={refreshKey} onAnswered={bump} />
+      <QuestionsBanner
+        refreshKey={refreshKey}
+        onAnswered={bump}
+        onNew={() => flag("agenten")}
+      />
 
       <Workspace
         tab={tab}
         viewMode={viewMode}
+        attention={attention}
+        onFocusPanel={clearAttention}
         panels={[
           {
             id: "dateien",
@@ -131,6 +157,7 @@ export default function App() {
                 sessionId={sessionId}
                 setSessionId={setSessionId}
                 onActivity={bump}
+                onDone={() => flag("chat")}
               />
             ),
             bodyClass: "bg-slate-100 dark:bg-slate-950",
@@ -139,7 +166,12 @@ export default function App() {
           {
             id: "agenten",
             title: "Agenten",
-            body: <AgentsPanel refreshKey={refreshKey} />,
+            body: (
+              <AgentsPanel
+                refreshKey={refreshKey}
+                onAttention={() => flag("agenten")}
+              />
+            ),
           },
           ...extWindows.map((w) => ({
             id: `ext:${w.name}`,
@@ -163,7 +195,7 @@ export default function App() {
               tab === id
                 ? "border-sky-500 font-semibold text-sky-600 dark:text-sky-400"
                 : "border-transparent text-slate-500 dark:text-slate-400"
-            }`}
+            } ${attention[id] ? "attention-blink" : ""}`}
           >
             {label}
           </button>
