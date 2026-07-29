@@ -66,25 +66,60 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     // Kopieren: Strg+C mit aktiver Auswahl kopiert in die Zwischenablage
     // (statt SIGINT an die Shell); ohne Auswahl bleibt Strg+C das gewohnte
     // Abbrechen. Deckt auch Strg+Shift+C (sonst DevTools) und Strg+Einfg ab.
+    // Fallback ohne Clipboard-API (Zugriff per IP/HTTP oder per https mit
+    // ungültigem Zertifikat — Chrome sperrt "powerful features" dann). Das
+    // ta.focus() ist zwingend: ohne Fokus kopiert execCommand die Auswahl des
+    // Dokuments, nicht die des Textfelds — und die xterm-Auswahl ist gemalt,
+    // keine DOM-Selection, also landet nichts in der Zwischenablage.
+    const copyFallback = (text) => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* mehr als Fallback haben wir nicht */
+      }
+      ta.remove();
+      term.focus(); // Tastatur zurück ans Terminal
+    };
+
+    // writeText kann trotz vorhandener API scheitern (Fokus, Berechtigung,
+    // unsicherer Kontext) — die Ablehnung muss in den Fallback führen,
+    // sonst schluckt der catch den Fehler und es wird gar nichts kopiert.
+    const copyText = (text) => {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(() => copyFallback(text));
+      } else {
+        copyFallback(text);
+      }
+    };
+
     const copySelection = () => {
       const text = term.getSelection();
       if (!text) return false;
-      if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
-      } else {
-        // Zugriff per HTTP/IP ohne TLS: keine Clipboard-API → execCommand
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        ta.remove();
-      }
+      copyText(text);
       term.clearSelection();
       return true;
     };
+
+    // Kopieren-bei-Auswahl (PuTTY-Stil): beim Loslassen der Maus landet die
+    // Auswahl sofort in der Zwischenablage. Nötig für TUI-Apps wie Claude
+    // Code: deren Alt-Screen-Wechsel löscht die xterm-Auswahl, und Ink-
+    // Redraws schieben den Inhalt unter den Koordinaten weg — bis zum Strg+C
+    // überlebt die Auswahl dann oft nicht. Der Schnappschuss beim Loslassen
+    // umgeht dieses Zeitfenster komplett. (Erzwingt die App Mouse-Tracking,
+    // entsteht die Auswahl per Shift+Ziehen — auch die landet hier.)
+    const handleMouseUp = () => {
+      const text = term.getSelection();
+      if (text) copyText(text);
+    };
+    const termEl = ref.current;
+    termEl.addEventListener("mouseup", handleMouseUp);
     term.attachCustomKeyEventHandler((e) => {
       if (
         e.type === "keydown" &&
@@ -184,6 +219,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       gone = true;
       clearTimeout(retryTimer);
       fitRef.current = null;
+      termEl.removeEventListener("mouseup", handleMouseUp);
       window.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVisible);
       try {

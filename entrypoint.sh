@@ -30,10 +30,14 @@ else
     log "Kein Zertifikat in $SSL_DIR — erstelle self-signed Platzhalter in $RUNTIME_SSL_DIR."
     mkdir -p "$RUNTIME_SSL_DIR"
     if [ ! -f "$RUNTIME_SSL_DIR/fullchain.pem" ]; then
+        # subjectAltName, sonst wirft Chrome ERR_CERT_COMMON_NAME_INVALID und
+        # sperrt auf der Seite "powerful features" wie die Clipboard-API.
+        # Bleibt self-signed mit Warnung — der saubere Weg ist make_cert.sh.
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$RUNTIME_SSL_DIR/privkey.pem" \
             -out "$RUNTIME_SSL_DIR/fullchain.pem" \
-            -subj "/CN=${DOMAIN:-agent-dashboard.local}" 2>/dev/null
+            -subj "/CN=${DOMAIN:-agent-dashboard.local}" \
+            -addext "subjectAltName=DNS:${DOMAIN:-agent-dashboard.local},IP:127.0.0.1" 2>/dev/null
     fi
     EFFECTIVE_SSL_DIR="$RUNTIME_SSL_DIR"
 fi
