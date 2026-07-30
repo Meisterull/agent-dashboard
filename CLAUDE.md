@@ -38,8 +38,9 @@ backend/
     config.py              Settings (settings.json) + Verbindungen (agents.yaml)
     integrations.py        config-getriebene HTTP-Tools (integrations.yaml), generisch
     ssh_bridge.py          WebSocket ↔ asyncssh (Terminal); Sessions überleben
-                           das Fenster-Schließen (stabile sid "main" pro
-                           Verbindung, SSH_GRACE_SECONDS Default 24 h, 0 = ∞;
+                           das Fenster-Schließen (stabile sids "main", "2", … —
+                           mehrere Terminals pro Verbindung möglich;
+                           SSH_GRACE_SECONDS Default 24 h, 0 = ∞;
                            GET /api/ssh/sessions fürs UI-Badge/Auto-Reopen)
     mcp_tunnel.py          Reverse-SSH-Tunnel: MCP-Server auf die Agenten-PCs
                            (supervisord `mcp-tunnel`, Gate MCP_TUNNEL_ENABLED)

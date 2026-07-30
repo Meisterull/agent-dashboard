@@ -157,7 +157,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `components/FileTree.jsx` | lazy-ladender Dateibaum über `/api/files` |
 | `components/FileViewer.jsx` | Datei-Inhalt im Modal |
 | `components/AgentsPanel.jsx` | MCP-Monitor: Inbox/Outbox je Agent mit Status-Badges |
-| `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
+| `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; pro Verbindung mehrere Terminals (⧉-Knopf, z. B. Claude Code + eigene Shell nebeneinander); Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
 | `components/Settings.jsx` | Einstellungen-Modal (Provider/Sprache/Telegram) |
 | `components/Modal.jsx` | generischer Modal-Container |
 

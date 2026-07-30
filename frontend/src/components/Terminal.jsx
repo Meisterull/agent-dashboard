@@ -5,13 +5,14 @@ import "@xterm/xterm/css/xterm.css";
 import KeyBar from "./KeyBar";
 import { encodeKey, encodeChar } from "../keys";
 
-// Ein SSH-Terminal pro Verbindung. Spricht /ws/ssh/<name>?sid=… — die sid
-// identifiziert eine serverseitig persistente Session: bricht der WebSocket
-// ab (Handy gesperrt, Netzwechsel) oder wird das Fenster geschlossen, läuft
-// die Shell serverseitig weiter; beim nächsten Öffnen wird der gepufferte
-// Output nachgespielt. Die sid ist bewusst eine Konstante pro Verbindung
-// (nicht pro Browser): so hängt sich auch ein anderer PC/Browser an dieselbe
-// Session — der bisherige Client wird per Close-Code 4000 übernommen.
+// Ein SSH-Terminal. Spricht /ws/ssh/<name>?sid=… — die sid identifiziert
+// eine serverseitig persistente Session: bricht der WebSocket ab (Handy
+// gesperrt, Netzwechsel) oder wird das Fenster geschlossen, läuft die Shell
+// serverseitig weiter; beim nächsten Öffnen wird der gepufferte Output
+// nachgespielt. Pro Verbindung sind mehrere Terminals möglich; die sids sind
+// bewusst stabil ("main", "2", "3", … — nicht pro Browser vergeben): so hängt
+// sich auch ein anderer PC/Browser an dieselbe Session — der bisherige
+// Client wird per Close-Code 4000 übernommen.
 // Explizit beendet wird die Session vom TerminalPanel (DELETE-Endpoint);
 // endet die Shell (exit/kill), meldet das Terminal das über onEnded.
 //
