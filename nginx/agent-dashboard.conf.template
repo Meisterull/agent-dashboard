@@ -47,6 +47,28 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
+    # index.html immer revalidieren (ETag → 304): ohne Cache-Control cachen
+    # Browser heuristisch und referenzieren nach einem Rebuild ein Bundle,
+    # das es nicht mehr gibt → weiße Seite. Die gehashten Assets darunter
+    # dürfen dafür dauerhaft gecacht werden.
+    # add_header in einer Location unterdrückt die geerbten server-Header —
+    # nosniff/X-Frame-Options hier deshalb wiederholen.
+    location = /index.html {
+        add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options DENY always;
+    }
+
+    location /assets/ {
+        # Kein SPA-Fallback für Assets: ein fehlendes Bundle soll ein
+        # ehrliches 404 sein, kein HTML mit Status 200 (das nosniff dann
+        # stumm blockt).
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options DENY always;
+    }
+
     # REST-API
     location /api/ {
         proxy_pass http://127.0.0.1:5000;
