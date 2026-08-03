@@ -136,6 +136,10 @@ export async function uploadFiles(source, path, fileList) {
   }
   return res.json();
 }
+export const getSshBuffer = (name, sid) =>
+  jget(
+    `/api/ssh/${encodeURIComponent(name)}/buffer?sid=${encodeURIComponent(sid)}`,
+  );
 export const getIntegrations = () => jget("/api/integrations");
 export const getSettings = () => jget("/api/settings");
 export const getInbox = (name, kind) =>

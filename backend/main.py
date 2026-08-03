@@ -27,6 +27,7 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   PUT  /api/settings               Settings speichern
   GET  /api/ssh/sessions           laufende Terminal-Sessions (Badge/Auto-Reopen)
   DEL  /api/ssh/{name}/session     Terminal-Session explizit beenden (?sid=…)
+  GET  /api/ssh/{name}/buffer      Klartext-Replay-Puffer einer Session (?sid=…)
   WS   /ws/ssh/{name}              SSH-Terminal-Bridge (xterm.js)
 
 Start (lokal):  cd backend && uvicorn main:app --host 127.0.0.1 --port 5000
@@ -70,7 +71,7 @@ from app.remote_files import RemoteFilesError
 from app.integrations import list_integrations
 from app.mailbox import Mailbox, atomic_write_json, normalize_envelope
 from app.orchestrator_core import mcp_session, run_turn
-from app.ssh_bridge import bridge as ssh_bridge, kill_session, list_sessions
+from app.ssh_bridge import bridge as ssh_bridge, get_buffer, kill_session, list_sessions
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/workspace"))
 MAILBOXES = WORKSPACE / "mailboxes"
@@ -638,6 +639,20 @@ async def ssh_sessions() -> dict:
 async def ssh_session_kill(name: str, sid: str) -> dict:
     """Persistente Terminal-Session explizit beenden (Beenden-Button im UI)."""
     return {"killed": await kill_session(name, sid)}
+
+
+@app.get("/api/ssh/{name}/buffer")
+async def ssh_session_buffer(name: str, sid: str) -> dict:
+    """Klartext-Verlauf einer laufenden Terminal-Session (Kopier-Modus).
+
+    Liefert den serverseitigen Replay-Puffer ANSI-bereinigt — im Gegensatz
+    zum xterm-Puffer enthält er auch, was eine Alt-Screen-TUI (Claude Code)
+    nur neu gezeichnet statt gescrollt hat.
+    """
+    text = get_buffer(name, sid)
+    if text is None:
+        raise HTTPException(404, f"Keine laufende Terminal-Session '{sid}' für '{name}'.")
+    return {"name": name, "sid": sid, "text": text}
 
 
 @app.websocket("/ws/ssh/{name}")

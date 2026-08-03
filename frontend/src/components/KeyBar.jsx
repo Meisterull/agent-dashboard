@@ -36,7 +36,7 @@ const FIXED = {
   ctrlc: { key: "c", mods: { ctrl: true } },
 };
 
-export default function KeyBar({ mods, onToggleMod, onKey, onCopyMode }) {
+export default function KeyBar({ mods, onToggleMod, onKey, onCopyMode, copyActive = false }) {
   const noFocusSteal = (e) => e.preventDefault();
 
   return (
@@ -46,8 +46,12 @@ export default function KeyBar({ mods, onToggleMod, onKey, onCopyMode }) {
           <button
             onPointerDown={noFocusSteal}
             onClick={onCopyMode}
-            title="Kopier-Modus: Terminal-Inhalt als frei markierbarer Text — funktioniert auch, wenn eine TUI (z.B. Claude Code) die Maus abfängt"
-            className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs font-semibold text-sky-300"
+            title="Kopier-Modus ein/aus: Terminal-Inhalt als frei markierbarer Text — funktioniert auch, wenn eine TUI (z.B. Claude Code) die Maus abfängt"
+            // Aktiv-Zustand wie die Sticky-Modifikatoren: sichtbar, dass ein
+            // Modus läuft — und derselbe Knopf schaltet ihn wieder aus.
+            className={`shrink-0 rounded px-2.5 py-1.5 text-xs font-semibold ${
+              copyActive ? "bg-sky-500 text-white" : "bg-slate-700 text-sky-300"
+            }`}
           >
             ⎘
           </button>

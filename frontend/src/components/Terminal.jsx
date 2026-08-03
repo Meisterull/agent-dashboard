@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import KeyBar from "./KeyBar";
 import { encodeKey, encodeChar } from "../keys";
+import { getSshBuffer } from "../api";
 
 // Ein SSH-Terminal. Spricht /ws/ssh/<name>?sid=… — die sid identifiziert
 // eine serverseitig persistente Session: bricht der WebSocket ab (Handy
@@ -21,12 +22,14 @@ import { encodeKey, encodeChar } from "../keys";
 // ob aus der Leiste oder von der Bildschirmtastatur — und schaltet sich danach
 // selbst ab.
 //
-// Kopieren (Issue #4 + #6): Auswahl landet beim Loslassen sofort in der
-// Zwischenablage (mouseup auf document, gegated über mousedown im Terminal);
+// Kopieren (Issue #4 + #6 + #8 + #10): Auswahl landet beim Loslassen sofort in
+// der Zwischenablage (mouseup auf document, gegated über mousedown im Terminal);
 // Strg+C mit Auswahl kopiert statt SIGINT. Fängt eine TUI die Maus ab
 // (Claude Code, ?1000h), zeigt ein Badge den Ausweg (Shift+Ziehen, Mac: ⌥)
-// und der ⎘-Kopier-Modus in der KeyBar bietet den Puffer als frei
-// markierbaren Text an — der einzige Weg auf Touch-Geräten.
+// und der ⎘-Kopier-Modus in der KeyBar (Umschalter mit Aktiv-Zustand) bietet
+// den Puffer als frei markierbaren Text an — der einzige Weg auf Touch-Geräten.
+// Im Alt-Screen kommt buffer.normal mit dazu; den vollen Sitzungsverlauf
+// liefert der serverseitige Replay-Puffer (GET /api/ssh/{name}/buffer).
 
 export const DEFAULT_SID = "main";
 
@@ -291,10 +294,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   // Schnappschuss beim Öffnen; umbrochene Zeilen werden zu logischen Zeilen
   // zusammengesetzt (nur echte Zeilenenden werden getrimmt, sonst gingen
   // Leerzeichen an Umbruchgrenzen verloren).
-  const openCopyMode = () => {
-    const term = termRef.current;
-    if (!term) return;
-    const buf = term.buffer.active;
+  const bufferToText = (buf) => {
     const parts = [];
     for (let i = 0; i < buf.length; i++) {
       const line = buf.getLine(i);
@@ -304,8 +304,42 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       if (line.isWrapped && parts.length) parts[parts.length - 1] += s;
       else parts.push(s);
     }
+    return parts.join("\n").replace(/\s+$/, "");
+  };
+
+  const openCopyMode = () => {
+    const term = termRef.current;
+    if (!term) return;
+    // Im Alt-Screen (TUI wie Claude Code) hat der aktive Puffer KEINEN
+    // Scrollback — was vor dem TUI-Start im Terminal stand, liegt aber noch
+    // in buffer.normal und wird vorangestellt (Issue #8). Den Verlauf
+    // innerhalb der TUI-Sitzung liefert nur der Server-Puffer (Knopf
+    // "Voller Verlauf"), das Overlay sagt das ehrlich dazu.
+    const alt = term.buffer.active.type === "alternate";
+    const text = alt
+      ? [bufferToText(term.buffer.normal), bufferToText(term.buffer.active)]
+          .filter(Boolean)
+          .join("\n")
+      : bufferToText(term.buffer.active);
     setCopied(false);
-    setCopyView({ text: parts.join("\n").replace(/\s+$/, "") });
+    setCopyView({ text, alt, full: false });
+  };
+
+  // Serverseitigen Replay-Puffer laden — der echte Sitzungsverlauf, vom
+  // Alt-Screen unberührt (ANSI-bereinigt vom Backend).
+  const loadFullBuffer = async () => {
+    try {
+      const data = await getSshBuffer(name, sid);
+      setCopied(false);
+      setCopyView((v) => v && { ...v, text: data.text, full: true });
+    } catch {
+      /* Session weg oder Netzfehler — der Schnappschuss bleibt stehen */
+    }
+  };
+
+  const refreshCopyMode = () => {
+    if (copyView?.full) loadFullBuffer();
+    else openCopyMode();
   };
 
   const closeCopyMode = () => {
@@ -332,11 +366,29 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         )}
         {copyView && (
           <div className="absolute inset-0 z-20 flex flex-col bg-slate-900/95">
-            <div className="flex shrink-0 items-center gap-2 border-b border-slate-700 px-2 py-1">
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-700 px-2 py-1">
               <span className="text-xs font-semibold text-slate-300">
                 Kopier-Modus — Text frei markierbar
               </span>
+              {copyView.full ? (
+                <span className="text-[10px] text-slate-400">
+                  voller Sitzungsverlauf (Server)
+                </span>
+              ) : copyView.alt ? (
+                <span className="text-[10px] text-amber-400">
+                  TUI aktiv — nur Bildschirm + Verlauf davor; alles: „Voller
+                  Verlauf“
+                </span>
+              ) : null}
               <span className="flex-1" />
+              {!copyView.full && (
+                <button onClick={loadFullBuffer} className={overlayBtn}>
+                  Voller Verlauf
+                </button>
+              )}
+              <button onClick={refreshCopyMode} className={overlayBtn}>
+                Aktualisieren
+              </button>
               <button onClick={copyAll} className={overlayBtn}>
                 {copied ? "✓ kopiert" : "Alles kopieren"}
               </button>
@@ -356,7 +408,16 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           </div>
         )}
       </div>
-      <KeyBar mods={mods} onToggleMod={toggleMod} onKey={handleKey} onCopyMode={openCopyMode} />
+      <KeyBar
+        mods={mods}
+        onToggleMod={toggleMod}
+        onKey={handleKey}
+        // ⎘ ist ein Umschalter (Issue #10): im Kopier-Modus schließt er ihn —
+        // gerade auf dem Handy ist er derselbe Knopf an derselben Stelle,
+        // statt des weit entfernten "Schließen" am oberen Overlay-Rand.
+        copyActive={!!copyView}
+        onCopyMode={() => (copyView ? closeCopyMode() : openCopyMode())}
+      />
     </div>
   );
 }

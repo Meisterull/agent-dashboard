@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from collections import deque
@@ -53,6 +54,43 @@ class _Session:
 
 
 _sessions: dict[str, _Session] = {}
+
+
+# ANSI-/Steuersequenzen für die Klartext-Ansicht des Replay-Puffers entfernen
+# (GET /api/ssh/{name}/buffer, "Voller Verlauf" im Kopier-Modus). Bewusst kein
+# Terminal-Emulator: CSI/OSC/DCS & Co. werden verworfen; \r-Überschreibungen
+# löst strip_ansi zeilenweise auf (letzter Stand gewinnt — Spinner-/Progress-
+# Redraws erscheinen einmal statt hundertfach).
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"            # CSI (Cursor, Farben, Modi)
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"  # OSC (Fenstertitel u.ä.)
+    r"|\x1b[PX^_][^\x1b]*(?:\x1b\\)?"       # DCS/SOS/PM/APC
+    r"|\x1b[()*+][0-9A-Za-z]"               # Zeichensatz-Auswahl (ESC ( B …)
+    r"|\x1b."                               # sonstige ESC-Sequenzen
+    r"|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"    # Steuerzeichen außer \t \n \r
+)
+
+
+def strip_ansi(raw: str) -> str:
+    text = _ANSI_RE.sub("", raw)
+    lines = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        lines.append(line.rsplit("\r", 1)[-1] if "\r" in line else line)
+    return "\n".join(lines)
+
+
+def get_buffer(agent_name: str, sid: str) -> str | None:
+    """Klartext des Replay-Puffers einer laufenden Session.
+
+    Der Puffer hält den echten Stream (BUFFER_LIMIT) — auch das, was eine
+    Alt-Screen-TUI (Claude Code) längst vom Bildschirm gewischt hat und was
+    im xterm-Puffer deshalb nicht mehr existiert. None, wenn die Session
+    nicht (mehr) läuft.
+    """
+    sess = _sessions.get(f"{agent_name}:{sid}")
+    if not sess or sess.closed:
+        return None
+    return strip_ansi("".join(sess.buffer))
 
 
 def _buffer_append(sess: _Session, data: str) -> None:
