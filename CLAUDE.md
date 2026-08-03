@@ -29,7 +29,9 @@ backend/
     orchestrator_core.py   gemeinsamer Kern: MCP-Anbindung + run_turn (provider-neutral)
     llm.py                 Provider-Schicht: ollama (Standardlib-HTTP) + anthropic (SDK lazy)
     mailbox.py             atomare Mailbox v2: Envelopes (task/message/question/answer),
-                           post/read_inbox/claim_tasks(nur task)/normalize_envelope
+                           post/read_inbox/claim_tasks+claim_task(nur task)/
+                           write_response(räumt inbox UND .processing)/
+                           mark_read(→ inbox/.archive)/normalize_envelope
     files.py               pfad-sichere Datei-Ops (Dateibaum, Editor, Up-/Download)
     remote_files.py        SFTP-Datei-Ops auf den Agenten-PCs (/api/remote/…)
     chat_store.py          SQLite-Persistenz der Chat-Sessions (/workspace/chat.db)
@@ -96,9 +98,14 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   key_file werden übersprungen; agents.yaml wird alle 60 s neu eingelesen.
   Aufgaben-Transport an die Watcher bleibt die Datei-Mailbox.
 - **Agent-↔-Agent (Mailbox v2):** Envelopes haben `kind` (task/message/question/answer)
-  + `sender`/`to`. MCP-Tools: `send_task`/`send_message`/`ask`/`answer`/`inbox`. Der
+  + `sender`/`to`. MCP-Tools: `send_task`/`send_message`/`ask`/`answer`/`inbox`, dazu
+  der Task-Lebenszyklus für MCP-getriebene Agenten: `claim_task` (→ .processing,
+  im Panel "running") und `complete_task` (Response in die Outbox + Task abräumen —
+  ohne ihn bliebe jeder Task ewig pending, Issue #7) sowie `mark_read` (Envelope →
+  inbox/.archive, sonst liefert `inbox()` denselben Stapel immer wieder). Der
   Watcher führt **nur** `kind=task` aus. `needs_confirm`-Rückfragen erscheinen im
-  Dashboard (`/api/questions`, Banner) und werden dort beantwortet.
+  Dashboard (`/api/questions`, Banner) und werden dort beantwortet; hängengebliebene
+  Tasks schließt `POST /api/tasks/{agent}/{task_id}/close` (✕ im Agenten-Panel).
 - **Generisch, nicht workflow-spezifisch:** Integrationen kommen aus `integrations.yaml`
   (`call_integration`-Tool); jedes Zielsystem ist nur eine Konfig-Zeile. Beim Erweitern
   nichts Workflow-Spezifisches im Code hartverdrahten.

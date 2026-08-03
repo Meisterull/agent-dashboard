@@ -8,7 +8,8 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   POST /api/auth/logout            Session-Cookie löschen
        alles Weitere unter /api    nur mit gültigem Session-Cookie (auth.py)
   GET  /api/agents                 Agenten = Mailbox-Ordner
-  GET  /api/agents/{name}/tasks    Inbox + Outbox eines Agenten
+  GET  /api/agents/{name}/tasks    Inbox (+ .processing als running) + Outbox
+  POST /api/tasks/{agent}/{id}/close  hängengebliebenen Task manuell abschließen
   POST /api/chat                   Eine Chat-Runde (Orchestrator + Tool-Calls)
   GET  /api/chat/sessions          gespeicherte Sessions (SQLite, chat_store)
   GET  /api/chat/{id}              History einer Session (Anzeige-Format)
@@ -209,7 +210,13 @@ async def agent_tasks(name: str) -> dict:
     if not base.exists():
         raise HTTPException(404, f"Agent '{name}' unbekannt.")
     inbox = [e for e in _read_jsons(base / "inbox") if e.get("kind", "task") == "task"]
-    return {"agent": name, "inbox": inbox, "outbox": _read_jsons(base / "outbox")}
+    # Beanspruchte Tasks (.processing/) sichtbar machen — als "running".
+    claimed = [
+        {**e, "status": "running"}
+        for e in _read_jsons(base / "inbox" / ".processing")
+        if e.get("kind", "task") == "task"
+    ]
+    return {"agent": name, "inbox": inbox + claimed, "outbox": _read_jsons(base / "outbox")}
 
 
 @app.get("/api/agents/{name}/inbox")
@@ -260,6 +267,36 @@ async def answer_question(agent: str, qid: str, body: AnswerIn) -> dict:
     question["status"] = "done"
     atomic_write_json(qpath, question)
     return {"answered": qid, "to": asker}
+
+
+class CloseTaskIn(BaseModel):
+    result: str = ""
+    status: str = "done"
+
+
+@app.post("/api/tasks/{agent}/{task_id}/close")
+async def close_task(agent: str, task_id: str, body: CloseTaskIn) -> dict:
+    """Hängengebliebenen Task von Hand abschließen (Knopf im Agenten-Panel).
+
+    Für Tasks, deren Agent nicht (mehr) antwortet: schreibt eine Response in
+    die Outbox und räumt den Task aus inbox/ bzw. .processing/ ab.
+    """
+    if body.status not in ("done", "error"):
+        raise HTTPException(400, 'status muss "done" oder "error" sein.')
+    base = MAILBOXES / agent
+    if not base.exists():
+        raise HTTPException(404, f"Agent '{agent}' unbekannt.")
+    open_task = [base / "inbox" / f"{task_id}.json",
+                 base / "inbox" / ".processing" / f"{task_id}.json"]
+    if not any(p.exists() for p in open_task):
+        raise HTTPException(404, f"Task '{task_id}' liegt nicht (mehr) bei '{agent}'.")
+    Mailbox(MAILBOXES, agent).write_response(
+        task_id,
+        body.result or "[von Hand im Dashboard geschlossen, ohne Ergebnis]",
+        body.status,
+        log="closed via dashboard",
+    )
+    return {"closed": task_id, "agent": agent, "status": body.status}
 
 
 # --- Chat ------------------------------------------------------------------

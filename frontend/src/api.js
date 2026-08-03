@@ -35,6 +35,12 @@ export async function login(password) {
 export const getAgents = () => jget("/api/agents");
 export const getTasks = (name) =>
   jget(`/api/agents/${encodeURIComponent(name)}/tasks`);
+export const closeTask = (agent, taskId, status = "done", result = "") =>
+  jsend(
+    `/api/tasks/${encodeURIComponent(agent)}/${encodeURIComponent(taskId)}/close`,
+    "POST",
+    { status, result },
+  );
 export const getFiles = (path = "") =>
   jget(`/api/files?path=${encodeURIComponent(path)}`);
 export const getFileContent = (path) =>

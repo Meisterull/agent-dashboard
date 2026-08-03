@@ -11,6 +11,9 @@ Protokoll:
   entweder die alte oder die vollständige neue Datei, nie etwas dazwischen.
 - Verarbeiten: gelesene Tasks werden nach inbox/.processing/ verschoben,
   bevor gearbeitet wird -> kein Doppel-Pickup bei mehreren Watcher-Ticks.
+- Verbrauch: erledigte Tasks räumt write_response ab (inbox/ UND .processing/),
+  gelesene message/answer wandern per mark_read nach inbox/.archive/ ->
+  die Inbox enthält nur Offenes, nichts wird doppelt ausgeliefert.
 """
 from __future__ import annotations
 
@@ -110,8 +113,9 @@ class Mailbox:
         self.base = Path(root) / agent
         self.inbox = self.base / "inbox"
         self.processing = self.inbox / ".processing"
+        self.archive = self.inbox / ".archive"
         self.outbox = self.base / "outbox"
-        for d in (self.inbox, self.processing, self.outbox):
+        for d in (self.inbox, self.processing, self.archive, self.outbox):
             d.mkdir(parents=True, exist_ok=True)
 
     # --- Orchestrator-Seite ------------------------------------------------
@@ -153,6 +157,29 @@ class Mailbox:
                 out.append(env)
         return out
 
+    def mark_read(self, env_id: str) -> bool:
+        """Gelesenen Envelope aus der Inbox ins Archiv verschieben.
+
+        Damit message/answer (und erledigte questions) nicht bei jedem
+        Inbox-Lesen erneut auftauchen. Offene Tasks sind tabu — die schließt
+        write_response (sonst verschwände Arbeit ohne Rückmeldung).
+        """
+        src = self.inbox / f"{env_id}.json"
+        try:
+            env = json.loads(src.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return False
+        if env.get("kind", "task") == "task" and env.get("status") not in ("done", "error"):
+            raise ValueError(
+                f"{env_id} ist ein offener Task — mit complete_task/write_response "
+                f"abschließen statt archivieren"
+            )
+        try:
+            os.replace(src, self.archive / f"{env_id}.json")
+        except FileNotFoundError:
+            return False
+        return True
+
     def read_responses(self) -> list[dict[str, Any]]:
         out = []
         for p in sorted(self.outbox.glob("*-response.json")):
@@ -184,6 +211,30 @@ class Mailbox:
                 continue
             yield claimed.name, env
 
+    def claim_task(self, task_id: str) -> Optional[dict[str, Any]]:
+        """EINEN bestimmten Task beanspruchen (inbox → .processing).
+
+        Für interaktive Agenten (MCP), die einen Task gezielt annehmen —
+        macht "in Arbeit" sichtbar und verhindert Doppel-Pickup durch einen
+        Watcher. Idempotent: ein schon beanspruchter Task wird erneut
+        geliefert. None, wenn der Task nirgends (mehr) liegt.
+        """
+        src = self.inbox / f"{task_id}.json"
+        dst = self.processing / f"{task_id}.json"
+        try:
+            env = json.loads(src.read_text(encoding="utf-8"))
+            if env.get("kind", "task") != "task":
+                raise ValueError(f"{task_id} ist kein Task (kind={env.get('kind')!r})")
+            os.replace(src, dst)  # atomar -> exklusiver Anspruch
+            return env
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        # Nicht (mehr) in der Inbox — evtl. schon beansprucht.
+        try:
+            return json.loads(dst.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
     def write_response(
         self, task_id: str, result: str, status: str = "done", log: str = ""
     ) -> Path:
@@ -201,8 +252,9 @@ class Mailbox:
                 "responded_at": _now(),
             },
         )
-        # Verarbeiteten Task aus .processing/ entfernen.
-        done = self.processing / f"{task_id}.json"
-        if done.exists():
-            done.unlink()
+        # Erledigten Task abräumen — aus BEIDEN möglichen Ablagen: .processing/
+        # (beansprucht) UND inbox/ (nie beansprucht, z.B. interaktiver Agent
+        # ohne claim_task). Sonst würde der Task trotz Antwort weiter geliefert.
+        for stale in (self.processing / f"{task_id}.json", self.inbox / f"{task_id}.json"):
+            stale.unlink(missing_ok=True)
         return target

@@ -7,7 +7,10 @@ Designentscheidung (siehe PROJECT.md → MCP-Server):
 
 Tool-Gruppen:
   - Delegation:    list_agents, send_task (create_task als Alias), read_responses
-  - Agent-↔-Agent: send_message, ask, answer, inbox  (killt das Fenster-Wechseln)
+  - Task-Lebenszyklus (Agent-Seite): claim_task, complete_task  (Gegenstück zu
+      send_task — ohne complete_task bleibt jeder MCP-getriebene Task pending)
+  - Agent-↔-Agent: send_message, ask, answer, inbox, mark_read  (killt das
+      Fenster-Wechseln; mark_read archiviert Gelesenes)
   - Projektdateien: write_project_file, read_project_file
   - Integrationen:  list_integrations, call_integration  (config-getrieben, generisch)
 
@@ -90,6 +93,36 @@ def read_responses(agent: str) -> list[dict]:
     return Mailbox(MAILBOX_ROOT, agent).read_responses()
 
 
+@mcp.tool()
+def claim_task(agent: str, task_id: str) -> dict:
+    """Einen Task aus der eigenen Inbox annehmen, BEVOR du daran arbeitest.
+
+    Markiert ihn als "in Arbeit" (inbox → .processing) — im Dashboard sichtbar,
+    und kein Watcher greift ihn doppelt. `agent` = du selbst (der Bearbeiter).
+    Danach: Aufgabe erledigen und mit complete_task abschließen.
+    """
+    env = Mailbox(MAILBOX_ROOT, agent).claim_task(task_id)
+    if env is None:
+        return {"error": f"Task {task_id} liegt nicht (mehr) bei {agent}."}
+    return {"claimed": task_id, "instruction": env.get("instruction", ""), "status": "running"}
+
+
+@mcp.tool()
+def complete_task(agent: str, task_id: str, result: str, status: str = "done", log: str = "") -> dict:
+    """Einen bearbeiteten Task abschließen — das Gegenstück zu send_task.
+
+    IMMER aufrufen, wenn du einen Task aus deiner Inbox fertig bearbeitet hast:
+    schreibt `result` als Rückmeldung in deine Outbox (der Auftraggeber sieht
+    sie über read_responses) und räumt den Task aus deiner Inbox. Ohne diesen
+    Aufruf bleibt der Task für immer pending. `agent` = du selbst (der
+    Bearbeiter), status: "done" bei Erfolg, "error" bei Fehlschlag.
+    """
+    if status not in ("done", "error"):
+        return {"error": 'status muss "done" oder "error" sein'}
+    Mailbox(MAILBOX_ROOT, agent).write_response(task_id, result, status, log)
+    return {"task_id": task_id, "agent": agent, "status": status}
+
+
 # --- Agent-↔-Agent-Kommunikation ------------------------------------------
 
 @mcp.tool()
@@ -132,9 +165,29 @@ def inbox(agent: str, kind: str | None = None) -> list[dict]:
     """Eingehende Envelopes eines Agenten lesen (Tasks + Nachrichten + Rückfragen).
 
     Ein Koordinator nutzt das, um zu sehen, was Worker ihm geschickt haben —
-    statt dass der Mensch zwischen Fenstern hin- und herkopiert.
+    statt dass der Mensch zwischen Fenstern hin- und herkopiert. Die Inbox
+    enthält nur Unerledigtes: Verarbeitetes danach mit mark_read archivieren
+    (Tasks stattdessen mit claim_task/complete_task abschließen), sonst kommt
+    derselbe Stapel bei jedem Aufruf wieder.
     """
     return [normalize_envelope(e) for e in Mailbox(MAILBOX_ROOT, agent).read_inbox(kind)]
+
+
+@mcp.tool()
+def mark_read(agent: str, envelope_id: str) -> dict:
+    """Einen verarbeiteten Envelope (message/answer/erledigte question) archivieren.
+
+    Verschiebt ihn aus der Inbox nach inbox/.archive/ — er taucht bei künftigen
+    inbox()-Aufrufen nicht mehr auf. Offene Tasks lassen sich so NICHT
+    wegräumen (dafür complete_task). `agent` = Besitzer der Inbox.
+    """
+    try:
+        moved = Mailbox(MAILBOX_ROOT, agent).mark_read(envelope_id)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if not moved:
+        return {"error": f"Envelope {envelope_id} liegt nicht in der Inbox von {agent}."}
+    return {"archived": envelope_id}
 
 
 # --- Projektdateien --------------------------------------------------------

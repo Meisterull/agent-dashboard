@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getAgents, getTasks } from "../api";
+import { closeTask, getAgents, getTasks } from "../api";
 
 const STATUS_COLORS = {
   pending: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
@@ -85,6 +85,17 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
 
   const tasks = selected ? tasksByAgent[selected] : null;
 
+  // Hängengebliebenen Task von Hand abschließen (Agent antwortet nicht mehr).
+  const forceClose = async (taskId) => {
+    if (!window.confirm(`Task ${taskId} ohne Ergebnis schließen?`)) return;
+    try {
+      await closeTask(selected, taskId);
+      setLocalKey((k) => k + 1);
+    } catch (e) {
+      alert(`Schließen fehlgeschlagen: ${e.message}`);
+    }
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center border-b bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
@@ -127,9 +138,16 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
               ) : (
                 tasks.inbox.map((t) => (
                   <div key={t.task_id} className="mb-1 rounded bg-slate-50 p-1.5 dark:bg-slate-800">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono">{t.task_id}</span>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="flex-1 truncate font-mono">{t.task_id}</span>
                       <StatusBadge status={t.status} />
+                      <button
+                        onClick={() => forceClose(t.task_id)}
+                        title="Task manuell schließen (ohne Ergebnis)"
+                        className="rounded px-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+                      >
+                        ✕
+                      </button>
                     </div>
                     <div className="truncate text-slate-500 dark:text-slate-400">{t.instruction}</div>
                   </div>

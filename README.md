@@ -134,7 +134,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `orchestrator.py` | CLI-Variante des Orchestrators (Chat im Terminal) |
 | `app/orchestrator_core.py` | Gemeinsamer Kern: `mcp_session()` + `run_turn()`. CLI **und** API nutzen ihn |
 | `app/llm.py` | Provider-neutrale LLM-Schicht (ein Loop, Backends **ollama** + **anthropic**) |
-| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer), `post`, `read_inbox`, `claim_tasks` (nur Tasks), `normalize_envelope` |
+| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer), `post`, `read_inbox`, `claim_tasks`/`claim_task` (nur Tasks), `write_response` (räumt inbox **und** .processing), `mark_read` (Archiv), `normalize_envelope` |
 | `app/files.py` | Pfad-sichere Datei-Ops (`list_dir`, `read_file`) für den Dateibaum |
 | `app/config.py` | Settings (`settings.json`) + Verbindungen (`agents.yaml`, ohne Credentials) |
 | `app/integrations.py` | Config-getriebene HTTP-Integrationen (`integrations.yaml`, generisch) |
@@ -142,7 +142,8 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 
 **MCP-Tools** (im `mcp_server.py`, pfad-gehärtet gegen `WORKSPACE_DIR`):
 - Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?)` (`create_task` als Alias) · `read_responses(agent)`
-- Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` · `inbox(agent, kind?)`
+- Task-Lebenszyklus (Agent-Seite): `claim_task(agent, task_id)` (→ "in Arbeit") · `complete_task(agent, task_id, result, status?, log?)` — das Gegenstück zu `send_task`: schreibt die Rückmeldung in die Outbox und räumt den Task ab
+- Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` · `inbox(agent, kind?)` · `mark_read(agent, envelope_id)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder)
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
 - Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)`
 
@@ -177,8 +178,9 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 |---------|------|--------------|
 | `GET` | `/api/health` | Liveness (Docker-Healthcheck), unabhängig von MCP/Anthropic |
 | `GET` | `/api/agents` | Liste der Agenten (= Mailbox-Ordner) |
-| `GET` | `/api/agents/{name}/tasks` | Tasks: `{inbox, outbox}` eines Agenten |
+| `GET` | `/api/agents/{name}/tasks` | Tasks: `{inbox, outbox}` eines Agenten (beanspruchte als `running`) |
 | `GET` | `/api/agents/{name}/inbox?kind=` | Alle Eingänge (Tasks + Nachrichten + Rückfragen), normalisiert |
+| `POST` | `/api/tasks/{agent}/{task_id}/close` | Hängengebliebenen Task von Hand abschließen (`{status?, result?}`) |
 | `GET` | `/api/questions` | Offene Rückfragen (`needs_confirm`) über alle Agenten |
 | `POST` | `/api/questions/{agent}/{qid}/answer` | Rückfrage beantworten → Antwort an Fragesteller |
 | `GET` | `/api/integrations` | Konfigurierte Integrationen (Name + Methoden, ohne Secrets) |

@@ -48,7 +48,9 @@ def mcp_hint(agent: str) -> str:
         f"[Kontext] Du bist der Agent '{agent}' im Agent-Dashboard. Über den "
         f"MCP-Server 'dashboard' kannst du mit Orchestrator und anderen Agenten "
         f"reden: inbox('{agent}') zeigt Nachrichten und Rückfragen an dich; mit "
-        f"ask/answer/send_message (immer sender='{agent}') antwortest du. Prüfe "
+        f"ask/answer/send_message (immer sender='{agent}') antwortest du; "
+        f"verarbeitete Nachrichten archivierst du mit mark_read('{agent}', id), "
+        f"sonst siehst du sie beim nächsten Mal erneut. Prüfe "
         f"zu Beginn deine Inbox und stelle Rückfragen per ask statt zu raten.\n\n"
     )
 
