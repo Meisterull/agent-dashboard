@@ -38,7 +38,9 @@ AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 #   message  – informativer Hinweis Agent → Agent
 #   question – Rückfrage, die eine Antwort braucht (Status needs_confirm)
 #   answer   – Antwort auf eine question (reply_to verweist auf deren id)
-MESSAGE_KINDS = {"task", "message", "question", "answer"}
+#   response – Ergebnis eines erledigten Tasks (reply_to = task_id); legt
+#              write_response in die Inbox des Auftraggebers
+MESSAGE_KINDS = {"task", "message", "question", "answer", "response"}
 
 
 def _now() -> str:
@@ -110,7 +112,8 @@ class Mailbox:
         if not AGENT_NAME_RE.fullmatch(agent):
             raise ValueError(f"ungültiger Agent-Name: {agent!r}")
         self.agent = agent
-        self.base = Path(root) / agent
+        self.root = Path(root)
+        self.base = self.root / agent
         self.inbox = self.base / "inbox"
         self.processing = self.inbox / ".processing"
         self.archive = self.inbox / ".archive"
@@ -160,8 +163,8 @@ class Mailbox:
     def mark_read(self, env_id: str) -> bool:
         """Gelesenen Envelope aus der Inbox ins Archiv verschieben.
 
-        Damit message/answer (und erledigte questions) nicht bei jedem
-        Inbox-Lesen erneut auftauchen. Offene Tasks sind tabu — die schließt
+        Damit message/answer/response (und erledigte questions) nicht bei
+        jedem Inbox-Lesen erneut auftauchen. Offene Tasks sind tabu — die schließt
         write_response (sonst verschwände Arbeit ohne Rückmeldung).
         """
         src = self.inbox / f"{env_id}.json"
@@ -241,20 +244,57 @@ class Mailbox:
         if status not in VALID_STATUS:
             raise ValueError(f"ungültiger Status: {status}")
         target = self.outbox / f"{task_id}-response.json"
+        # Auftraggeber (`sender`) VOR dem Abräumen aus dem Task-Envelope retten —
+        # danach wäre nicht mehr rekonstruierbar, für wen die Antwort war.
+        stale_paths = (self.processing / f"{task_id}.json", self.inbox / f"{task_id}.json")
+        task_env = None
+        for p in stale_paths:
+            try:
+                task_env = json.loads(p.read_text(encoding="utf-8"))
+                break
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+        to = (task_env or {}).get("sender")
+        if to is None:
+            # Doppelter Abschluss: Task-Envelope ist schon weg — `to` aus der
+            # bereits geschriebenen Response erhalten statt es zu überschreiben.
+            try:
+                to = json.loads(target.read_text(encoding="utf-8")).get("to")
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
         atomic_write_json(
             target,
             {
                 "task_id": task_id,
                 "agent": self.agent,
+                "to": to,
                 "result": result,
                 "status": status,
                 "log": log,
                 "responded_at": _now(),
             },
         )
+        # Ergebnis zusätzlich als kind="response" in die Inbox des Auftraggebers
+        # legen — analog ask/answer greift dann dessen normaler inbox()/
+        # mark_read-Zyklus, ohne dass er fremde Outboxen pollen muss. Nur beim
+        # ersten Abschluss (task_env noch da), sonst käme es doppelt an.
+        if task_env is not None and to and to != self.agent:
+            try:
+                Mailbox(self.root, to).post(
+                    {
+                        "kind": "response",
+                        "sender": self.agent,
+                        "to": to,
+                        "text": result,
+                        "status": status,
+                        "reply_to": task_id,
+                    }
+                )
+            except (ValueError, OSError):
+                pass  # Zustellung ist best-effort; die Outbox-Response bleibt
         # Erledigten Task abräumen — aus BEIDEN möglichen Ablagen: .processing/
         # (beansprucht) UND inbox/ (nie beansprucht, z.B. interaktiver Agent
         # ohne claim_task). Sonst würde der Task trotz Antwort weiter geliefert.
-        for stale in (self.processing / f"{task_id}.json", self.inbox / f"{task_id}.json"):
+        for stale in stale_paths:
             stale.unlink(missing_ok=True)
         return target

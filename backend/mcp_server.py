@@ -66,8 +66,10 @@ def send_task(
 ) -> dict:
     """Einen Arbeitsauftrag in die Inbox eines Agenten legen.
 
-    `sender` ist, wer delegiert (z.B. ein Koordinator-Agent). Nur diese
-    task-Envelopes führt der Watcher auf der Agent-Seite tatsächlich aus.
+    `sender` ist, wer delegiert (z.B. ein Koordinator-Agent) — an ihn geht
+    nach Abschluss das Ergebnis als kind="response" in die Inbox zurück,
+    also IMMER den eigenen Namen angeben. Nur diese task-Envelopes führt
+    der Watcher auf der Agent-Seite tatsächlich aus.
     """
     task = Task(
         task_id=new_id("task"),
@@ -88,9 +90,21 @@ def create_task(agent: str, instruction: str, project: str | None = None) -> dic
 
 
 @mcp.tool()
-def read_responses(agent: str) -> list[dict]:
-    """Liest alle Rückmeldungen aus der Outbox eines Agenten (erledigte Tasks)."""
-    return Mailbox(MAILBOX_ROOT, agent).read_responses()
+def read_responses(worker: str, for_sender: str | None = None) -> list[dict]:
+    """Rückmeldungen aus der Outbox eines BEARBEITERS lesen (Archiv erledigter Tasks).
+
+    `worker` ist der Agent, der für dich gearbeitet hat — NICHT dein eigener
+    Name (anders als bei claim_task/complete_task, wo `agent` = du selbst).
+    Die eigene Outbox enthält nur die eigenen Antworten an andere.
+    Meist unnötig: Ergebnisse landen beim Abschließen zusätzlich als
+    kind="response" in der Inbox des Auftraggebers — `inbox(<dein Name>)`
+    genügt. `for_sender` filtert die Outbox auf Antworten an einen
+    bestimmten Auftraggeber (das `to`-Feld der Response).
+    """
+    out = Mailbox(MAILBOX_ROOT, worker).read_responses()
+    if for_sender:
+        out = [r for r in out if r.get("to") == for_sender]
+    return out
 
 
 @mcp.tool()
@@ -112,10 +126,11 @@ def complete_task(agent: str, task_id: str, result: str, status: str = "done", l
     """Einen bearbeiteten Task abschließen — das Gegenstück zu send_task.
 
     IMMER aufrufen, wenn du einen Task aus deiner Inbox fertig bearbeitet hast:
-    schreibt `result` als Rückmeldung in deine Outbox (der Auftraggeber sieht
-    sie über read_responses) und räumt den Task aus deiner Inbox. Ohne diesen
-    Aufruf bleibt der Task für immer pending. `agent` = du selbst (der
-    Bearbeiter), status: "done" bei Erfolg, "error" bei Fehlschlag.
+    legt `result` als kind="response" in die Inbox des Auftraggebers (der es
+    dort per inbox() sieht), archiviert es in deiner Outbox und räumt den Task
+    aus deiner Inbox. Ohne diesen Aufruf bleibt der Task für immer pending.
+    `agent` = du selbst (der Bearbeiter — NICHT der Auftraggeber),
+    status: "done" bei Erfolg, "error" bei Fehlschlag.
     """
     if status not in ("done", "error"):
         return {"error": 'status muss "done" oder "error" sein'}
@@ -162,20 +177,22 @@ def answer(to: str, text: str, sender: str = "orchestrator", reply_to: str | Non
 
 @mcp.tool()
 def inbox(agent: str, kind: str | None = None) -> list[dict]:
-    """Eingehende Envelopes eines Agenten lesen (Tasks + Nachrichten + Rückfragen).
+    """Eingehende Envelopes eines Agenten lesen (Tasks, Nachrichten, Rückfragen
+    und Task-Ergebnisse).
 
     Ein Koordinator nutzt das, um zu sehen, was Worker ihm geschickt haben —
-    statt dass der Mensch zwischen Fenstern hin- und herkopiert. Die Inbox
-    enthält nur Unerledigtes: Verarbeitetes danach mit mark_read archivieren
-    (Tasks stattdessen mit claim_task/complete_task abschließen), sonst kommt
-    derselbe Stapel bei jedem Aufruf wieder.
+    auch die Ergebnisse delegierter Tasks: sie kommen als kind="response" mit
+    reply_to=<task_id> hier an. Die Inbox enthält nur Unerledigtes:
+    Verarbeitetes danach mit mark_read archivieren (Tasks stattdessen mit
+    claim_task/complete_task abschließen), sonst kommt derselbe Stapel bei
+    jedem Aufruf wieder.
     """
     return [normalize_envelope(e) for e in Mailbox(MAILBOX_ROOT, agent).read_inbox(kind)]
 
 
 @mcp.tool()
 def mark_read(agent: str, envelope_id: str) -> dict:
-    """Einen verarbeiteten Envelope (message/answer/erledigte question) archivieren.
+    """Einen verarbeiteten Envelope (message/answer/response/erledigte question) archivieren.
 
     Verschiebt ihn aus der Inbox nach inbox/.archive/ — er taucht bei künftigen
     inbox()-Aufrufen nicht mehr auf. Offene Tasks lassen sich so NICHT

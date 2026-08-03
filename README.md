@@ -114,9 +114,10 @@ agent_watcher.py auf dem Agenten-PC pollt inbox/
 **3. Ergebnis sichtbar machen**
 
 ```
-Orchestrator (oder MCP-Monitor) liest outbox/
+write_response legt das Ergebnis als kind="response" in die Inbox des
+Auftraggebers (sender des Tasks) — der sieht es im normalen inbox()-Zyklus
   → GET /api/agents/frontend/tasks zeigt Inbox/Outbox mit Status-Badges
-  → read_responses liefert das Ergebnis in den Chat
+  → read_responses(worker) liest zusätzlich das Outbox-Archiv
 ```
 
 Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confirm`.
@@ -134,15 +135,15 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `orchestrator.py` | CLI-Variante des Orchestrators (Chat im Terminal) |
 | `app/orchestrator_core.py` | Gemeinsamer Kern: `mcp_session()` + `run_turn()`. CLI **und** API nutzen ihn |
 | `app/llm.py` | Provider-neutrale LLM-Schicht (ein Loop, Backends **ollama** + **anthropic**) |
-| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer), `post`, `read_inbox`, `claim_tasks`/`claim_task` (nur Tasks), `write_response` (räumt inbox **und** .processing), `mark_read` (Archiv), `normalize_envelope` |
+| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox`, `claim_tasks`/`claim_task` (nur Tasks), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `normalize_envelope` |
 | `app/files.py` | Pfad-sichere Datei-Ops (`list_dir`, `read_file`) für den Dateibaum |
 | `app/config.py` | Settings (`settings.json`) + Verbindungen (`agents.yaml`, ohne Credentials) |
 | `app/integrations.py` | Config-getriebene HTTP-Integrationen (`integrations.yaml`, generisch) |
 | `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
 
 **MCP-Tools** (im `mcp_server.py`, pfad-gehärtet gegen `WORKSPACE_DIR`):
-- Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?)` (`create_task` als Alias) · `read_responses(agent)`
-- Task-Lebenszyklus (Agent-Seite): `claim_task(agent, task_id)` (→ "in Arbeit") · `complete_task(agent, task_id, result, status?, log?)` — das Gegenstück zu `send_task`: schreibt die Rückmeldung in die Outbox und räumt den Task ab
+- Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?)` (`create_task` als Alias) · `read_responses(worker, for_sender?)` (Outbox-Archiv des Bearbeiters)
+- Task-Lebenszyklus (Agent-Seite): `claim_task(agent, task_id)` (→ "in Arbeit") · `complete_task(agent, task_id, result, status?, log?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab
 - Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` · `inbox(agent, kind?)` · `mark_read(agent, envelope_id)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder)
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
 - Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)`

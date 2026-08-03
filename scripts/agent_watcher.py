@@ -19,12 +19,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Muss zur Allowlist in app/mailbox.py passen — sender wird in Pfade gejoint.
+AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 def now() -> str:
@@ -41,6 +46,25 @@ def atomic_write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def deliver_response(root: Path, sender: str, agent: str, task_id: str,
+                     result: str, status: str) -> None:
+    """Ergebnis zusätzlich als kind="response" in die Inbox des Auftraggebers
+    legen — der sieht es dann in seinem normalen inbox()-Zyklus, statt fremde
+    Outboxen pollen zu müssen. Best-effort: schlägt die Zustellung fehl,
+    bleibt die Outbox-Response die Quelle der Wahrheit."""
+    if not sender or not AGENT_NAME_RE.fullmatch(sender) or sender == agent:
+        return
+    rid = f"response-{uuid.uuid4().hex[:8]}"
+    try:
+        atomic_write_json(root / sender / "inbox" / f"{rid}.json", {
+            "id": rid, "kind": "response", "sender": agent, "to": sender,
+            "text": result, "status": status, "reply_to": task_id,
+            "created_at": now(),
+        })
+    except OSError:
+        pass
+
+
 def mcp_hint(agent: str) -> str:
     """Identitäts-/Tool-Kontext für Claude-Code, wenn der Dashboard-MCP-Server
     auf diesem PC registriert ist (setup_agent_pc.sh + Reverse-Tunnel)."""
@@ -50,7 +74,9 @@ def mcp_hint(agent: str) -> str:
         f"reden: inbox('{agent}') zeigt Nachrichten und Rückfragen an dich; mit "
         f"ask/answer/send_message (immer sender='{agent}') antwortest du; "
         f"verarbeitete Nachrichten archivierst du mit mark_read('{agent}', id), "
-        f"sonst siehst du sie beim nächsten Mal erneut. Prüfe "
+        f"sonst siehst du sie beim nächsten Mal erneut. Delegierst du selbst "
+        f"per send_task(sender='{agent}'), kommt das Ergebnis als "
+        f"kind='response' in DEINE Inbox zurück. Prüfe "
         f"zu Beginn deine Inbox und stelle Rückfragen per ask statt zu raten.\n\n"
     )
 
@@ -94,6 +120,8 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             continue  # nächster Tick
 
         task_id = task.get("task_id", claimed.stem)
+        sender = task.get("sender") or ""
+        root = inbox.parent.parent  # root/<agent>/inbox → Mailbox-Wurzel
         print(f"[{now()}] {agent}: bearbeite {task_id}", flush=True)
         try:
             instruction = task["instruction"]
@@ -103,15 +131,19 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             status = "done" if rc == 0 else "error"
             atomic_write_json(
                 outbox / f"{task_id}-response.json",
-                {"task_id": task_id, "agent": agent, "result": result,
-                 "status": status, "log": err, "responded_at": now()},
+                {"task_id": task_id, "agent": agent, "to": sender or None,
+                 "result": result, "status": status, "log": err,
+                 "responded_at": now()},
             )
+            deliver_response(root, sender, agent, task_id, result, status)
         except Exception as exc:  # noqa: BLE001 — alles zurückmelden, nie crashen
             atomic_write_json(
                 outbox / f"{task_id}-response.json",
-                {"task_id": task_id, "agent": agent, "result": "",
-                 "status": "error", "log": repr(exc), "responded_at": now()},
+                {"task_id": task_id, "agent": agent, "to": sender or None,
+                 "result": "", "status": "error", "log": repr(exc),
+                 "responded_at": now()},
             )
+            deliver_response(root, sender, agent, task_id, "", "error")
         finally:
             claimed.unlink(missing_ok=True)
         handled += 1
