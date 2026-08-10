@@ -91,6 +91,23 @@ class Task:
         return asdict(self)
 
 
+def merged_instruction(env: dict[str, Any]) -> str:
+    """Instruction eines Tasks inklusive Kontext aus einem früheren Lauf.
+
+    Wurde ein Task wegen einer Rückfrage geparkt (Issue #17), stehen die
+    Antworten in `nachtraege` und das bisherige Ergebnis in `zwischenstand`.
+    Der nächste Lauf ist ein frischer Claude-Prozess ohne Gedächtnis — er
+    braucht beides im Prompt, sonst ist die Antwort kontextlos."""
+    teile = [env.get("instruction", "")]
+    if env.get("zwischenstand"):
+        teile.append("[Zwischenstand deines vorherigen Laufs — er endete mit "
+                     "einer Rückfrage:]\n" + str(env["zwischenstand"]))
+    for n in env.get("nachtraege") or []:
+        teile.append(f'[Antwort auf deine Rückfrage "{n.get("frage", "")}": '
+                     f'{n.get("antwort", "")}]')
+    return "\n\n".join(t for t in teile if t)
+
+
 def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
     """Vereinheitlicht Task- und Message-Envelopes für UI/Tools.
 
@@ -242,6 +259,104 @@ class Mailbox:
             return json.loads(dst.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             return None
+
+    # --- Rückfragen während eines Tasks (Issue #17) --------------------------
+
+    def link_question(self, question_id: str, question_text: str) -> None:
+        """Eine gestellte Rückfrage an die laufenden Tasks DIESES Agenten heften.
+
+        Wird beim ask() des Agenten aufgerufen: jeder Task in .processing/
+        bekommt die Frage in `open_questions`. complete_task weiß dadurch
+        später, dass der Task nicht wirklich fertig ist — ohne dass der Agent
+        etwas mitschicken muss (der Watcher hat genau einen Task in Arbeit)."""
+        for p in sorted(self.processing.glob("*.json")):
+            try:
+                env = json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if env.get("kind", "task") != "task":
+                continue
+            fragen = env.get("open_questions") or []
+            if any(f.get("id") == question_id for f in fragen):
+                continue
+            fragen.append({"id": question_id, "frage": question_text})
+            env["open_questions"] = fragen
+            atomic_write_json(p, env)
+
+    def _beantwortet(self, question_id: str) -> bool:
+        """Liegt bereits eine Antwort auf diese Frage in Inbox oder Archiv?"""
+        for ordner in (self.inbox, self.archive):
+            for p in ordner.glob("*.json"):
+                try:
+                    env = json.loads(p.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                if env.get("kind") == "answer" and env.get("reply_to") == question_id:
+                    return True
+        return False
+
+    def park_wenn_offene_fragen(self, task_id: str, zwischenstand: str) -> list[dict[str, Any]] | None:
+        """Task mit unbeantworteter Rückfrage parken statt "done" melden (Issue #17).
+
+        Ein `--print`-Lauf kann nicht auf Antworten warten — endet er, während
+        seine Frage offen ist, wäre "done" ein falsches Erfolgssignal. Der Task
+        bleibt stattdessen in .processing/ mit Status needs_confirm ("wartet
+        auf Antwort" im Panel); resolve_question stößt ihn nach der Antwort
+        wieder an. Rückgabe: die offenen Fragen, oder None (nichts offen,
+        normal abschließen)."""
+        p = self.processing / f"{task_id}.json"
+        try:
+            env = json.loads(p.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+        offen = [f for f in env.get("open_questions") or []
+                 if f.get("id") and not self._beantwortet(f["id"])]
+        if not offen:
+            return None
+        env["open_questions"] = offen
+        env["status"] = "needs_confirm"
+        if zwischenstand:
+            env["zwischenstand"] = zwischenstand
+        atomic_write_json(p, env)
+        return offen
+
+    def resolve_question(self, question_id: str, antwort: str) -> list[str]:
+        """Antwort auf eine Rückfrage in geparkte/laufende Tasks einarbeiten.
+
+        Auf der Mailbox des FRAGESTELLERS aufrufen, sobald eine answer zu
+        `question_id` zugestellt wird: entfernt die Frage aus open_questions,
+        hält Frage+Antwort als Nachtrag fest (merged_instruction reicht beides
+        an den nächsten Lauf durch) und legt geparkte Tasks ohne weitere
+        offene Fragen zurück in die Inbox — der Watcher greift sie beim
+        nächsten Tick. Gibt die IDs der wieder angestoßenen Tasks zurück."""
+        wieder: list[str] = []
+        for p in sorted(self.processing.glob("*.json")):
+            try:
+                env = json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            fragen = env.get("open_questions") or []
+            passend = [f for f in fragen if f.get("id") == question_id]
+            if not passend:
+                continue
+            env["open_questions"] = [f for f in fragen if f.get("id") != question_id]
+            env.setdefault("nachtraege", []).append(
+                {"frage": passend[0].get("frage", ""), "antwort": antwort}
+            )
+            if env.get("status") == "needs_confirm" and not env["open_questions"]:
+                # Erst in .processing/ aktualisieren, DANN atomar in die Inbox
+                # schieben — so existiert der Task nie an zwei Orten zugleich.
+                env["status"] = "pending"
+                atomic_write_json(p, env)
+                try:
+                    os.replace(p, self.inbox / p.name)
+                except FileNotFoundError:
+                    continue
+                wieder.append(env.get("task_id") or p.stem)
+            else:
+                # Task läuft noch (oder weitere Fragen offen): nur vermerken.
+                atomic_write_json(p, env)
+        return wieder
 
     def write_response(
         self, task_id: str, result: str, status: str = "done", log: str = ""

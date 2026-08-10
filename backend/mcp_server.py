@@ -38,7 +38,7 @@ from mcp.server.fastmcp import FastMCP
 from app import integrations, mcp_scope
 from app.config import load_agents_full
 from app.files import decode_text
-from app.mailbox import Mailbox, Task, new_id, normalize_envelope
+from app.mailbox import Mailbox, Task, merged_instruction, new_id, normalize_envelope
 from app.mcp_scope import ScopeError, resolve_ident
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/workspace")).resolve()
@@ -190,7 +190,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             env = Mailbox(MAILBOX_ROOT, wer).claim_task(task_id)
             if env is None:
                 return {"error": f"Task {task_id} liegt nicht (mehr) bei {wer}."}
-            return {"claimed": task_id, "instruction": env.get("instruction", ""), "status": "running"}
+            # merged_instruction: nach einem geparkten Lauf (Issue #17) stehen
+            # Rückfrage-Antworten und Zwischenstand mit im Prompt.
+            return {"claimed": task_id, "instruction": merged_instruction(env), "status": "running"}
 
     if on("complete_task"):
         @mcp.tool()
@@ -216,8 +218,21 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 wer = ident(agent, "agent")
             except ScopeError as exc:
                 return {"error": str(exc)}
+            box = Mailbox(MAILBOX_ROOT, wer)
+            if status == "done":
+                # Offene Rückfrage? Dann ist die Arbeit NICHT getan — Task
+                # parken statt Erfolg zu melden; nach der Antwort wird er
+                # automatisch wieder angestoßen (Issue #17).
+                offen = box.park_wenn_offene_fragen(task_id, result)
+                if offen:
+                    _log(kanal, "complete_task", agent=wer, task=task_id,
+                         status="needs_confirm", offene_fragen=len(offen))
+                    return {"task_id": task_id, "agent": wer, "status": "needs_confirm",
+                            "parked": True,
+                            "hinweis": "Rückfrage unbeantwortet — Task wartet und "
+                                       "läuft nach der Antwort erneut."}
             _log(kanal, "complete_task", agent=wer, task=task_id, status=status, zeichen=len(result))
-            Mailbox(MAILBOX_ROOT, wer).write_response(task_id, result, status, log)
+            box.write_response(task_id, result, status, log)
             return {"task_id": task_id, "agent": wer, "status": status}
 
     # --- Agent-↔-Agent-Kommunikation ----------------------------------------
@@ -251,7 +266,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             except ScopeError as exc:
                 return {"error": str(exc)}
             _log(kanal, "ask", to=to, sender=absender)
-            return Mailbox(MAILBOX_ROOT, to).post(
+            env = Mailbox(MAILBOX_ROOT, to).post(
                 {
                     "kind": "question",
                     "sender": absender,
@@ -261,6 +276,13 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                     "reply_to": reply_to,
                 }
             )
+            # Frage an die laufenden Tasks des Fragestellers heften (Issue #17):
+            # complete_task(done) parkt den Task dann, bis die Antwort da ist.
+            try:
+                Mailbox(MAILBOX_ROOT, absender).link_question(env["id"], question)
+            except ValueError:
+                pass  # Absender ohne gültigen Mailbox-Namen — nichts zu verknüpfen
+            return env
 
     if on("answer"):
         @mcp.tool()
@@ -273,9 +295,17 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             except ScopeError as exc:
                 return {"error": str(exc)}
             _log(kanal, "answer", to=to, sender=absender)
-            return Mailbox(MAILBOX_ROOT, to).post(
+            env = Mailbox(MAILBOX_ROOT, to).post(
                 {"kind": "answer", "sender": absender, "to": to, "text": text, "reply_to": reply_to}
             )
+            if reply_to:
+                # Wegen dieser Frage geparkte Tasks des Fragestellers wieder
+                # anstoßen — mit der Antwort im Kontext (Issue #17).
+                wieder = Mailbox(MAILBOX_ROOT, to).resolve_question(reply_to, text)
+                if wieder:
+                    _log(kanal, "answer", to=to, wieder_angestossen=",".join(wieder))
+                    env = {**env, "wieder_angestossen": wieder}
+            return env
 
     if on("inbox"):
         @mcp.tool()

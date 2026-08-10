@@ -180,6 +180,46 @@ def fehler_result(result: str, err: str) -> str:
     return f"[watcher] Ausführung fehlgeschlagen: {err[:2000] or 'keine Ausgabe'}"
 
 
+def merge_instruction(task: dict) -> str:
+    """Pendant zu app/mailbox.merged_instruction (Dateitransport, Issue #17):
+    nach einem geparkten Lauf gehören Rückfrage-Antworten (`nachtraege`) und
+    `zwischenstand` mit in den Prompt — der neue Lauf hat kein Gedächtnis."""
+    teile = [task.get("instruction", "")]
+    if task.get("zwischenstand"):
+        teile.append("[Zwischenstand deines vorherigen Laufs — er endete mit "
+                     "einer Rückfrage:]\n" + str(task["zwischenstand"]))
+    for n in task.get("nachtraege") or []:
+        teile.append(f'[Antwort auf deine Rückfrage "{n.get("frage", "")}": '
+                     f'{n.get("antwort", "")}]')
+    return "\n\n".join(t for t in teile if t)
+
+
+def unbeantwortete_fragen(inbox: Path, claimed: Path) -> list[dict]:
+    """Offene Rückfragen eines Tasks ermitteln (Dateitransport, Issue #17).
+
+    `open_questions` heftet der MCP-Server beim ask() des Agenten an den Task
+    in .processing/; Antworten liegen als kind=answer in Inbox/Archiv."""
+    try:
+        env = json.loads(claimed.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    fragen = [f for f in env.get("open_questions") or [] if f.get("id")]
+    if not fragen:
+        return []
+    beantwortet = set()
+    for ordner in (inbox, inbox / ".archive"):
+        if not ordner.is_dir():
+            continue
+        for p in ordner.glob("*.json"):
+            try:
+                e = json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if e.get("kind") == "answer" and e.get("reply_to"):
+                beantwortet.add(e["reply_to"])
+    return [f for f in fragen if f["id"] not in beantwortet]
+
+
 def stdin_stop_waechter() -> None:
     """Daemon-Thread: "stop" auf stdin = sanft beenden; EOF (haltende
     SSH-Verbindung weg) ebenso — so bleibt nie ein verwaister Watcher zurück."""
@@ -338,11 +378,17 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 dauer = time.monotonic() - start
                 if status == "error":
                     result = fehler_result(result, err)
-                client.call("complete_task", {
+                fertig = client.call("complete_task", {
                     "task_id": task_id, "result": result,
                     "status": status, "log": err,
                 })
-                print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})", flush=True)
+                if isinstance(fertig, dict) and fertig.get("parked"):
+                    # Rückfrage offen (Issue #17): Server hat den Task geparkt,
+                    # nach der Antwort landet er automatisch wieder in der Inbox.
+                    print(f"[{now()}] {agent}: {task_id} wartet auf Antwort "
+                          f"einer Rückfrage (geparkt)", flush=True)
+                else:
+                    print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})", flush=True)
                 if fehlerserie(status, dauer):
                     print(f"[{now()}] {agent}: {FEHLER_SCHWELLE} Tasks in Folge sofort "
                           f"gescheitert — Umgebungsproblem vermutet, Watcher hält an. "
@@ -397,7 +443,8 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         start = time.monotonic()
         status, err = "error", ""
         try:
-            instruction = task["instruction"]
+            task["instruction"]  # fehlende instruction soll wie bisher scheitern
+            instruction = merge_instruction(task)
             if with_mcp_hint:
                 instruction = mcp_hint(agent) + instruction
             result, err, rc = run_claude(claude_bin, instruction, workdir, dry_run)
@@ -407,6 +454,23 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         except Exception as exc:  # noqa: BLE001 — alles zurückmelden, nie crashen
             status, err = "error", repr(exc)
             result = fehler_result("", err)
+        if status == "done":
+            offen = unbeantwortete_fragen(inbox, claimed)
+            if offen:
+                # Rückfrage offen (Issue #17): parken statt Erfolg melden. Der
+                # Server legt den Task nach der Antwort zurück in die Inbox.
+                try:
+                    env = json.loads(claimed.read_text(encoding="utf-8"))
+                    env.update(status="needs_confirm", open_questions=offen)
+                    if result:
+                        env["zwischenstand"] = result
+                    atomic_write_json(claimed, env)
+                    print(f"[{now()}] {agent}: {task_id} wartet auf Antwort "
+                          f"einer Rückfrage (geparkt)", flush=True)
+                    handled += 1
+                    continue
+                except (json.JSONDecodeError, OSError):
+                    pass  # Envelope nicht lesbar — dann regulär abschließen
         antwort = {"task_id": task_id, "agent": agent, "to": sender or None,
                    "result": result, "status": status, "log": err,
                    "responded_at": now()}

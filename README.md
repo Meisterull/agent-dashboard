@@ -175,9 +175,22 @@ Installationsschritt; kein SSHFS-Mount nötig). Der gewünschte Zustand steht in
 Prozess-Zustand. „Aus" stoppt sanft (laufender Claude-Lauf darf fertig werden
 und sein Ergebnis abliefern), der globale **Not-Aus** im Panel-Kopf stoppt alle
 Automatiken sofort hart. Optional je Agent in `agents.yaml`: `workdir`
-(Arbeitsverzeichnis für Claude) und `python` (Default `python3`). Achtung:
-im Automatikmodus arbeitet `claude --print` unbeaufsichtigt mit der
-Berechtigungs-Konfiguration des jeweiligen PCs.
+(Arbeitsverzeichnis für Claude), `python` (Default `python3`) und `claude_bin`
+(Pfad zum Claude-Binary, falls die automatische Suche — PATH plus
+`~/.local/bin` & Co. — nicht greift). Vor dem ersten Task prüft der Watcher
+die Umgebung (Binary, Arbeitsverzeichnis) und hält bei Serien sofortiger
+Fehlschläge an, statt die Warteschlange zu verbrauchen.
+
+Stellt der Agent während eines Tasks eine Rückfrage (`ask`), wird der Task
+beim Abschluss **geparkt** statt als erledigt gemeldet: er bleibt als „wartet
+auf Antwort" (needs_confirm) sichtbar und läuft nach der Antwort automatisch
+erneut — mit der Antwort im Kontext. Fehlgeschlagene Tasks wandern nach
+`inbox/.failed/` und behalten ihre Aufgabenbeschreibung in der Antwort.
+
+Achtung: im Automatikmodus arbeitet `claude --print` unbeaufsichtigt mit der
+Berechtigungs-Konfiguration des jeweiligen PCs. Berechtigungs-Rückfragen von
+Claude Code selbst kann headless niemand beantworten — der Automatikmodus
+taugt deshalb nur für Aufgaben, die der Agent ohne Freigabe entscheiden darf.
 
 ### Frontend (`frontend/src/`)
 

@@ -228,9 +228,10 @@ async def agent_tasks(name: str) -> dict:
     if not base.exists():
         raise HTTPException(404, f"Agent '{name}' unbekannt.")
     inbox = [e for e in _read_jsons(base / "inbox") if e.get("kind", "task") == "task"]
-    # Beanspruchte Tasks (.processing/) sichtbar machen — als "running".
+    # Beanspruchte Tasks (.processing/) sichtbar machen — als "running";
+    # geparkte (Rückfrage offen, Issue #17) behalten ihr needs_confirm.
     claimed = [
-        {**e, "status": "running"}
+        {**e, "status": "needs_confirm" if e.get("status") == "needs_confirm" else "running"}
         for e in _read_jsons(base / "inbox" / ".processing")
         if e.get("kind", "task") == "task"
     ]
@@ -284,7 +285,10 @@ async def answer_question(agent: str, qid: str, body: AnswerIn) -> dict:
     # Frage als erledigt markieren (atomar überschreiben).
     question["status"] = "done"
     atomic_write_json(qpath, question)
-    return {"answered": qid, "to": asker}
+    # Wegen dieser Frage geparkte Tasks des Fragestellers wieder anstoßen —
+    # mit der Antwort im Kontext (Issue #17).
+    wieder = Mailbox(MAILBOXES, asker).resolve_question(qid, body.text)
+    return {"answered": qid, "to": asker, "wieder_angestossen": wieder}
 
 
 class CloseTaskIn(BaseModel):

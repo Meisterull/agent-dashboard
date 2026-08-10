@@ -32,8 +32,15 @@ backend/
                            answer/response), post/read_inbox/claim_tasks+
                            claim_task(nur task)/write_response(rettet sender als
                            `to`, legt Ergebnis als response in die Inbox des
-                           Auftraggebers, räumt inbox UND .processing)/
-                           mark_read(→ inbox/.archive)/normalize_envelope
+                           Auftraggebers, räumt inbox UND .processing; error →
+                           inbox/.failed/ + instruction in der Response, #15)/
+                           mark_read(→ inbox/.archive)/normalize_envelope;
+                           Rückfragen-Parken (#17): link_question (ask heftet
+                           Frage an laufende Tasks), park_wenn_offene_fragen
+                           (done mit offener Frage → needs_confirm in
+                           .processing), resolve_question (answer → Nachtrag +
+                           zurück in die Inbox), merged_instruction (Prompt
+                           inkl. Antworten/Zwischenstand für den Folgelauf)
     files.py               pfad-sichere Datei-Ops (Dateibaum, Editor, Up-/Download)
     remote_files.py        SFTP-Datei-Ops auf den Agenten-PCs (/api/remote/…)
     chat_store.py          SQLite-Persistenz der Chat-Sessions (/workspace/chat.db)
@@ -137,8 +144,12 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   nicht-interaktive SSH-Shell den Login-PATH nicht hat); bei kaputter Umgebung
   Exit statt Warteschlange fressen, ebenso nach 3 sofortigen Fehlschlägen in
   Folge (`fehlerserie`); leeres result bei status=error wird mit der
-  Fehlerursache gefüllt. Achtung unbeaufsichtigt: `claude --print` läuft
-  mit der Berechtigungs-Config des Agenten-PCs.
+  Fehlerursache gefüllt. Rückfragen (Issue #17): stellt der Agent während
+  eines Tasks ein ask(), parkt complete_task(done) den Task (needs_confirm in
+  .processing) statt Erfolg zu melden; die Antwort (Dashboard oder answer-Tool)
+  stößt ihn mit Kontext neu an. Achtung unbeaufsichtigt: `claude --print` läuft
+  mit der Berechtigungs-Config des Agenten-PCs — Berechtigungs-Rückfragen kann
+  headless niemand beantworten, Automatik nur für freigabefreie Aufgaben.
 - **Agent-↔-Agent (Mailbox v2):** Envelopes haben `kind` (task/message/question/
   answer/response) + `sender`/`to`. MCP-Tools: `send_task`/`send_message`/`ask`/
   `answer`/`inbox`, dazu der Task-Lebenszyklus für MCP-getriebene Agenten:
