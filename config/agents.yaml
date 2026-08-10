@@ -26,8 +26,14 @@
 # Automatikmodus (Issue #12, Toggle im Agenten-Panel): das Dashboard hält per
 # SSH einen agent_watcher.py auf dem Agenten-PC, der die Inbox über den
 # gebundenen MCP-Kanal selbständig abarbeitet. Optional je Agent:
-#   workdir: C:/projekte/foo   # Arbeitsverzeichnis für claude --print
+#   workdir: C:/projekte/foo   # Basis-Arbeitsverzeichnis für claude --print;
+#                              # das `project` eines Tasks wählt ein Unter-
+#                              # verzeichnis darunter (Issue #19)
 #   python: python             # Python-Kommando auf dem PC (Default python3)
+#   claude_bin: ~/claude/claude       # falls die automatische Suche nicht greift
+#   permission_mode: acceptEdits      # an claude --permission-mode durchgereicht;
+#                                     # headless beantwortet niemand Freigabe-Fragen
+#   allowed_tools: [Edit, Write, "Bash(git:*)"]   # claude --allowed-tools (Issue #19)
 
 agents:
 #  - name: beispiel

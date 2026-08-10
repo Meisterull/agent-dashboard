@@ -175,9 +175,13 @@ Installationsschritt; kein SSHFS-Mount nötig). Der gewünschte Zustand steht in
 Prozess-Zustand. „Aus" stoppt sanft (laufender Claude-Lauf darf fertig werden
 und sein Ergebnis abliefern), der globale **Not-Aus** im Panel-Kopf stoppt alle
 Automatiken sofort hart. Optional je Agent in `agents.yaml`: `workdir`
-(Arbeitsverzeichnis für Claude), `python` (Default `python3`) und `claude_bin`
-(Pfad zum Claude-Binary, falls die automatische Suche — PATH plus
-`~/.local/bin` & Co. — nicht greift). Vor dem ersten Task prüft der Watcher
+(Basis-Arbeitsverzeichnis für Claude), `python` (Default `python3`) und
+`claude_bin` (Pfad zum Claude-Binary, falls die automatische Suche — PATH plus
+`~/.local/bin` & Co. — nicht greift). Das `project`-Feld eines Tasks wählt ein
+Unterverzeichnis unter `workdir` — so bedient ein Agent mehrere Repos; ohne
+`project` läuft Claude im `workdir` selbst, ein unbekanntes oder ausbrechendes
+`project` lässt den Task mit Klartext scheitern statt im falschen Verzeichnis
+zu laufen. Vor dem ersten Task prüft der Watcher
 die Umgebung (Binary, Arbeitsverzeichnis) und hält bei Serien sofortiger
 Fehlschläge an, statt die Warteschlange zu verbrauchen.
 
@@ -187,10 +191,16 @@ auf Antwort" (needs_confirm) sichtbar und läuft nach der Antwort automatisch
 erneut — mit der Antwort im Kontext. Fehlgeschlagene Tasks wandern nach
 `inbox/.failed/` und behalten ihre Aufgabenbeschreibung in der Antwort.
 
-Achtung: im Automatikmodus arbeitet `claude --print` unbeaufsichtigt mit der
-Berechtigungs-Konfiguration des jeweiligen PCs. Berechtigungs-Rückfragen von
-Claude Code selbst kann headless niemand beantworten — der Automatikmodus
-taugt deshalb nur für Aufgaben, die der Agent ohne Freigabe entscheiden darf.
+Achtung: im Automatikmodus arbeitet `claude --print` unbeaufsichtigt —
+Berechtigungs-Rückfragen von Claude Code selbst kann headless niemand
+beantworten. Was der Lauf dürfen soll, gehört deshalb je Agent in
+`agents.yaml`: `permission_mode` (z. B. `acceptEdits`) und `allowed_tools`
+(z. B. `[Edit, Write, "Bash(git:*)"]`) werden an `claude --permission-mode` /
+`--allowed-tools` durchgereicht — die Betriebsberechtigung steht damit im
+Dashboard-Config statt unsichtbar in der Settings-Datei des Agenten-PCs.
+Verweigert Claude ein Werkzeug trotzdem, erscheint das ausdrücklich im Log
+der Antwort („Berechtigung verweigert: …") statt nur im Fließtext des
+Ergebnisses unterzugehen.
 
 ### Frontend (`frontend/src/`)
 

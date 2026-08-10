@@ -72,6 +72,10 @@ def _ssh_cfg(agent: dict[str, Any]) -> dict[str, Any] | None:
         "workdir": agent.get("workdir") or conn.get("workdir"),
         "python": agent.get("python") or conn.get("python") or "python3",
         "claude_bin": agent.get("claude_bin") or conn.get("claude_bin"),
+        # Berechtigungen des Headless-Laufs (Issue #19) — hier konfiguriert
+        # statt unsichtbar in der Settings-Datei des Agenten-PCs
+        "permission_mode": agent.get("permission_mode") or conn.get("permission_mode"),
+        "allowed_tools": agent.get("allowed_tools") or conn.get("allowed_tools"),
     }
 
 
@@ -223,6 +227,15 @@ class AutoWatcherManager:
                         cmd += f" --workdir {shlex.quote(str(cfg['workdir']))}"
                     if cfg.get("claude_bin"):
                         cmd += f" --claude-bin {shlex.quote(str(cfg['claude_bin']))}"
+                    if cfg.get("permission_mode"):
+                        cmd += f" --permission-mode {shlex.quote(str(cfg['permission_mode']))}"
+                    tools = cfg.get("allowed_tools")
+                    if tools:
+                        # YAML-Liste → EIN Komma-Argument (claude versteht das,
+                        # und nichts verschluckt die instruction, Issue #19)
+                        if isinstance(tools, (list, tuple)):
+                            tools = ",".join(str(t).strip() for t in tools if str(t).strip())
+                        cmd += f" --allowed-tools {shlex.quote(str(tools))}"
                     proc = await conn.create_process(cmd, stderr=asyncssh.STDOUT)
                     w.proc = proc
                     w.setze("an", "")

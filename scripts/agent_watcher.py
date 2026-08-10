@@ -143,6 +143,27 @@ def preflight(claude_hint: str, workdir: Path, dry_run: bool) -> str | None:
     return None
 
 
+def projekt_workdir(basis: Path, projekt) -> tuple[Path | None, str | None]:
+    """Arbeitsverzeichnis eines Tasks (Issue #19).
+
+    Das `project`-Feld des Tasks wählt ein Unterverzeichnis der Watcher-Basis —
+    so bedient EIN Agent mehrere Repos nebeneinander. Ohne `project` bleibt es
+    bei der Basis wie bisher. Gibt (workdir, fehler) zurück; bei fehler soll
+    der Task mit Klartext scheitern statt im falschen Verzeichnis zu laufen."""
+    if projekt is None or not str(projekt).strip():
+        return basis, None
+    projekt = str(projekt).strip()
+    ziel = (basis / projekt).resolve()
+    basis_r = basis.resolve()
+    if ziel != basis_r and basis_r not in ziel.parents:
+        return None, (f"project {projekt!r} verlässt das Arbeitsverzeichnis "
+                      f"{basis} — abgelehnt")
+    if not ziel.is_dir():
+        return None, (f"project-Verzeichnis fehlt auf dem Agenten-PC: {ziel} "
+                      f"(project {projekt!r} unterhalb von {basis})")
+    return ziel, None
+
+
 def fehlerserie(status: str, dauer: float) -> bool:
     """Fehlschlag-Zähler füttern; True = anhalten (Serie sofortiger Fehler)."""
     global _schnelle_fehler
@@ -171,8 +192,19 @@ def tool_hinweis(block: dict) -> str:
     return ""
 
 
+def tool_result_text(block: dict) -> str:
+    """Text eines tool_result-Blocks (content ist String oder Block-Liste)."""
+    inhalt = block.get("content")
+    if isinstance(inhalt, str):
+        return inhalt
+    teile = [c.get("text", "") for c in inhalt or []
+             if isinstance(c, dict) and c.get("type") == "text"]
+    return " ".join(t for t in teile if t)
+
+
 def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
-               fortschritt=None) -> tuple[str, str, int]:
+               fortschritt=None, permission_mode: str | None = None,
+               allowed_tools: str | None = None) -> tuple[str, str, int]:
     """Gibt (result, log, returncode) zurück.
 
     Headless Claude-Code mit --output-format stream-json (Issue #18): die
@@ -185,13 +217,25 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     stdin=DEVNULL (Issue #16): der stdin des Watchers gehört dem Sanft-Stopp
     ("stop"-Zeile) — erbt ihn das Kind, kann claude das Stopp-Kommando
     verschlucken und wartet obendrein 3 s auf Piped-Input.
+
+    permission_mode/allowed_tools (Issue #19): headless kann niemand eine
+    Berechtigungs-Rückfrage beantworten — was der Lauf dürfen soll, muss als
+    Flag mitkommen. Verweigerte Werkzeuge landen ausdrücklich im log, statt
+    nur im Fließtext des Ergebnisses unterzugehen.
     """
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
+    cmd = [claude_bin, "--print", "--output-format", "stream-json", "--verbose"]
+    if permission_mode:
+        cmd += ["--permission-mode", permission_mode]
+    if allowed_tools:
+        # EIN Argument (Komma-Liste): die variadische Option würde sonst die
+        # nachfolgende instruction als Tool-Namen schlucken.
+        cmd += ["--allowed-tools", allowed_tools]
+    cmd.append(instruction)
     try:
         proc = subprocess.Popen(
-            [claude_bin, "--print", "--output-format", "stream-json",
-             "--verbose", instruction],
+            cmd,
             cwd=str(workdir),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -229,6 +273,8 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     fehler_event = False
     texte: list[str] = []  # Assistant-Texte (Fallback-Ergebnis)
     roh: list[str] = []    # Nicht-JSON-Zeilen (Binary ohne stream-json)
+    werkzeug_namen: dict[str, str] = {}  # tool_use_id → Tool-Name
+    abgelehnt: list[str] = []            # verweigerte Werkzeuge (Issue #19)
     try:
         for zeile in proc.stdout:
             zeile = zeile.strip()
@@ -243,6 +289,8 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
             if typ == "assistant":
                 for block in (ev.get("message") or {}).get("content") or []:
                     if block.get("type") == "tool_use":
+                        if block.get("id"):
+                            werkzeug_namen[block["id"]] = block.get("name", "?")
                         if fortschritt:
                             fortschritt(kurz(f"→ {block.get('name', '?')} "
                                              f"{tool_hinweis(block)}", 100))
@@ -250,9 +298,29 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                         texte.append(block["text"])
                         if fortschritt:
                             fortschritt(kurz(block["text"], 100))
+            elif typ == "user":
+                # Abgelehnte Werkzeuge sichtbar machen (Issue #19): der Lauf
+                # endet sonst normal, und der Grund steht nur im Fließtext.
+                for block in (ev.get("message") or {}).get("content") or []:
+                    if not (isinstance(block, dict)
+                            and block.get("type") == "tool_result"
+                            and block.get("is_error")):
+                        continue
+                    text = tool_result_text(block)
+                    if "permission" not in text.lower():
+                        continue  # normaler Tool-Fehler, kein Berechtigungs-Thema
+                    name = werkzeug_namen.get(block.get("tool_use_id") or "", "?")
+                    if name not in abgelehnt:
+                        abgelehnt.append(name)
+                    if fortschritt:
+                        fortschritt(kurz(f"✗ {name} abgelehnt: {text}", 100))
             elif typ == "result":
                 ergebnis = ev.get("result") or ""
                 fehler_event = bool(ev.get("is_error"))
+                for d in ev.get("permission_denials") or []:
+                    name = (d.get("tool_name") if isinstance(d, dict) else None) or "?"
+                    if name not in abgelehnt:
+                        abgelehnt.append(name)
     finally:
         wecker.cancel()
     rc = proc.wait()
@@ -266,6 +334,10 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
         ergebnis = "\n".join(texte) or "\n".join(roh)
     if fehler_event and rc == 0:
         rc = 1
+    if abgelehnt:
+        log = (log + "\n[watcher] Berechtigung verweigert: " + ", ".join(abgelehnt) +
+               " — permission_mode/allowed_tools in agents.yaml setzen oder auf "
+               "dem Agenten-PC freigeben").strip()
     return ergebnis.strip(), log, rc
 
 
@@ -432,7 +504,9 @@ class McpClient:
 
 
 def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: float,
-             dry_run: bool, with_mcp_hint: bool, once: bool = False) -> int:
+             dry_run: bool, with_mcp_hint: bool, once: bool = False,
+             permission_mode: str | None = None,
+             allowed_tools: str | None = None) -> int:
     """Poll-Schleife über MCP: inbox → claim_task → claude → complete_task.
 
     Verbindungsfehler (Tunnel weg, Server-Neustart) werden mit Abstand erneut
@@ -463,20 +537,27 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 if not isinstance(claimed, dict) or claimed.get("error"):
                     continue  # schon von jemand anderem beansprucht
                 instruction = claimed.get("instruction") or env.get("text") or ""
-                print(f"[{now()}] {agent}: bearbeite {task_id}", flush=True)
+                projekt = claimed.get("project") or env.get("project")
+                print(f"[{now()}] {agent}: bearbeite {task_id}"
+                      + (f" (project {projekt})" if projekt else ""), flush=True)
                 if with_mcp_hint:
                     instruction = mcp_hint(agent) + instruction
                 def fortschritt(text: str, _tid: str = task_id) -> None:
                     # Fließt via stdout ins Automatik-Panel (Issue #18).
                     print(f"[{now()}] {agent}: {_tid} · {text}", flush=True)
 
+                task_dir, wd_fehler = projekt_workdir(workdir, projekt)
                 start = time.monotonic()
-                try:
-                    result, err, rc = run_claude(claude_bin, instruction, workdir,
-                                                 dry_run, fortschritt)
-                    status = "done" if rc == 0 else "error"
-                except Exception as exc:  # noqa: BLE001 — alles zurückmelden
-                    result, err, status = "", repr(exc), "error"
+                if wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
+                    result, err, status = "", wd_fehler, "error"
+                else:
+                    try:
+                        result, err, rc = run_claude(claude_bin, instruction, task_dir,
+                                                     dry_run, fortschritt,
+                                                     permission_mode, allowed_tools)
+                        status = "done" if rc == 0 else "error"
+                    except Exception as exc:  # noqa: BLE001 — alles zurückmelden
+                        result, err, status = "", repr(exc), "error"
                 dauer = time.monotonic() - start
                 if status == "error":
                     result = fehler_result(result, err)
@@ -516,7 +597,9 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
 
 def process_once(inbox: Path, processing: Path, outbox: Path,
                  agent: str, claude_bin: str, workdir: Path, dry_run: bool,
-                 with_mcp_hint: bool = False) -> int:
+                 with_mcp_hint: bool = False,
+                 permission_mode: str | None = None,
+                 allowed_tools: str | None = None) -> int:
     """Gibt die Zahl bearbeiteter Tasks zurück; -1 = Fehlerserie, bitte anhalten."""
     handled = 0
     for task_path in sorted(inbox.glob("*.json")):
@@ -549,13 +632,19 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             instruction = merge_instruction(task)
             if with_mcp_hint:
                 instruction = mcp_hint(agent) + instruction
-            result, err, rc = run_claude(
-                claude_bin, instruction, workdir, dry_run,
-                lambda text, _tid=task_id: print(
-                    f"[{now()}] {agent}: {_tid} · {text}", flush=True))
-            status = "done" if rc == 0 else "error"
-            if status == "error":
-                result = fehler_result(result, err)
+            task_dir, wd_fehler = projekt_workdir(workdir, task.get("project"))
+            if wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
+                err = wd_fehler
+                result = fehler_result("", err)
+            else:
+                result, err, rc = run_claude(
+                    claude_bin, instruction, task_dir, dry_run,
+                    lambda text, _tid=task_id: print(
+                        f"[{now()}] {agent}: {_tid} · {text}", flush=True),
+                    permission_mode, allowed_tools)
+                status = "done" if rc == 0 else "error"
+                if status == "error":
+                    result = fehler_result(result, err)
         except Exception as exc:  # noqa: BLE001 — alles zurückmelden, nie crashen
             status, err = "error", repr(exc)
             result = fehler_result("", err)
@@ -617,6 +706,13 @@ def main() -> int:
     ap.add_argument("--claude-bin", default="claude",
                     help="Claude-Binary (Name oder Pfad); Default: 'claude' im PATH "
                          "bzw. den üblichen Installationsorten (~/.local/bin …)")
+    ap.add_argument("--permission-mode",
+                    help="an claude --permission-mode durchgereicht (z.B. "
+                         "acceptEdits) — headless kann niemand Freigabe-"
+                         "Rückfragen beantworten (Issue #19)")
+    ap.add_argument("--allowed-tools",
+                    help="Komma-getrennte Liste für claude --allowed-tools, "
+                         "z.B. 'Edit,Write,Bash(git:*)' (Issue #19)")
     ap.add_argument("--interval", type=float, default=2.0)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--once", action="store_true", help="einmal durchlaufen und beenden")
@@ -643,7 +739,8 @@ def main() -> int:
               flush=True)
         try:
             return mcp_loop(args.mcp_url, args.agent, claude_bin, workdir,
-                            args.interval, args.dry_run, args.mcp_hint, args.once)
+                            args.interval, args.dry_run, args.mcp_hint, args.once,
+                            args.permission_mode, args.allowed_tools)
         except KeyboardInterrupt:
             print("\nWatcher beendet.", flush=True)
             return 0
@@ -658,7 +755,8 @@ def main() -> int:
     try:
         while not STOP.is_set():
             if process_once(inbox, processing, outbox, args.agent, claude_bin,
-                            workdir, args.dry_run, args.mcp_hint) < 0:
+                            workdir, args.dry_run, args.mcp_hint,
+                            args.permission_mode, args.allowed_tools) < 0:
                 return 1
             if args.once:
                 break

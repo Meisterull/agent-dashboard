@@ -150,9 +150,16 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   Fehlerursache gefüllt. Rückfragen (Issue #17): stellt der Agent während
   eines Tasks ein ask(), parkt complete_task(done) den Task (needs_confirm in
   .processing) statt Erfolg zu melden; die Antwort (Dashboard oder answer-Tool)
-  stößt ihn mit Kontext neu an. Achtung unbeaufsichtigt: `claude --print` läuft
-  mit der Berechtigungs-Config des Agenten-PCs — Berechtigungs-Rückfragen kann
-  headless niemand beantworten, Automatik nur für freigabefreie Aufgaben.
+  stößt ihn mit Kontext neu an. Projekt + Berechtigungen (Issue #19): das
+  `project` eines Tasks wählt ein Unterverzeichnis unter `workdir`
+  (`projekt_workdir` — Ausbruch/fehlendes Verzeichnis → Task scheitert mit
+  Klartext); `permission_mode`/`allowed_tools` je Agent in agents.yaml werden
+  an `claude --permission-mode`/`--allowed-tools` durchgereicht (allowed_tools
+  als EIN Komma-Argument, sonst schluckt die variadische Option die
+  instruction); verweigerte Werkzeuge landen als „Berechtigung verweigert: …"
+  im log der Antwort (permission_denials aus dem result-Event + tool_result-
+  Heuristik). Headless beantwortet niemand Freigabe-Fragen — was die Automatik
+  dürfen soll, MUSS als Flag mitkommen.
 - **Agent-↔-Agent (Mailbox v2):** Envelopes haben `kind` (task/message/question/
   answer/response) + `sender`/`to`. MCP-Tools: `send_task`/`send_message`/`ask`/
   `answer`/`inbox`, dazu der Task-Lebenszyklus für MCP-getriebene Agenten:
