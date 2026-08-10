@@ -69,7 +69,10 @@ frontend/                  React 18 + Vite 6 + Tailwind v4 (komplettes Dashboard
 scripts/agent_watcher.py   Remote-Watcher, nur Standardlib. Transporte: --root
                            (Datei-Mailbox) ODER --mcp-url (über den gebundenen
                            MCP-Kanal, kein Mount); "stop" auf stdin/EOF = sanft
-                           beenden (--mcp-hint: Identitäts-Kontext voranstellen)
+                           beenden (--mcp-hint: Identitäts-Kontext voranstellen);
+                           claude läuft mit stream-json (#18): Tool-Calls/Text
+                           als Live-Fortschritt ins Panel, Timeout killt die
+                           ganze Prozessgruppe, stdin=DEVNULL (#16)
 scripts/setup_agent_pc.sh  auf dem Agenten-PC: Dashboard-MCP in Claude-Code
                            registrieren (http://127.0.0.1:<mcp_port>/mcp)
 Dockerfile · docker-compose.yml · entrypoint.sh · supervisord.conf · nginx/

@@ -83,7 +83,9 @@ class _Watcher:
         self.status = "startet"          # startet | an | stoppt | fehler | aus
         self.detail = ""
         self.seit = time.time()
-        self.log: deque[str] = deque(maxlen=5)
+        # 20 Zeilen: seit stream-json (Issue #18) liefert der Watcher laufend
+        # Fortschritt, nicht mehr nur zwei Zeilen pro Task.
+        self.log: deque[str] = deque(maxlen=20)
         self.beenden = False             # sanfter Stopp angefordert
         self.hart = False                # harter Stopp (Not-Aus)
         self.task: asyncio.Task | None = None

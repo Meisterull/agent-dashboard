@@ -29,6 +29,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -152,28 +153,120 @@ def fehlerserie(status: str, dauer: float) -> bool:
     return _schnelle_fehler >= FEHLER_SCHWELLE
 
 
-def run_claude(claude_bin: str, instruction: str, workdir: Path,
-               dry_run: bool) -> tuple[str, str, int]:
-    """Gibt (result, log, returncode) zurück."""
+CLAUDE_TIMEOUT = 1800.0  # Sekunden je Task-Lauf
+
+
+def kurz(text: str, n: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def tool_hinweis(block: dict) -> str:
+    """Knappster nützlicher Parameter eines Tool-Aufrufs für die Statuszeile."""
+    inp = block.get("input") or {}
+    for key in ("description", "command", "file_path", "path", "pattern",
+                "prompt", "query", "url"):
+        if inp.get(key):
+            return str(inp[key])
+    return ""
+
+
+def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
+               fortschritt=None) -> tuple[str, str, int]:
+    """Gibt (result, log, returncode) zurück.
+
+    Headless Claude-Code mit --output-format stream-json (Issue #18): die
+    Events werden zeilenweise gelesen und als knappe Fortschrittsmeldungen an
+    `fortschritt` gereicht — dieselbe Leitung, über die schon "bearbeite …"
+    ins Automatik-Panel fließt. Das Endergebnis kommt aus dem result-Event;
+    Fallback ist der gesammelte Assistant-Text bzw. die Roh-Ausgabe (falls
+    das Binary kein stream-json liefert).
+
+    stdin=DEVNULL (Issue #16): der stdin des Watchers gehört dem Sanft-Stopp
+    ("stop"-Zeile) — erbt ihn das Kind, kann claude das Stopp-Kommando
+    verschlucken und wartet obendrein 3 s auf Piped-Input.
+    """
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
-    # Headless Claude-Code. --print => einmalige, nicht-interaktive Ausführung.
-    # stdin=DEVNULL (Issue #16): der stdin des Watchers gehört dem Sanft-Stopp
-    # ("stop"-Zeile) — erbt ihn das Kind, kann claude das Stopp-Kommando
-    # verschlucken und wartet obendrein 3 s auf Piped-Input.
     try:
-        proc = subprocess.run(
-            [claude_bin, "--print", instruction],
+        proc = subprocess.Popen(
+            [claude_bin, "--print", "--output-format", "stream-json",
+             "--verbose", instruction],
             cwd=str(workdir),
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=1800,
+            # Eigene Prozessgruppe (POSIX): beim Timeout muss die GANZE Gruppe
+            # sterben — claude spawnt Tool-Subprozesse, die sonst die stdout-
+            # Pipe offen halten und das Zeilen-Lesen weiter blockieren.
+            start_new_session=(os.name == "posix"),
         )
     except FileNotFoundError:
         # errno 2 allein nennt die Datei nicht — hier Klartext liefern (#14).
         return "", f"Claude-Binary nicht ausführbar: {claude_bin}", 127
-    return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
+
+    stderr_teile: list[str] = []
+    leser = threading.Thread(target=lambda: stderr_teile.append(proc.stderr.read()),
+                             daemon=True)
+    leser.start()
+    abgelaufen = threading.Event()
+
+    def _abbrechen() -> None:
+        abgelaufen.set()
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:  # Windows-OpenSSH-Agenten: kein killpg
+                proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+
+    wecker = threading.Timer(CLAUDE_TIMEOUT, _abbrechen)
+    wecker.start()
+
+    ergebnis: str | None = None
+    fehler_event = False
+    texte: list[str] = []  # Assistant-Texte (Fallback-Ergebnis)
+    roh: list[str] = []    # Nicht-JSON-Zeilen (Binary ohne stream-json)
+    try:
+        for zeile in proc.stdout:
+            zeile = zeile.strip()
+            if not zeile:
+                continue
+            try:
+                ev = json.loads(zeile)
+            except json.JSONDecodeError:
+                roh.append(zeile)
+                continue
+            typ = ev.get("type")
+            if typ == "assistant":
+                for block in (ev.get("message") or {}).get("content") or []:
+                    if block.get("type") == "tool_use":
+                        if fortschritt:
+                            fortschritt(kurz(f"→ {block.get('name', '?')} "
+                                             f"{tool_hinweis(block)}", 100))
+                    elif block.get("type") == "text" and block.get("text"):
+                        texte.append(block["text"])
+                        if fortschritt:
+                            fortschritt(kurz(block["text"], 100))
+            elif typ == "result":
+                ergebnis = ev.get("result") or ""
+                fehler_event = bool(ev.get("is_error"))
+    finally:
+        wecker.cancel()
+    rc = proc.wait()
+    leser.join(timeout=5)
+    log = (stderr_teile[0] if stderr_teile else "").strip()
+    if abgelaufen.is_set():
+        log = (log + f"\n[watcher] Timeout nach {CLAUDE_TIMEOUT:.0f}s — "
+                     f"Prozess abgebrochen").strip()
+        rc = rc or 124
+    if ergebnis is None:
+        ergebnis = "\n".join(texte) or "\n".join(roh)
+    if fehler_event and rc == 0:
+        rc = 1
+    return ergebnis.strip(), log, rc
 
 
 def fehler_result(result: str, err: str) -> str:
@@ -373,9 +466,14 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 print(f"[{now()}] {agent}: bearbeite {task_id}", flush=True)
                 if with_mcp_hint:
                     instruction = mcp_hint(agent) + instruction
+                def fortschritt(text: str, _tid: str = task_id) -> None:
+                    # Fließt via stdout ins Automatik-Panel (Issue #18).
+                    print(f"[{now()}] {agent}: {_tid} · {text}", flush=True)
+
                 start = time.monotonic()
                 try:
-                    result, err, rc = run_claude(claude_bin, instruction, workdir, dry_run)
+                    result, err, rc = run_claude(claude_bin, instruction, workdir,
+                                                 dry_run, fortschritt)
                     status = "done" if rc == 0 else "error"
                 except Exception as exc:  # noqa: BLE001 — alles zurückmelden
                     result, err, status = "", repr(exc), "error"
@@ -451,7 +549,10 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             instruction = merge_instruction(task)
             if with_mcp_hint:
                 instruction = mcp_hint(agent) + instruction
-            result, err, rc = run_claude(claude_bin, instruction, workdir, dry_run)
+            result, err, rc = run_claude(
+                claude_bin, instruction, workdir, dry_run,
+                lambda text, _tid=task_id: print(
+                    f"[{now()}] {agent}: {_tid} · {text}", flush=True))
             status = "done" if rc == 0 else "error"
             if status == "error":
                 result = fehler_result(result, err)
