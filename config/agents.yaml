@@ -22,6 +22,12 @@
 #
 # Nach Änderungen an tools/mcp_local_port den mcp-Dienst neu starten
 # (supervisorctl restart mcp) — der Tunnel zieht binnen 60 s nach.
+#
+# Automatikmodus (Issue #12, Toggle im Agenten-Panel): das Dashboard hält per
+# SSH einen agent_watcher.py auf dem Agenten-PC, der die Inbox über den
+# gebundenen MCP-Kanal selbständig abarbeitet. Optional je Agent:
+#   workdir: C:/projekte/foo   # Arbeitsverzeichnis für claude --print
+#   python: python             # Python-Kommando auf dem PC (Default python3)
 
 agents:
 #  - name: beispiel

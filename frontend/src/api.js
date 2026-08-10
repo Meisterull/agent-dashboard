@@ -45,6 +45,11 @@ export const getFiles = (path = "") =>
   jget(`/api/files?path=${encodeURIComponent(path)}`);
 export const getFileContent = (path) =>
   jget(`/api/files/content?path=${encodeURIComponent(path)}`);
+export const getAutomatik = () => jget("/api/automatik");
+export const setAutomatik = (name, an) =>
+  jsend(`/api/automatik/${encodeURIComponent(name)}`, "POST", { an });
+export const setNotaus = (an) => jsend("/api/automatik/notaus", "POST", { an });
+
 export const getConnections = () => jget("/api/connections");
 export const createConnection = (data) => jsend("/api/connections", "POST", data);
 export const deleteConnection = (name) =>

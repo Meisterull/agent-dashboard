@@ -25,6 +25,9 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/connections            SSH-Verbindungen (ohne Credentials)
   GET  /api/settings               Editierbare UI-Settings
   PUT  /api/settings               Settings speichern
+  GET  /api/automatik              Automatikmodus: Not-Aus + Status je Agent
+  POST /api/automatik/{name}       Automatik für einen Agenten an/aus
+  POST /api/automatik/notaus       globaler Not-Aus (an = alle hart stoppen)
   GET  /api/ssh/sessions           laufende Terminal-Sessions (Badge/Auto-Reopen)
   DEL  /api/ssh/{name}/session     Terminal-Session explizit beenden (?sid=…)
   GET  /api/ssh/{name}/buffer      Klartext-Replay-Puffer einer Session (?sid=…)
@@ -48,7 +51,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSo
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app import auth, chat_store, llm, remote_files
+from app import auth, auto_watcher, chat_store, llm, remote_files
 from app.config import (
     KEYS_DIR,
     add_ui_connection,
@@ -77,6 +80,20 @@ WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/workspace"))
 MAILBOXES = WORKSPACE / "mailboxes"
 
 app = FastAPI(title="agent-dashboard", version="0.1.0")
+
+
+@app.on_event("startup")
+async def _automatik_start() -> None:
+    """Automatikmodus-Manager (Issue #12): stellt den gewünschten Zustand aus
+    settings.json wieder her und hält die Remote-Watcher per SSH."""
+    auto_watcher.manager.start()
+
+
+@app.on_event("shutdown")
+async def _automatik_stop() -> None:
+    # Container fährt herunter — hart schließen, die Reconcile-Logik startet
+    # die Watcher nach dem Neustart aus settings.json neu.
+    await auto_watcher.manager.stopp_alle_hart()
 
 # --- Auth ---------------------------------------------------------------
 # Alles unter /api ist geschützt außer Health (Docker-Healthcheck) und den
@@ -625,6 +642,40 @@ async def get_settings() -> dict:
 async def put_settings(body: SettingsIn) -> dict:
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     return save_settings(patch)
+
+
+# --- Automatikmodus (Issue #12) --------------------------------------------
+
+class AutomatikIn(BaseModel):
+    an: bool
+
+
+@app.get("/api/automatik")
+async def automatik_status() -> dict:
+    """Not-Aus + je SSH-Agent: gewünschter Zustand und ECHTER Prozess-Status."""
+    return auto_watcher.manager.status()
+
+
+@app.post("/api/automatik/notaus")
+async def automatik_notaus(body: AutomatikIn) -> dict:
+    """Globaler Not-Aus: an = alle Watcher sofort hart stoppen. Beim Lösen
+    starten die einzeln eingeschalteten Automatiken wieder (settings.json)."""
+    await auto_watcher.manager.notaus(body.an)
+    return auto_watcher.manager.status()
+
+
+@app.post("/api/automatik/{name}")
+async def automatik_schalten(name: str, body: AutomatikIn) -> dict:
+    """Automatik eines Agenten an/aus. Aus = sanft: laufender Task darf fertig
+    werden, danach endet der Watcher-Prozess auf dem Agenten-PC wirklich."""
+    status = auto_watcher.manager.status()
+    agent = status["agents"].get(name)
+    if agent is None:
+        raise HTTPException(404, f"kein SSH-Agent '{name}'")
+    if body.an and not agent["startbar"]:
+        raise HTTPException(409, f"'{name}' hat keine nutzbare SSH-Verbindung (key_file?)")
+    await auto_watcher.manager.schalte(name, body.an)
+    return auto_watcher.manager.status()
 
 
 # --- SSH-Terminal ----------------------------------------------------------

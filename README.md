@@ -139,6 +139,8 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `app/files.py` | Pfad-sichere Datei-Ops (`list_dir`, `read_file`) für den Dateibaum |
 | `app/config.py` | Settings (`settings.json`) + Verbindungen (`agents.yaml`, ohne Credentials) |
 | `app/integrations.py` | Config-getriebene HTTP-Integrationen (`integrations.yaml`, generisch) |
+| `app/mcp_scope.py` | Kanal-Identität + Tool-Allowlists je Agent (Port-Vergabe, Port-Map, `resolve_ident`) |
+| `app/auto_watcher.py` | Automatikmodus: hält pro Agent einen Remote-Watcher per SSH (`/api/automatik*`) |
 | `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
 
 **MCP-Tools** (im `mcp_server.py`, pfad-gehärtet gegen `WORKSPACE_DIR`):
@@ -163,6 +165,19 @@ Port-Zuordnung schreibt der Server nach `/workspace/config/mcp_ports.json`
 Eintrag in der Map fallen auf `:9000` zurück — **außer** sie haben eine
 Allowlist, dann pausiert ihr Tunnel, bis der MCP-Dienst neu gestartet wurde
 (die Allowlist wird nie über den freien Kanal umgangen).
+
+**Automatikmodus** (`app/auto_watcher.py`, Toggle im Agenten-Panel): pro Agent
+per Klick ein-/ausschaltbar — das Dashboard hält dann per SSH einen
+`agent_watcher.py --mcp-url …` auf dem Agenten-PC, der die Inbox selbständig
+abarbeitet (Script wird bei jedem Start per SFTP aktuell hingelegt, kein
+Installationsschritt; kein SSHFS-Mount nötig). Der gewünschte Zustand steht in
+`settings.json` und übersteht Neustarts; angezeigt wird der ECHTE
+Prozess-Zustand. „Aus" stoppt sanft (laufender Claude-Lauf darf fertig werden
+und sein Ergebnis abliefern), der globale **Not-Aus** im Panel-Kopf stoppt alle
+Automatiken sofort hart. Optional je Agent in `agents.yaml`: `workdir`
+(Arbeitsverzeichnis für Claude) und `python` (Default `python3`). Achtung:
+im Automatikmodus arbeitet `claude --print` unbeaufsichtigt mit der
+Berechtigungs-Konfiguration des jeweiligen PCs.
 
 ### Frontend (`frontend/src/`)
 
@@ -207,6 +222,9 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `GET` | `/api/connections` | SSH-Verbindungen aus `agents.yaml` (ohne Credentials) |
 | `GET` | `/api/settings` | editierbare UI-Settings |
 | `PUT` | `/api/settings` | Settings speichern (Whitelist) |
+| `GET` | `/api/automatik` | Automatikmodus: Not-Aus + gewünschter/echter Status je Agent |
+| `POST` | `/api/automatik/{name}` | Body `{an}` — Automatik eines Agenten an/aus (aus = sanft) |
+| `POST` | `/api/automatik/notaus` | Body `{an}` — globaler Not-Aus (an = alle sofort hart stoppen) |
 | `GET` | `/api/ssh/sessions` | laufende Terminal-Sessions (`name`, `sid`, `attached`, `age`, `idle`) |
 | `DELETE` | `/api/ssh/{name}/session?sid=` | Terminal-Session explizit beenden (⏻-Knopf) |
 | `WS` | `/ws/ssh/{name}` | SSH-Terminal-Bridge (JSON `{type:"data"/"resize"}` rein, Text raus) |

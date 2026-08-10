@@ -32,6 +32,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # url = "IP:Port[/pfad]" (läuft über den nginx-Proxy /ext/, auch WebSocket)
     # oder eine volle https://-URL, die direkt eingebettet wird.
     "external_windows": [],
+    # Automatikmodus (Issue #12): GEWÜNSCHTER Zustand je Agent ({name: true})
+    # plus globaler Not-Aus. Gepflegt über /api/automatik, nicht das
+    # Settings-Formular; app/auto_watcher.py stellt ihn nach Neustarts wieder her.
+    "automatik": {},
+    "automatik_notaus": False,
 }
 
 # Editierbare Felder (Whitelist) — verhindert, dass das UI beliebige Keys setzt.

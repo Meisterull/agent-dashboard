@@ -52,11 +52,17 @@ backend/
                            GET /api/ssh/sessions fürs UI-Badge/Auto-Reopen)
     mcp_tunnel.py          Reverse-SSH-Tunnel: MCP-Server auf die Agenten-PCs
                            (supervisord `mcp-tunnel`, Gate MCP_TUNNEL_ENABLED)
+    auto_watcher.py        Automatikmodus (Issue #12): hält pro Agent einen
+                           Remote-Watcher per SSH (Muster mcp_tunnel, aber im
+                           API-Prozess); gewünschter Zustand in settings.json
+                           (automatik/automatik_notaus), /api/automatik*
   requirements.txt
 frontend/                  React 18 + Vite 6 + Tailwind v4 (komplettes Dashboard)
   src/App.jsx              Layout; src/api.js fetch-Helfer; src/components/*.jsx
-scripts/agent_watcher.py   Remote-Watcher (Variante B), nur Standardlib
-                           (--mcp-hint: Identitäts-/Tool-Kontext voranstellen)
+scripts/agent_watcher.py   Remote-Watcher, nur Standardlib. Transporte: --root
+                           (Datei-Mailbox) ODER --mcp-url (über den gebundenen
+                           MCP-Kanal, kein Mount); "stop" auf stdin/EOF = sanft
+                           beenden (--mcp-hint: Identitäts-Kontext voranstellen)
 scripts/setup_agent_pc.sh  auf dem Agenten-PC: Dashboard-MCP in Claude-Code
                            registrieren (http://127.0.0.1:<mcp_port>/mcp)
 Dockerfile · docker-compose.yml · entrypoint.sh · supervisord.conf · nginx/
@@ -115,6 +121,18 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   `register_tools(mcp, identity, allowed)` in mcp_server.py — beim Tool-Ergänzen dort
   registrieren UND den Namen in mcp_scope.KNOWN_TOOLS aufnehmen. Nach Änderungen an
   tools/mcp_local_port: `supervisorctl restart mcp`.
+- **Automatikmodus (Issue #12, `app/auto_watcher.py` + Toggle im Agenten-Panel):**
+  Pro Agent schaltbar; der Manager (API-Prozess, Start via FastAPI-startup) hält per
+  SSH einen `agent_watcher.py --mcp-url http://127.0.0.1:<mcp_port>/mcp` auf dem
+  Agenten-PC — Script wird bei jedem Start per SFTP nach ~/.agent-dashboard/
+  gelegt (immer aktuell, kein Install-Schritt), MCP läuft über den gebundenen
+  Kanal (#13). GEWÜNSCHT lebt in settings.json (`automatik`, `automatik_notaus`),
+  IST = echter Prozess (stirbt er → "fehler" + Reconnect, nie falsches "an").
+  Aus = sanft ("stop" auf stdin, laufender claude-Lauf darf fertig werden, Deckel
+  AUTO_STOP_GRACE 1860 s); Not-Aus = hart (Verbindung schließen — portabel, auch
+  Windows ohne Signal-Support). Optional je Agent in agents.yaml: `workdir`,
+  `python` (Default python3). Achtung unbeaufsichtigt: `claude --print` läuft
+  mit der Berechtigungs-Config des Agenten-PCs.
 - **Agent-↔-Agent (Mailbox v2):** Envelopes haben `kind` (task/message/question/
   answer/response) + `sender`/`to`. MCP-Tools: `send_task`/`send_message`/`ask`/
   `answer`/`inbox`, dazu der Task-Lebenszyklus für MCP-getriebene Agenten:
