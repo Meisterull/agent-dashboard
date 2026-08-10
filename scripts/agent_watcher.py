@@ -69,7 +69,7 @@ def atomic_write_json(path: Path, data: dict) -> None:
 
 
 def deliver_response(root: Path, sender: str, agent: str, task_id: str,
-                     result: str, status: str) -> None:
+                     result: str, status: str, instruction: str | None = None) -> None:
     """Ergebnis zusätzlich als kind="response" in die Inbox des Auftraggebers
     legen — der sieht es dann in seinem normalen inbox()-Zyklus, statt fremde
     Outboxen pollen zu müssen. Best-effort: schlägt die Zustellung fehl,
@@ -77,12 +77,15 @@ def deliver_response(root: Path, sender: str, agent: str, task_id: str,
     if not sender or not AGENT_NAME_RE.fullmatch(sender) or sender == agent:
         return
     rid = f"response-{uuid.uuid4().hex[:8]}"
+    env = {
+        "id": rid, "kind": "response", "sender": agent, "to": sender,
+        "text": result, "status": status, "reply_to": task_id,
+        "created_at": now(),
+    }
+    if instruction:  # Fehlschlag: Aufgabenbeschreibung mitgeben (Issue #15)
+        env["instruction"] = instruction
     try:
-        atomic_write_json(root / sender / "inbox" / f"{rid}.json", {
-            "id": rid, "kind": "response", "sender": agent, "to": sender,
-            "text": result, "status": status, "reply_to": task_id,
-            "created_at": now(),
-        })
+        atomic_write_json(root / sender / "inbox" / f"{rid}.json", env)
     except OSError:
         pass
 
@@ -392,6 +395,7 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         root = inbox.parent.parent  # root/<agent>/inbox → Mailbox-Wurzel
         print(f"[{now()}] {agent}: bearbeite {task_id}", flush=True)
         start = time.monotonic()
+        status, err = "error", ""
         try:
             instruction = task["instruction"]
             if with_mcp_hint:
@@ -400,24 +404,30 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             status = "done" if rc == 0 else "error"
             if status == "error":
                 result = fehler_result(result, err)
-            atomic_write_json(
-                outbox / f"{task_id}-response.json",
-                {"task_id": task_id, "agent": agent, "to": sender or None,
-                 "result": result, "status": status, "log": err,
-                 "responded_at": now()},
-            )
-            deliver_response(root, sender, agent, task_id, result, status)
         except Exception as exc:  # noqa: BLE001 — alles zurückmelden, nie crashen
             status, err = "error", repr(exc)
-            atomic_write_json(
-                outbox / f"{task_id}-response.json",
-                {"task_id": task_id, "agent": agent, "to": sender or None,
-                 "result": fehler_result("", err), "status": "error", "log": err,
-                 "responded_at": now()},
-            )
-            deliver_response(root, sender, agent, task_id, fehler_result("", err), "error")
+            result = fehler_result("", err)
+        antwort = {"task_id": task_id, "agent": agent, "to": sender or None,
+                   "result": result, "status": status, "log": err,
+                   "responded_at": now()}
+        if status == "error" and task.get("instruction"):
+            # Fehlschlag: die einzige Kopie der Aufgabenbeschreibung darf
+            # nicht verloren gehen (Issue #15).
+            antwort["instruction"] = task["instruction"]
+        try:
+            atomic_write_json(outbox / f"{task_id}-response.json", antwort)
+            deliver_response(root, sender, agent, task_id, result, status,
+                             antwort.get("instruction"))
         finally:
-            claimed.unlink(missing_ok=True)
+            if status == "error":
+                failed = inbox / ".failed"
+                failed.mkdir(exist_ok=True)
+                try:  # Task für einen Wiederanlauf aufheben (Issue #15)
+                    os.replace(claimed, failed / claimed.name)
+                except FileNotFoundError:
+                    pass
+            else:
+                claimed.unlink(missing_ok=True)
         handled += 1
         print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})", flush=True)
         if fehlerserie(status, time.monotonic() - start):

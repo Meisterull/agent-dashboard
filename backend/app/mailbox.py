@@ -11,9 +11,13 @@ Protokoll:
   entweder die alte oder die vollständige neue Datei, nie etwas dazwischen.
 - Verarbeiten: gelesene Tasks werden nach inbox/.processing/ verschoben,
   bevor gearbeitet wird -> kein Doppel-Pickup bei mehreren Watcher-Ticks.
-- Verbrauch: erledigte Tasks räumt write_response ab (inbox/ UND .processing/),
-  gelesene message/answer wandern per mark_read nach inbox/.archive/ ->
-  die Inbox enthält nur Offenes, nichts wird doppelt ausgeliefert.
+- Verbrauch: erledigte Tasks räumt write_response ab (inbox/ UND .processing/).
+  Bei status="done" wird gelöscht; bei status="error" wandert der Task nach
+  inbox/.failed/ und die instruction steht zusätzlich in der Response — die
+  einzige Kopie der Aufgabenbeschreibung darf bei einem Fehlschlag nicht
+  verloren gehen (Issue #15). Gelesene message/answer wandern per mark_read
+  nach inbox/.archive/ -> die Inbox enthält nur Offenes, nichts wird doppelt
+  ausgeliefert.
 """
 from __future__ import annotations
 
@@ -117,8 +121,9 @@ class Mailbox:
         self.inbox = self.base / "inbox"
         self.processing = self.inbox / ".processing"
         self.archive = self.inbox / ".archive"
+        self.failed = self.inbox / ".failed"
         self.outbox = self.base / "outbox"
-        for d in (self.inbox, self.processing, self.archive, self.outbox):
+        for d in (self.inbox, self.processing, self.archive, self.failed, self.outbox):
             d.mkdir(parents=True, exist_ok=True)
 
     # --- Orchestrator-Seite ------------------------------------------------
@@ -262,39 +267,52 @@ class Mailbox:
                 to = json.loads(target.read_text(encoding="utf-8")).get("to")
             except (FileNotFoundError, json.JSONDecodeError):
                 pass
-        atomic_write_json(
-            target,
-            {
-                "task_id": task_id,
-                "agent": self.agent,
-                "to": to,
-                "result": result,
-                "status": status,
-                "log": log,
-                "responded_at": _now(),
-            },
-        )
+        response = {
+            "task_id": task_id,
+            "agent": self.agent,
+            "to": to,
+            "result": result,
+            "status": status,
+            "log": log,
+            "responded_at": _now(),
+        }
+        # Fehlschlag: Aufgabenbeschreibung mit in die Antwort nehmen — der
+        # Auftraggeber muss nachvollziehen können, WORUM es ging (Issue #15).
+        if status == "error" and task_env is not None:
+            for feld in ("instruction", "project", "files"):
+                if task_env.get(feld):
+                    response[feld] = task_env[feld]
+        atomic_write_json(target, response)
         # Ergebnis zusätzlich als kind="response" in die Inbox des Auftraggebers
         # legen — analog ask/answer greift dann dessen normaler inbox()/
         # mark_read-Zyklus, ohne dass er fremde Outboxen pollen muss. Nur beim
         # ersten Abschluss (task_env noch da), sonst käme es doppelt an.
         if task_env is not None and to and to != self.agent:
+            envelope = {
+                "kind": "response",
+                "sender": self.agent,
+                "to": to,
+                "text": result,
+                "status": status,
+                "reply_to": task_id,
+            }
+            if "instruction" in response:
+                envelope["instruction"] = response["instruction"]
             try:
-                Mailbox(self.root, to).post(
-                    {
-                        "kind": "response",
-                        "sender": self.agent,
-                        "to": to,
-                        "text": result,
-                        "status": status,
-                        "reply_to": task_id,
-                    }
-                )
+                Mailbox(self.root, to).post(envelope)
             except (ValueError, OSError):
                 pass  # Zustellung ist best-effort; die Outbox-Response bleibt
         # Erledigten Task abräumen — aus BEIDEN möglichen Ablagen: .processing/
         # (beansprucht) UND inbox/ (nie beansprucht, z.B. interaktiver Agent
         # ohne claim_task). Sonst würde der Task trotz Antwort weiter geliefert.
+        # done: löschen. error: nach inbox/.failed/ verschieben — die einzige
+        # Kopie der instruction bleibt so für einen Wiederanlauf erhalten (#15).
         for stale in stale_paths:
-            stale.unlink(missing_ok=True)
+            if status == "error":
+                try:
+                    os.replace(stale, self.failed / stale.name)
+                except FileNotFoundError:
+                    pass
+            else:
+                stale.unlink(missing_ok=True)
         return target
