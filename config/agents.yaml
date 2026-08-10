@@ -7,6 +7,21 @@
 # lauscht dann 127.0.0.1:<mcp_port> (Default 9000) auf den Dashboard-MCP-Server.
 # Optional pro Agent `mcp_port: 9100` in der connection, falls 9000 dort belegt
 # ist. Registrierung auf dem Agenten-PC: scripts/setup_agent_pc.sh [port].
+#
+# Kanal-Identität + Tool-Scoping (Issue #13): Jeder SSH-Agent bekommt im
+# Container einen EIGENEN, an seinen Namen gebundenen MCP-Port (automatisch ab
+# 9100; explizit via `mcp_local_port` in der connection). Der Tunnel forwardet
+# dorthin — agent/sender sind dann durch den Kanal festgelegt, abweichende
+# Werte lehnt der Server ab. Optional begrenzt `tools:` am Agenten, welche
+# Tools der Kanal überhaupt sieht (ohne Angabe: alle):
+#
+#  - name: beispiel-desktop
+#    tools: [inbox, mark_read, send_message, ask, answer, claim_task, complete_task]
+#    connection:
+#      ...
+#
+# Nach Änderungen an tools/mcp_local_port den mcp-Dienst neu starten
+# (supervisorctl restart mcp) — der Tunnel zieht binnen 60 s nach.
 
 agents:
 #  - name: beispiel

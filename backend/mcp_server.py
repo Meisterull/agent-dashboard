@@ -14,29 +14,39 @@ Tool-Gruppen:
   - Projektdateien: write_project_file, read_project_file
   - Integrationen:  list_integrations, call_integration  (config-getrieben, generisch)
 
-Transport: Streamable-HTTP, 127.0.0.1:9000 — intern hinter nginx, nicht
-veröffentlicht. Alle Pfade gegen WORKSPACE_DIR gehärtet (kein Traversal).
+Kanäle (Issue #13): Der FREIE Kanal (127.0.0.1:9000, intern — Orchestrator)
+bietet wie bisher alle Tools mit frei wählbaren agent/sender-Parametern.
+Zusätzlich lauscht pro SSH-Agent ein GEBUNDENER Kanal auf einem eigenen
+Container-Port (app/mcp_scope.py): dorthin forwardet der Reverse-Tunnel des
+Agenten, die Identität kommt also aus dem Kanal. Auf gebundenen Kanälen werden
+agent/sender aus der Bindung abgeleitet, abweichende Werte abgelehnt und nur
+die Tools der optionalen Allowlist (`tools:` in agents.yaml) registriert —
+nicht Erlaubtes erscheint gar nicht erst in der Tool-Liste. Jeder Tool-Aufruf
+wird mit Kanal-Name geloggt (Nachvollziehbarkeit bei mehreren Clients).
+
+Transport: Streamable-HTTP, alle Ports nur auf 127.0.0.1 — intern hinter
+nginx, nicht veröffentlicht. Alle Pfade gegen WORKSPACE_DIR gehärtet.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import integrations
+from app import integrations, mcp_scope
+from app.config import load_agents_full
 from app.files import decode_text
 from app.mailbox import Mailbox, Task, new_id, normalize_envelope
+from app.mcp_scope import ScopeError, resolve_ident
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/workspace")).resolve()
 MAILBOX_ROOT = WORKSPACE / "mailboxes"
 PROJECTS_ROOT = WORKSPACE / "projects"
 
-mcp = FastMCP(
-    "agent-dashboard",
-    host=os.environ.get("MCP_HOST", "127.0.0.1"),
-    port=int(os.environ.get("MCP_PORT", "9000")),
-)
+MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
+MCP_PORT = int(os.environ.get("MCP_PORT", "9000"))
 
 
 def _safe(root: Path, *parts: str) -> Path:
@@ -46,205 +56,358 @@ def _safe(root: Path, *parts: str) -> Path:
     return p
 
 
-# --- Delegation ------------------------------------------------------------
+def _log(kanal: str, tool: str, **info: object) -> None:
+    """Ein Aufruf-Logeintrag pro Tool-Call: welcher Kanal hat was aufgerufen.
 
-@mcp.tool()
-def list_agents() -> list[str]:
-    """Listet die konfigurierten Agenten (anhand der Mailbox-Ordner)."""
-    if not MAILBOX_ROOT.exists():
-        return []
-    return sorted(p.name for p in MAILBOX_ROOT.iterdir() if p.is_dir())
+    Bewusst nur Metadaten (Namen/IDs/Längen), keine Inhalte — die Logs sollen
+    Fehlersuche ermöglichen, nicht Mailbox-Inhalte duplizieren."""
+    kv = " ".join(f"{k}={v}" for k, v in info.items() if v not in (None, "", []))
+    print(f"[mcp] {kanal}: {tool} {kv}".rstrip(), flush=True)
 
 
-@mcp.tool()
-def send_task(
-    to: str,
-    instruction: str,
-    sender: str = "orchestrator",
-    project: str | None = None,
-    files: list[str] | None = None,
-) -> dict:
-    """Einen Arbeitsauftrag in die Inbox eines Agenten legen.
+def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None) -> None:
+    """Alle Tools eines Kanals registrieren.
 
-    `sender` ist, wer delegiert (z.B. ein Koordinator-Agent) — an ihn geht
-    nach Abschluss das Ergebnis als kind="response" in die Inbox zurück,
-    also IMMER den eigenen Namen angeben. Nur diese task-Envelopes führt
-    der Watcher auf der Agent-Seite tatsächlich aus.
+    identity=None -> freier Kanal (agent/sender frei, wie immer).
+    identity=<name> -> gebundener Kanal: agent/sender werden aus der Bindung
+    abgeleitet (Parameter optional), abweichende Werte abgelehnt.
+    allowed=None -> alle Tools; sonst nur die gelisteten (Rest unsichtbar).
     """
-    task = Task(
-        task_id=new_id("task"),
-        agent=to,
-        instruction=instruction,
-        project=project,
-        files=files or [],
-        sender=sender,
-    )
-    Mailbox(MAILBOX_ROOT, to).put_task(task)
-    return {"id": task.task_id, "to": to, "status": "pending"}
+    kanal = identity or "frei"
+
+    def on(name: str) -> bool:
+        return allowed is None or name in allowed
+
+    def ident(given: str | None, feld: str) -> str:
+        """Identität für einen Aufruf bestimmen (Kanal-Bindung vor Parameter)."""
+        if identity is None:
+            if not given:
+                raise ScopeError(f"{feld} fehlt (freier Kanal hat keine Bindung).")
+            return given
+        return resolve_ident(identity, given, feld)
+
+    # --- Delegation ---------------------------------------------------------
+
+    if on("list_agents"):
+        @mcp.tool()
+        def list_agents() -> list[str]:
+            """Listet die konfigurierten Agenten (anhand der Mailbox-Ordner)."""
+            _log(kanal, "list_agents")
+            if not MAILBOX_ROOT.exists():
+                return []
+            return sorted(p.name for p in MAILBOX_ROOT.iterdir() if p.is_dir())
+
+    if on("send_task"):
+        @mcp.tool()
+        def send_task(
+            to: str,
+            instruction: str,
+            sender: str | None = None,
+            project: str | None = None,
+            files: list[str] | None = None,
+        ) -> dict:
+            """Einen Arbeitsauftrag in die Inbox eines Agenten legen.
+
+            `sender` ist, wer delegiert (z.B. ein Koordinator-Agent) — an ihn geht
+            nach Abschluss das Ergebnis als kind="response" in die Inbox zurück,
+            also IMMER den eigenen Namen angeben (auf einem gebundenen Kanal ist
+            er automatisch dein Name; weglassen genügt). Nur diese task-Envelopes
+            führt der Watcher auf der Agent-Seite tatsächlich aus.
+            """
+            try:
+                absender = ident(sender, "sender") if identity else (sender or "orchestrator")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "send_task", to=to, sender=absender, zeichen=len(instruction))
+            task = Task(
+                task_id=new_id("task"),
+                agent=to,
+                instruction=instruction,
+                project=project,
+                files=files or [],
+                sender=absender,
+            )
+            Mailbox(MAILBOX_ROOT, to).put_task(task)
+            return {"id": task.task_id, "to": to, "status": "pending"}
+
+    if on("create_task"):
+        @mcp.tool()
+        def create_task(agent: str, instruction: str, project: str | None = None) -> dict:
+            """Alias für send_task (Rückwärtskompatibilität). Absender = du
+            (gebundener Kanal) bzw. "orchestrator" (freier Kanal)."""
+            absender = identity or "orchestrator"
+            _log(kanal, "create_task", to=agent, sender=absender, zeichen=len(instruction))
+            task = Task(
+                task_id=new_id("task"),
+                agent=agent,
+                instruction=instruction,
+                project=project,
+                files=[],
+                sender=absender,
+            )
+            Mailbox(MAILBOX_ROOT, agent).put_task(task)
+            return {"id": task.task_id, "to": agent, "status": "pending"}
+
+    if on("read_responses"):
+        @mcp.tool()
+        def read_responses(worker: str, for_sender: str | None = None) -> list[dict]:
+            """Rückmeldungen aus der Outbox eines BEARBEITERS lesen (Archiv erledigter Tasks).
+
+            `worker` ist der Agent, der für dich gearbeitet hat — NICHT dein eigener
+            Name (anders als bei claim_task/complete_task, wo `agent` = du selbst).
+            Die eigene Outbox enthält nur die eigenen Antworten an andere.
+            Meist unnötig: Ergebnisse landen beim Abschließen zusätzlich als
+            kind="response" in der Inbox des Auftraggebers — `inbox()` genügt.
+            `for_sender` filtert die Outbox auf Antworten an einen bestimmten
+            Auftraggeber; auf einem gebundenen Kanal ist das immer dein Name.
+            """
+            if identity is not None:
+                try:
+                    for_sender = resolve_ident(identity, for_sender, "for_sender")
+                except ScopeError as exc:
+                    return [{"error": str(exc)}]
+            _log(kanal, "read_responses", worker=worker, for_sender=for_sender)
+            out = Mailbox(MAILBOX_ROOT, worker).read_responses()
+            if for_sender:
+                out = [r for r in out if r.get("to") == for_sender]
+            return out
+
+    if on("claim_task"):
+        @mcp.tool()
+        def claim_task(task_id: str, agent: str | None = None) -> dict:
+            """Einen Task aus der eigenen Inbox annehmen, BEVOR du daran arbeitest.
+
+            Markiert ihn als "in Arbeit" (inbox → .processing) — im Dashboard sichtbar,
+            und kein Watcher greift ihn doppelt. `agent` = du selbst (der Bearbeiter;
+            auf einem gebundenen Kanal weglassen). Danach: Aufgabe erledigen und mit
+            complete_task abschließen.
+            """
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "claim_task", agent=wer, task=task_id)
+            env = Mailbox(MAILBOX_ROOT, wer).claim_task(task_id)
+            if env is None:
+                return {"error": f"Task {task_id} liegt nicht (mehr) bei {wer}."}
+            return {"claimed": task_id, "instruction": env.get("instruction", ""), "status": "running"}
+
+    if on("complete_task"):
+        @mcp.tool()
+        def complete_task(
+            task_id: str,
+            result: str,
+            status: str = "done",
+            log: str = "",
+            agent: str | None = None,
+        ) -> dict:
+            """Einen bearbeiteten Task abschließen — das Gegenstück zu send_task.
+
+            IMMER aufrufen, wenn du einen Task aus deiner Inbox fertig bearbeitet hast:
+            legt `result` als kind="response" in die Inbox des Auftraggebers (der es
+            dort per inbox() sieht), archiviert es in deiner Outbox und räumt den Task
+            aus deiner Inbox. Ohne diesen Aufruf bleibt der Task für immer pending.
+            `agent` = du selbst (der Bearbeiter — NICHT der Auftraggeber; auf einem
+            gebundenen Kanal weglassen), status: "done" bei Erfolg, "error" bei Fehlschlag.
+            """
+            if status not in ("done", "error"):
+                return {"error": 'status muss "done" oder "error" sein'}
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "complete_task", agent=wer, task=task_id, status=status, zeichen=len(result))
+            Mailbox(MAILBOX_ROOT, wer).write_response(task_id, result, status, log)
+            return {"task_id": task_id, "agent": wer, "status": status}
+
+    # --- Agent-↔-Agent-Kommunikation ----------------------------------------
+
+    if on("send_message"):
+        @mcp.tool()
+        def send_message(to: str, text: str, sender: str | None = None) -> dict:
+            """Informativen Hinweis an einen anderen Agenten schicken (keine Aufgabe).
+
+            `sender` = dein Name (auf einem gebundenen Kanal weglassen)."""
+            try:
+                absender = ident(sender, "sender") if identity else (sender or "orchestrator")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "send_message", to=to, sender=absender, zeichen=len(text))
+            return Mailbox(MAILBOX_ROOT, to).post(
+                {"kind": "message", "sender": absender, "to": to, "text": text}
+            )
+
+    if on("ask"):
+        @mcp.tool()
+        def ask(to: str, question: str, sender: str | None = None, reply_to: str | None = None) -> dict:
+            """Eine Rückfrage stellen, die eine Antwort braucht (Status needs_confirm).
+
+            Damit fragt ein Worker z.B. den Koordinator nach Klärung — oder der
+            Koordinator den Nutzer. Im Dashboard erscheint das als offene Rückfrage.
+            `sender` = dein Name (auf einem gebundenen Kanal weglassen).
+            """
+            try:
+                absender = ident(sender, "sender") if identity else (sender or "orchestrator")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "ask", to=to, sender=absender)
+            return Mailbox(MAILBOX_ROOT, to).post(
+                {
+                    "kind": "question",
+                    "sender": absender,
+                    "to": to,
+                    "text": question,
+                    "status": "needs_confirm",
+                    "reply_to": reply_to,
+                }
+            )
+
+    if on("answer"):
+        @mcp.tool()
+        def answer(to: str, text: str, sender: str | None = None, reply_to: str | None = None) -> dict:
+            """Eine Rückfrage beantworten. `reply_to` = id der beantworteten question.
+
+            `sender` = dein Name (auf einem gebundenen Kanal weglassen)."""
+            try:
+                absender = ident(sender, "sender") if identity else (sender or "orchestrator")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "answer", to=to, sender=absender)
+            return Mailbox(MAILBOX_ROOT, to).post(
+                {"kind": "answer", "sender": absender, "to": to, "text": text, "reply_to": reply_to}
+            )
+
+    if on("inbox"):
+        @mcp.tool()
+        def inbox(agent: str | None = None, kind: str | None = None) -> list[dict]:
+            """Eingehende Envelopes eines Agenten lesen (Tasks, Nachrichten, Rückfragen
+            und Task-Ergebnisse).
+
+            `agent` = Besitzer der Inbox — auf einem gebundenen Kanal weglassen,
+            du liest immer deine eigene. Ergebnisse delegierter Tasks kommen als
+            kind="response" mit reply_to=<task_id> hier an. Die Inbox enthält nur
+            Unerledigtes: Verarbeitetes danach mit mark_read archivieren (Tasks
+            stattdessen mit claim_task/complete_task abschließen), sonst kommt
+            derselbe Stapel bei jedem Aufruf wieder.
+            """
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return [{"error": str(exc)}]
+            _log(kanal, "inbox", agent=wer, kind=kind)
+            return [normalize_envelope(e) for e in Mailbox(MAILBOX_ROOT, wer).read_inbox(kind)]
+
+    if on("mark_read"):
+        @mcp.tool()
+        def mark_read(envelope_id: str, agent: str | None = None) -> dict:
+            """Einen verarbeiteten Envelope (message/answer/response/erledigte question) archivieren.
+
+            Verschiebt ihn aus der Inbox nach inbox/.archive/ — er taucht bei künftigen
+            inbox()-Aufrufen nicht mehr auf. Offene Tasks lassen sich so NICHT
+            wegräumen (dafür complete_task). `agent` = Besitzer der Inbox (auf einem
+            gebundenen Kanal weglassen).
+            """
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "mark_read", agent=wer, envelope=envelope_id)
+            try:
+                moved = Mailbox(MAILBOX_ROOT, wer).mark_read(envelope_id)
+            except ValueError as exc:
+                return {"error": str(exc)}
+            if not moved:
+                return {"error": f"Envelope {envelope_id} liegt nicht in der Inbox von {wer}."}
+            return {"archived": envelope_id}
+
+    # --- Projektdateien ------------------------------------------------------
+
+    if on("write_project_file"):
+        @mcp.tool()
+        def write_project_file(project: str, relpath: str, content: str) -> dict:
+            """Schreibt eine Datei unter /workspace/projects/<project>/<relpath>."""
+            _log(kanal, "write_project_file", project=project, pfad=relpath, zeichen=len(content))
+            target = _safe(PROJECTS_ROOT, project, relpath)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            return {"path": str(target), "bytes": len(content.encode("utf-8"))}
+
+    if on("read_project_file"):
+        @mcp.tool()
+        def read_project_file(project: str, relpath: str) -> str:
+            """Liest eine Datei unter /workspace/projects/<project>/<relpath>."""
+            _log(kanal, "read_project_file", project=project, pfad=relpath)
+            data = _safe(PROJECTS_ROOT, project, relpath).read_bytes()
+            return decode_text(data)[0]
+
+    # --- Integrationen (config-getrieben, generisch) -------------------------
+
+    if on("list_integrations"):
+        @mcp.tool()
+        def list_integrations() -> list[dict]:
+            """Verfügbare Integrationen (Name + erlaubte Methoden), ohne Secrets."""
+            _log(kanal, "list_integrations")
+            return integrations.list_integrations()
+
+    if on("call_integration"):
+        @mcp.tool()
+        def call_integration(name: str, method: str = "GET", path: str = "/", body: dict | None = None) -> dict:
+            """Einen konfigurierten HTTP-Endpunkt aufrufen (z.B. eine interne API abfragen).
+
+            Nur in integrations.yaml definierte Integrationen + erlaubte Methoden.
+            Auth wird serverseitig injiziert. Gibt {status, body} zurück.
+            """
+            _log(kanal, "call_integration", name=name, method=method, path=path)
+            try:
+                return integrations.call_integration(name, method, path, body)
+            except integrations.IntegrationError as exc:
+                return {"error": str(exc)}
 
 
-@mcp.tool()
-def create_task(agent: str, instruction: str, project: str | None = None) -> dict:
-    """Alias für send_task mit sender=orchestrator (Rückwärtskompatibilität)."""
-    return send_task(to=agent, instruction=instruction, sender="orchestrator", project=project)
+def build_server(port: int, identity: str | None = None, allowed: set[str] | None = None) -> FastMCP:
+    """Eine FastMCP-Instanz für einen Kanal bauen (freier oder gebundener)."""
+    name = "agent-dashboard" if identity is None else f"agent-dashboard[{identity}]"
+    mcp = FastMCP(name, host=MCP_HOST, port=port)
+    register_tools(mcp, identity, allowed)
+    return mcp
 
 
-@mcp.tool()
-def read_responses(worker: str, for_sender: str | None = None) -> list[dict]:
-    """Rückmeldungen aus der Outbox eines BEARBEITERS lesen (Archiv erledigter Tasks).
-
-    `worker` ist der Agent, der für dich gearbeitet hat — NICHT dein eigener
-    Name (anders als bei claim_task/complete_task, wo `agent` = du selbst).
-    Die eigene Outbox enthält nur die eigenen Antworten an andere.
-    Meist unnötig: Ergebnisse landen beim Abschließen zusätzlich als
-    kind="response" in der Inbox des Auftraggebers — `inbox(<dein Name>)`
-    genügt. `for_sender` filtert die Outbox auf Antworten an einen
-    bestimmten Auftraggeber (das `to`-Feld der Response).
-    """
-    out = Mailbox(MAILBOX_ROOT, worker).read_responses()
-    if for_sender:
-        out = [r for r in out if r.get("to") == for_sender]
-    return out
-
-
-@mcp.tool()
-def claim_task(agent: str, task_id: str) -> dict:
-    """Einen Task aus der eigenen Inbox annehmen, BEVOR du daran arbeitest.
-
-    Markiert ihn als "in Arbeit" (inbox → .processing) — im Dashboard sichtbar,
-    und kein Watcher greift ihn doppelt. `agent` = du selbst (der Bearbeiter).
-    Danach: Aufgabe erledigen und mit complete_task abschließen.
-    """
-    env = Mailbox(MAILBOX_ROOT, agent).claim_task(task_id)
-    if env is None:
-        return {"error": f"Task {task_id} liegt nicht (mehr) bei {agent}."}
-    return {"claimed": task_id, "instruction": env.get("instruction", ""), "status": "running"}
-
-
-@mcp.tool()
-def complete_task(agent: str, task_id: str, result: str, status: str = "done", log: str = "") -> dict:
-    """Einen bearbeiteten Task abschließen — das Gegenstück zu send_task.
-
-    IMMER aufrufen, wenn du einen Task aus deiner Inbox fertig bearbeitet hast:
-    legt `result` als kind="response" in die Inbox des Auftraggebers (der es
-    dort per inbox() sieht), archiviert es in deiner Outbox und räumt den Task
-    aus deiner Inbox. Ohne diesen Aufruf bleibt der Task für immer pending.
-    `agent` = du selbst (der Bearbeiter — NICHT der Auftraggeber),
-    status: "done" bei Erfolg, "error" bei Fehlschlag.
-    """
-    if status not in ("done", "error"):
-        return {"error": 'status muss "done" oder "error" sein'}
-    Mailbox(MAILBOX_ROOT, agent).write_response(task_id, result, status, log)
-    return {"task_id": task_id, "agent": agent, "status": status}
-
-
-# --- Agent-↔-Agent-Kommunikation ------------------------------------------
-
-@mcp.tool()
-def send_message(to: str, text: str, sender: str = "orchestrator") -> dict:
-    """Informativen Hinweis an einen anderen Agenten schicken (keine Aufgabe)."""
-    return Mailbox(MAILBOX_ROOT, to).post(
-        {"kind": "message", "sender": sender, "to": to, "text": text}
-    )
-
-
-@mcp.tool()
-def ask(to: str, question: str, sender: str = "orchestrator", reply_to: str | None = None) -> dict:
-    """Eine Rückfrage stellen, die eine Antwort braucht (Status needs_confirm).
-
-    Damit fragt ein Worker z.B. den Koordinator nach Klärung — oder der
-    Koordinator den Nutzer. Im Dashboard erscheint das als offene Rückfrage.
-    """
-    return Mailbox(MAILBOX_ROOT, to).post(
-        {
-            "kind": "question",
-            "sender": sender,
-            "to": to,
-            "text": question,
-            "status": "needs_confirm",
-            "reply_to": reply_to,
-        }
-    )
-
-
-@mcp.tool()
-def answer(to: str, text: str, sender: str = "orchestrator", reply_to: str | None = None) -> dict:
-    """Eine Rückfrage beantworten. `reply_to` = id der beantworteten question."""
-    return Mailbox(MAILBOX_ROOT, to).post(
-        {"kind": "answer", "sender": sender, "to": to, "text": text, "reply_to": reply_to}
-    )
-
-
-@mcp.tool()
-def inbox(agent: str, kind: str | None = None) -> list[dict]:
-    """Eingehende Envelopes eines Agenten lesen (Tasks, Nachrichten, Rückfragen
-    und Task-Ergebnisse).
-
-    Ein Koordinator nutzt das, um zu sehen, was Worker ihm geschickt haben —
-    auch die Ergebnisse delegierter Tasks: sie kommen als kind="response" mit
-    reply_to=<task_id> hier an. Die Inbox enthält nur Unerledigtes:
-    Verarbeitetes danach mit mark_read archivieren (Tasks stattdessen mit
-    claim_task/complete_task abschließen), sonst kommt derselbe Stapel bei
-    jedem Aufruf wieder.
-    """
-    return [normalize_envelope(e) for e in Mailbox(MAILBOX_ROOT, agent).read_inbox(kind)]
-
-
-@mcp.tool()
-def mark_read(agent: str, envelope_id: str) -> dict:
-    """Einen verarbeiteten Envelope (message/answer/response/erledigte question) archivieren.
-
-    Verschiebt ihn aus der Inbox nach inbox/.archive/ — er taucht bei künftigen
-    inbox()-Aufrufen nicht mehr auf. Offene Tasks lassen sich so NICHT
-    wegräumen (dafür complete_task). `agent` = Besitzer der Inbox.
-    """
+def build_all() -> list[FastMCP]:
+    """Freier Kanal + ein gebundener Kanal je SSH-Agent; schreibt die Port-Map."""
+    instances = [build_server(MCP_PORT)]
     try:
-        moved = Mailbox(MAILBOX_ROOT, agent).mark_read(envelope_id)
-    except ValueError as exc:
-        return {"error": str(exc)}
-    if not moved:
-        return {"error": f"Envelope {envelope_id} liegt nicht in der Inbox von {agent}."}
-    return {"archived": envelope_id}
+        scopes, warnungen = mcp_scope.compute_scopes(load_agents_full())
+    except Exception as exc:  # noqa: BLE001 — kaputte agents.yaml darf :9000 nicht killen
+        print(f"[mcp] Scopes nicht ladbar ({exc}) — nur freier Kanal :{MCP_PORT}", flush=True)
+        return instances
+    for warnung in warnungen:
+        print(f"[mcp] WARNUNG {warnung}", flush=True)
+    for name, sc in scopes.items():
+        tools = sc.get("tools")
+        allowed = None if tools is None else set(tools)
+        instances.append(build_server(sc["port"], identity=name, allowed=allowed))
+        umfang = "alle Tools" if allowed is None else f"{len(allowed)} Tools"
+        print(f"[mcp] gebundener Kanal {name} auf :{sc['port']} ({umfang})", flush=True)
+    mcp_scope.write_port_map(scopes)
+    return instances
 
 
-# --- Projektdateien --------------------------------------------------------
+async def _serve(instances: list[FastMCP]) -> None:
+    import uvicorn
 
-@mcp.tool()
-def write_project_file(project: str, relpath: str, content: str) -> dict:
-    """Schreibt eine Datei unter /workspace/projects/<project>/<relpath>."""
-    target = _safe(PROJECTS_ROOT, project, relpath)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    return {"path": str(target), "bytes": len(content.encode("utf-8"))}
-
-
-@mcp.tool()
-def read_project_file(project: str, relpath: str) -> str:
-    """Liest eine Datei unter /workspace/projects/<project>/<relpath>."""
-    data = _safe(PROJECTS_ROOT, project, relpath).read_bytes()
-    return decode_text(data)[0]
-
-
-# --- Integrationen (config-getrieben, generisch) ---------------------------
-
-@mcp.tool()
-def list_integrations() -> list[dict]:
-    """Verfügbare Integrationen (Name + erlaubte Methoden), ohne Secrets."""
-    return integrations.list_integrations()
-
-
-@mcp.tool()
-def call_integration(name: str, method: str = "GET", path: str = "/", body: dict | None = None) -> dict:
-    """Einen konfigurierten HTTP-Endpunkt aufrufen (z.B. eine interne API abfragen).
-
-    Nur in integrations.yaml definierte Integrationen + erlaubte Methoden.
-    Auth wird serverseitig injiziert. Gibt {status, body} zurück.
-    """
-    try:
-        return integrations.call_integration(name, method, path, body)
-    except integrations.IntegrationError as exc:
-        return {"error": str(exc)}
+    servers = []
+    for m in instances:
+        cfg = uvicorn.Config(
+            m.streamable_http_app(),
+            host=m.settings.host,
+            port=m.settings.port,
+            log_level="warning",
+        )
+        servers.append(uvicorn.Server(cfg).serve())
+    await asyncio.gather(*servers)
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    alle = build_all()
+    print(f"[mcp] {len(alle)} Kanäle — frei :{MCP_PORT} auf {MCP_HOST}", flush=True)
+    asyncio.run(_serve(alle))

@@ -41,6 +41,10 @@ backend/
                            /workspace/config/known_hosts) — von bridge/SFTP/tunnel genutzt
     config.py              Settings (settings.json) + Verbindungen (agents.yaml)
     integrations.py        config-getriebene HTTP-Tools (integrations.yaml), generisch
+    mcp_scope.py           Kanal-Identität + Tool-Allowlists je Agent (Issue #13):
+                           Port-Vergabe (frei :9000, gebunden ab :9100), Port-Map
+                           mcp_ports.json, resolve_ident; reine Stdlib, Tests in
+                           backend/tests/test_mcp_scope.py
     ssh_bridge.py          WebSocket ↔ asyncssh (Terminal); Sessions überleben
                            das Fenster-Schließen (stabile sids "main", "2", … —
                            mehrere Terminals pro Verbindung möglich;
@@ -72,6 +76,7 @@ cd backend && python orchestrator.py           # CLI-Chat statt Web
 
 # Vertical Slice ohne LLM (nur Standardlib, läuft überall)
 python scripts/agent_watcher.py --agent frontend --root /tmp/mb/mailboxes --dry-run --once
+cd backend && python -m tests.test_mcp_scope       # Scoping-Logik (stdlib)
 
 # Ganzer Stack
 docker compose up --build                      # nginx+api+mcp+telegram via supervisord
@@ -95,10 +100,21 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   Reverse-SSH-Tunnel (`app/mcp_tunnel.py`): pro SSH-Agent aus agents.yaml lauscht auf
   dem Agenten-PC 127.0.0.1:<mcp_port> (Default 9000) auf den Container-MCP. Claude-Code
   dort einmalig via `scripts/setup_agent_pc.sh` registrieren — dann können Agenten
-  selbst inbox/ask/answer/send_message nutzen. Der MCP-Port bleibt trotzdem
+  selbst inbox/ask/answer/send_message nutzen. Alle MCP-Ports bleiben
   unveröffentlicht (nur Loopback + Key-Auth-Tunnel). Einträge ohne existierende
   key_file werden übersprungen; agents.yaml wird alle 60 s neu eingelesen.
   Aufgaben-Transport an die Watcher bleibt die Datei-Mailbox.
+- **Kanal-Identität + Tool-Scoping (Issue #13, `app/mcp_scope.py`):** Pro SSH-Agent
+  lauscht im Container ein EIGENER, an den Agentennamen gebundener MCP-Port (auto ab
+  :9100, explizit `mcp_local_port`); der Tunnel forwardet dorthin statt auf :9000.
+  Auf gebundenen Kanälen leitet der Server agent/sender aus der Bindung ab und lehnt
+  fremde Werte ab; `tools:` am Agenten (agents.yaml) blendet nicht erlaubte Tools
+  komplett aus. Server schreibt die aktive Port-Map nach mcp_ports.json, der Tunnel
+  liest sie (Fallback :9000 nur für Agenten OHNE Allowlist). Der freie Kanal :9000
+  (Orchestrator) verhält sich unverändert. Tool-Registrierung läuft über
+  `register_tools(mcp, identity, allowed)` in mcp_server.py — beim Tool-Ergänzen dort
+  registrieren UND den Namen in mcp_scope.KNOWN_TOOLS aufnehmen. Nach Änderungen an
+  tools/mcp_local_port: `supervisorctl restart mcp`.
 - **Agent-↔-Agent (Mailbox v2):** Envelopes haben `kind` (task/message/question/
   answer/response) + `sender`/`to`. MCP-Tools: `send_task`/`send_message`/`ask`/
   `answer`/`inbox`, dazu der Task-Lebenszyklus für MCP-getriebene Agenten:

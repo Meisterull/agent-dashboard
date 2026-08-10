@@ -148,6 +148,22 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
 - Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)`
 
+**Kanal-Identität + Tool-Scoping** (`app/mcp_scope.py`): Neben dem freien Kanal
+`:9000` (Orchestrator, intern) lauscht **pro SSH-Agent ein eigener, an dessen
+Namen gebundener Port** (automatisch ab `:9100`, explizit via `mcp_local_port`).
+Der Reverse-Tunnel des Agenten forwardet auf genau diesen Port — die Identität
+kommt fälschungssicher aus dem Kanal, nicht aus einem Parameter: auf gebundenen
+Kanälen werden `agent`/`sender` aus der Bindung abgeleitet (Parameter einfach
+weglassen), abweichende Werte lehnt der Server ab. Optional begrenzt eine
+Allowlist am Agenten (`tools: [inbox, mark_read, …]` in `agents.yaml`), welche
+Tools der Kanal überhaupt in der Tool-Liste sieht — so lässt sich z. B. ein
+Claude-Desktop-Client auf reine Mailbox-Nutzung beschränken. Die aktive
+Port-Zuordnung schreibt der Server nach `/workspace/config/mcp_ports.json`
+(liest der Tunnel); jeder Tool-Aufruf wird mit Kanal-Namen geloggt. Agenten ohne
+Eintrag in der Map fallen auf `:9000` zurück — **außer** sie haben eine
+Allowlist, dann pausiert ihr Tunnel, bis der MCP-Dienst neu gestartet wurde
+(die Allowlist wird nie über den freien Kanal umgangen).
+
 ### Frontend (`frontend/src/`)
 
 | Datei | Zweck |
