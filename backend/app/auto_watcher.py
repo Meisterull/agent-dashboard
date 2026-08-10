@@ -68,9 +68,10 @@ def _ssh_cfg(agent: dict[str, Any]) -> dict[str, Any] | None:
         "user": conn.get("user"),
         "key_file": key_file,
         "mcp_port": int(conn.get("mcp_port", REMOTE_MCP_PORT_DEFAULT)),
-        # Optional in agents.yaml: eigenes Arbeitsverzeichnis / Python-Kommando
+        # Optional in agents.yaml: Arbeitsverzeichnis / Python- / Claude-Kommando
         "workdir": agent.get("workdir") or conn.get("workdir"),
         "python": agent.get("python") or conn.get("python") or "python3",
+        "claude_bin": agent.get("claude_bin") or conn.get("claude_bin"),
     }
 
 
@@ -218,6 +219,8 @@ class AutoWatcherManager:
                     )
                     if cfg.get("workdir"):
                         cmd += f" --workdir {shlex.quote(str(cfg['workdir']))}"
+                    if cfg.get("claude_bin"):
+                        cmd += f" --claude-bin {shlex.quote(str(cfg['claude_bin']))}"
                     proc = await conn.create_process(cmd, stderr=asyncssh.STDOUT)
                     w.proc = proc
                     w.setze("an", "")

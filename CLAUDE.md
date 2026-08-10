@@ -131,7 +131,13 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   Aus = sanft ("stop" auf stdin, laufender claude-Lauf darf fertig werden, Deckel
   AUTO_STOP_GRACE 1860 s); Not-Aus = hart (Verbindung schließen — portabel, auch
   Windows ohne Signal-Support). Optional je Agent in agents.yaml: `workdir`,
-  `python` (Default python3). Achtung unbeaufsichtigt: `claude --print` läuft
+  `python` (Default python3), `claude_bin` (Pfad/Name des Claude-Binaries).
+  Robustheit (Issue #14): Preflight VOR dem ersten Claim (workdir + Binary via
+  `finde_claude` — sucht nach `which` auch ~/.local/bin & Co., weil die
+  nicht-interaktive SSH-Shell den Login-PATH nicht hat); bei kaputter Umgebung
+  Exit statt Warteschlange fressen, ebenso nach 3 sofortigen Fehlschlägen in
+  Folge (`fehlerserie`); leeres result bei status=error wird mit der
+  Fehlerursache gefüllt. Achtung unbeaufsichtigt: `claude --print` läuft
   mit der Berechtigungs-Config des Agenten-PCs.
 - **Agent-↔-Agent (Mailbox v2):** Envelopes haben `kind` (task/message/question/
   answer/response) + `sender`/`to`. MCP-Tools: `send_task`/`send_message`/`ask`/

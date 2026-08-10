@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,13 @@ from pathlib import Path
 
 # Sanft-Stopp-Signal: gesetzt durch "stop" auf stdin oder stdin-EOF.
 STOP = threading.Event()
+
+# Fehlschlag-Dämpfung (Issue #14): Scheitern mehrere Tasks unmittelbar
+# hintereinander, ist die Umgebung kaputt (Binary weg, workdir weg, …) —
+# dann anhalten statt die Warteschlange im Sekundentakt zu verbrauchen.
+FEHLER_SCHWELLE = 3       # so viele schnelle Fehlschläge in Folge → Stopp
+SCHNELL_SEKUNDEN = 20.0   # "schnell" = Lauf endete früher als das
+_schnelle_fehler = 0
 
 # Muss zur Allowlist in app/mailbox.py passen — sender wird in Pfade gejoint.
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -95,19 +103,78 @@ def mcp_hint(agent: str) -> str:
     )
 
 
-def run_claude(instruction: str, workdir: Path, dry_run: bool) -> tuple[str, str, int]:
+def finde_claude(hint: str) -> str | None:
+    """Claude-Binary auflösen (Issue #14).
+
+    Der Watcher läuft in einer nicht-interaktiven SSH-Shell — deren PATH
+    enthält ~/.local/bin (Standard-Installationsort von Claude Code) meist
+    NICHT. Deshalb nach `which` noch die üblichen Installationsorte absuchen."""
+    if os.sep in hint or (os.altsep and os.altsep in hint):
+        pfad = Path(hint).expanduser()
+        return str(pfad) if pfad.is_file() and os.access(pfad, os.X_OK) else None
+    gefunden = shutil.which(hint)
+    if gefunden:
+        return gefunden
+    home = Path.home()
+    zusatz = (home / ".local" / "bin", home / ".npm-global" / "bin",
+              home / "bin", Path("/usr/local/bin"), Path("/opt/homebrew/bin"))
+    return shutil.which(hint, path=os.pathsep.join(str(d) for d in zusatz))
+
+
+def preflight(claude_hint: str, workdir: Path, dry_run: bool) -> str | None:
+    """Arbeitsfähigkeit prüfen, BEVOR der erste Task beansprucht wird.
+
+    Gibt einen Klartext-Fehler zurück (landet als letzte Log-Zeile im
+    Automatik-Panel) oder None. Ohne diese Prüfung würde eine kaputte
+    Umgebung jeden eingehenden Task verbrauchen und mit leerem error
+    quittieren (Issue #14)."""
+    if not workdir.is_dir():
+        return f"Arbeitsverzeichnis fehlt auf dem Agenten-PC: {workdir}"
+    if dry_run:
+        return None
+    if finde_claude(claude_hint) is None:
+        return (f"Claude-Binary '{claude_hint}' nicht gefunden — weder im PATH "
+                f"({os.environ.get('PATH', '')}) noch in ~/.local/bin & Co. "
+                f"In agents.yaml 'claude_bin' setzen oder Claude-Code installieren.")
+    return None
+
+
+def fehlerserie(status: str, dauer: float) -> bool:
+    """Fehlschlag-Zähler füttern; True = anhalten (Serie sofortiger Fehler)."""
+    global _schnelle_fehler
+    if status == "error" and dauer < SCHNELL_SEKUNDEN:
+        _schnelle_fehler += 1
+    else:
+        _schnelle_fehler = 0
+    return _schnelle_fehler >= FEHLER_SCHWELLE
+
+
+def run_claude(claude_bin: str, instruction: str, workdir: Path,
+               dry_run: bool) -> tuple[str, str, int]:
     """Gibt (result, log, returncode) zurück."""
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
     # Headless Claude-Code. --print => einmalige, nicht-interaktive Ausführung.
-    proc = subprocess.run(
-        ["claude", "--print", instruction],
-        cwd=str(workdir),
-        capture_output=True,
-        text=True,
-        timeout=1800,
-    )
+    try:
+        proc = subprocess.run(
+            [claude_bin, "--print", instruction],
+            cwd=str(workdir),
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+    except FileNotFoundError:
+        # errno 2 allein nennt die Datei nicht — hier Klartext liefern (#14).
+        return "", f"Claude-Binary nicht ausführbar: {claude_bin}", 127
     return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
+
+
+def fehler_result(result: str, err: str) -> str:
+    """Leeres result bei status=error ist für den Auftraggeber wertlos —
+    dort gehört die Fehlerursache hinein (Issue #14)."""
+    if result:
+        return result
+    return f"[watcher] Ausführung fehlgeschlagen: {err[:2000] or 'keine Ausgabe'}"
 
 
 def stdin_stop_waechter() -> None:
@@ -224,7 +291,7 @@ class McpClient:
         return daten
 
 
-def mcp_loop(url: str, agent: str, workdir: Path, interval: float,
+def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: float,
              dry_run: bool, with_mcp_hint: bool, once: bool = False) -> int:
     """Poll-Schleife über MCP: inbox → claim_task → claude → complete_task.
 
@@ -259,16 +326,25 @@ def mcp_loop(url: str, agent: str, workdir: Path, interval: float,
                 print(f"[{now()}] {agent}: bearbeite {task_id}", flush=True)
                 if with_mcp_hint:
                     instruction = mcp_hint(agent) + instruction
+                start = time.monotonic()
                 try:
-                    result, err, rc = run_claude(instruction, workdir, dry_run)
+                    result, err, rc = run_claude(claude_bin, instruction, workdir, dry_run)
                     status = "done" if rc == 0 else "error"
                 except Exception as exc:  # noqa: BLE001 — alles zurückmelden
                     result, err, status = "", repr(exc), "error"
+                dauer = time.monotonic() - start
+                if status == "error":
+                    result = fehler_result(result, err)
                 client.call("complete_task", {
                     "task_id": task_id, "result": result,
                     "status": status, "log": err,
                 })
                 print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})", flush=True)
+                if fehlerserie(status, dauer):
+                    print(f"[{now()}] {agent}: {FEHLER_SCHWELLE} Tasks in Folge sofort "
+                          f"gescheitert — Umgebungsproblem vermutet, Watcher hält an. "
+                          f"Letzter Fehler: {err[:300]}", flush=True)
+                    return 1
             if once:
                 break
         except (McpFehler, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
@@ -288,8 +364,9 @@ def mcp_loop(url: str, agent: str, workdir: Path, interval: float,
 
 
 def process_once(inbox: Path, processing: Path, outbox: Path,
-                 agent: str, workdir: Path, dry_run: bool,
+                 agent: str, claude_bin: str, workdir: Path, dry_run: bool,
                  with_mcp_hint: bool = False) -> int:
+    """Gibt die Zahl bearbeiteter Tasks zurück; -1 = Fehlerserie, bitte anhalten."""
     handled = 0
     for task_path in sorted(inbox.glob("*.json")):
         # Nur Arbeitsaufträge ausführen; Agent-↔-Agent-Nachrichten (message/
@@ -314,12 +391,15 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         sender = task.get("sender") or ""
         root = inbox.parent.parent  # root/<agent>/inbox → Mailbox-Wurzel
         print(f"[{now()}] {agent}: bearbeite {task_id}", flush=True)
+        start = time.monotonic()
         try:
             instruction = task["instruction"]
             if with_mcp_hint:
                 instruction = mcp_hint(agent) + instruction
-            result, err, rc = run_claude(instruction, workdir, dry_run)
+            result, err, rc = run_claude(claude_bin, instruction, workdir, dry_run)
             status = "done" if rc == 0 else "error"
+            if status == "error":
+                result = fehler_result(result, err)
             atomic_write_json(
                 outbox / f"{task_id}-response.json",
                 {"task_id": task_id, "agent": agent, "to": sender or None,
@@ -328,16 +408,23 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             )
             deliver_response(root, sender, agent, task_id, result, status)
         except Exception as exc:  # noqa: BLE001 — alles zurückmelden, nie crashen
+            status, err = "error", repr(exc)
             atomic_write_json(
                 outbox / f"{task_id}-response.json",
                 {"task_id": task_id, "agent": agent, "to": sender or None,
-                 "result": "", "status": "error", "log": repr(exc),
+                 "result": fehler_result("", err), "status": "error", "log": err,
                  "responded_at": now()},
             )
-            deliver_response(root, sender, agent, task_id, "", "error")
+            deliver_response(root, sender, agent, task_id, fehler_result("", err), "error")
         finally:
             claimed.unlink(missing_ok=True)
         handled += 1
+        print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})", flush=True)
+        if fehlerserie(status, time.monotonic() - start):
+            print(f"[{now()}] {agent}: {FEHLER_SCHWELLE} Tasks in Folge sofort "
+                  f"gescheitert — Umgebungsproblem vermutet, Watcher hält an. "
+                  f"Letzter Fehler: {err[:300]}", flush=True)
+            return -1
     return handled
 
 
@@ -348,6 +435,9 @@ def main() -> int:
     ap.add_argument("--mcp-url", help="MCP-Endpunkt (http://127.0.0.1:<mcp_port>/mcp) — "
                                       "Transport über den Reverse-Tunnel, kein Mount nötig")
     ap.add_argument("--workdir", default=".", help="Arbeitsverzeichnis für Claude-Code")
+    ap.add_argument("--claude-bin", default="claude",
+                    help="Claude-Binary (Name oder Pfad); Default: 'claude' im PATH "
+                         "bzw. den üblichen Installationsorten (~/.local/bin …)")
     ap.add_argument("--interval", type=float, default=2.0)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--once", action="store_true", help="einmal durchlaufen und beenden")
@@ -360,12 +450,21 @@ def main() -> int:
     workdir = Path(args.workdir).resolve()
     stdin_stop_waechter()
 
+    # Preflight VOR dem ersten Claim: kaputte Umgebung → gar nicht erst
+    # anfangen, kein einziger Task geht verloren (Issue #14).
+    problem = preflight(args.claude_bin, workdir, args.dry_run)
+    if problem:
+        print(f"[{now()}] PREFLIGHT FEHLGESCHLAGEN: {problem}", flush=True)
+        return 1
+    claude_bin = args.claude_bin if args.dry_run else finde_claude(args.claude_bin)
+
     if args.mcp_url:
         print(f"[{now()}] Watcher gestartet für '{args.agent}' "
-              f"(dry_run={args.dry_run}) — MCP {args.mcp_url}", flush=True)
+              f"(dry_run={args.dry_run}, claude={claude_bin}) — MCP {args.mcp_url}",
+              flush=True)
         try:
-            return mcp_loop(args.mcp_url, args.agent, workdir, args.interval,
-                            args.dry_run, args.mcp_hint, args.once)
+            return mcp_loop(args.mcp_url, args.agent, claude_bin, workdir,
+                            args.interval, args.dry_run, args.mcp_hint, args.once)
         except KeyboardInterrupt:
             print("\nWatcher beendet.", flush=True)
             return 0
@@ -379,8 +478,9 @@ def main() -> int:
           f"(dry_run={args.dry_run}) — beobachte {inbox}", flush=True)
     try:
         while not STOP.is_set():
-            process_once(inbox, processing, outbox, args.agent, workdir,
-                         args.dry_run, args.mcp_hint)
+            if process_once(inbox, processing, outbox, args.agent, claude_bin,
+                            workdir, args.dry_run, args.mcp_hint) < 0:
+                return 1
             if args.once:
                 break
             STOP.wait(args.interval)
