@@ -158,10 +158,14 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path,
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
     # Headless Claude-Code. --print => einmalige, nicht-interaktive Ausführung.
+    # stdin=DEVNULL (Issue #16): der stdin des Watchers gehört dem Sanft-Stopp
+    # ("stop"-Zeile) — erbt ihn das Kind, kann claude das Stopp-Kommando
+    # verschlucken und wartet obendrein 3 s auf Piped-Input.
     try:
         proc = subprocess.run(
             [claude_bin, "--print", instruction],
             cwd=str(workdir),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=1800,
