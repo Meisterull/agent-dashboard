@@ -39,7 +39,6 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 SESSION_SECRET=$(openssl rand -hex 32)   # oder irgendeinen langen Zufallswert eintragen
 DOMAIN=agent-dashboard.local
-TELEGRAM_ENABLED=false              # Telegram bleibt aus
 ```
 
 > **Tipp:** Mit `ORCH_PROVIDER=ollama` läuft der Chat ohne Anthropic-Key. Aus dem
@@ -93,9 +92,10 @@ ein Build-Stage kompiliert die Python-Wheels). Was beim Start passiert:
 1. **entrypoint.sh** (als root): erzeugt bei Bedarf ein **self-signed SSL-Zertifikat**
    in `/workspace/ssl`, legt `/workspace/{projects,mailboxes,logs,uploads,config}` an,
    kopiert die Config-Vorlagen, `chown` auf den `app`-User, rendert die nginx-Config.
-2. **supervisord** startet vier Dienste und überwacht sie:
+2. **supervisord** startet die Dienste und überwacht sie:
    `nginx` (80/443) · `uvicorn` (FastAPI, intern :5000) · `mcp_server` (intern :9000) ·
-   `telegram` (nur wenn `TELEGRAM_ENABLED=true`, sonst Leerlauf).
+   `mcp-tunnel` (nur mit `MCP_TUNNEL_ENABLED=true`). Geht ein Dienst endgültig
+   nicht hoch (FATAL), beendet sich der Container und Docker startet ihn neu.
 
 Im Hintergrund laufen lassen: `docker compose up --build -d`.
 

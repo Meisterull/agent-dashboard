@@ -32,6 +32,8 @@ export async function login(password) {
   return res.json();
 }
 
+export const logout = () => jsend("/api/auth/logout", "POST");
+
 export const getAgents = () => jget("/api/agents");
 export const getTasks = (name) =>
   jget(`/api/agents/${encodeURIComponent(name)}/tasks`);
@@ -145,10 +147,14 @@ export const getSshBuffer = (name, sid) =>
   jget(
     `/api/ssh/${encodeURIComponent(name)}/buffer?sid=${encodeURIComponent(sid)}`,
   );
-export const getIntegrations = () => jget("/api/integrations");
+export const getSshSessions = () => jget("/api/ssh/sessions");
+export const deleteSshSession = (name, sid) =>
+  jsend(
+    `/api/ssh/${encodeURIComponent(name)}/session?sid=${encodeURIComponent(sid)}`,
+    "DELETE",
+  );
 export const getSettings = () => jget("/api/settings");
-export const getInbox = (name, kind) =>
-  jget(`/api/agents/${encodeURIComponent(name)}/inbox${kind ? `?kind=${kind}` : ""}`);
+export const getModels = () => jget("/api/models");
 export const getQuestions = () => jget("/api/questions");
 export const getChatSessions = () => jget("/api/chat/sessions");
 export const getChatHistory = (id) =>

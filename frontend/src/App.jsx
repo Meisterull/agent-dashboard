@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import TopBar from "./components/TopBar";
 import QuestionsBanner from "./components/QuestionsBanner";
 import Chat from "./components/Chat";
@@ -8,9 +8,12 @@ import TerminalPanel from "./components/TerminalPanel";
 import Workspace from "./components/Workspace";
 import ExternalFrame from "./components/ExternalFrame";
 import Settings from "./components/Settings";
-import EditorModal from "./components/EditorModal";
 import Login from "./components/Login";
-import { authCheck, getSettings } from "./api";
+import { authCheck, getSettings, logout } from "./api";
+
+// CodeMirror (+ language-data) ist der mit Abstand größte Brocken und wird
+// nur beim Öffnen einer Datei gebraucht → aus dem Hauptbundle heraushalten.
+const EditorModal = lazy(() => import("./components/EditorModal"));
 
 // Dashboard-Layout: auf dem Desktop (md+) sind die vier Panels frei
 // verschieb- und größenveränderbare Fenster (Workspace.jsx); Standard-
@@ -85,14 +88,38 @@ export default function App() {
 
   const bump = () => setRefreshKey((k) => k + 1);
 
+  // Abmelden: Cookie serverseitig löschen und zurück zum Login. Scheitert der
+  // Request (Netz weg), gehen wir trotzdem zum Login — das Cookie ist dann
+  // höchstens noch serverseitig gültig.
+  const abmelden = () =>
+    logout()
+      .catch(() => {})
+      .finally(() => setAuthed(false));
+
   // Aufmerksamkeit pro Panel: Fenster-Titel/Tab blinkt rot, bis der Nutzer
   // hineinklickt bzw. den Tab wählt. Quellen: Chat-Antwort fertig,
   // Task-Statuswechsel (AgentsPanel) und neue Rückfragen (QuestionsBanner).
-  const [attention, setAttention] = useState({});
-  const flag = useCallback(
-    (id) => setAttention((a) => (a[id] ? a : { ...a, [id]: true })),
-    [],
+  // Nur in der Tab-Ansicht (mobil oder Tab-Modus) verdeckt ein Panel die
+  // anderen — dort weiß man vom aktiven Tab schon alles, dort darf er also
+  // nicht blinken. Im Fenster-Modus am Desktop sind alle Panels sichtbar;
+  // "aktiv" gibt es nicht, jedes Fenster darf sich melden.
+  const [isDesktop, setIsDesktop] = useState(
+    () => window.matchMedia("(min-width: 768px)").matches,
   );
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const on = (e) => setIsDesktop(e.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  const sichtbarRef = useRef(null); // id des allein sichtbaren Panels (sonst null)
+  sichtbarRef.current = isDesktop && viewMode === "windows" ? null : tab;
+
+  const [attention, setAttention] = useState({});
+  const flag = useCallback((id) => {
+    if (sichtbarRef.current === id) return; // Panel liegt gerade offen vor dem Nutzer
+    setAttention((a) => (a[id] ? a : { ...a, [id]: true }));
+  }, []);
   const clearAttention = useCallback(
     (id) =>
       setAttention((a) => {
@@ -131,6 +158,7 @@ export default function App() {
         onToggleViewMode={() =>
           setViewMode((m) => (m === "windows" ? "tabs" : "windows"))
         }
+        onLogout={abmelden}
       />
       <QuestionsBanner
         refreshKey={refreshKey}
@@ -204,11 +232,19 @@ export default function App() {
 
       {showSettings && <Settings onClose={() => setShowSettings(false)} />}
       {openFile && (
-        <EditorModal
-          source={openFile.source}
-          path={openFile.path}
-          onClose={() => setOpenFile(null)}
-        />
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-white text-sm text-slate-400 dark:bg-slate-900 dark:text-slate-500">
+              Editor lädt…
+            </div>
+          }
+        >
+          <EditorModal
+            source={openFile.source}
+            path={openFile.path}
+            onClose={() => setOpenFile(null)}
+          />
+        </Suspense>
       )}
     </div>
   );

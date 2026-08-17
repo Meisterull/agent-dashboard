@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getConnections } from "../api";
+import { getConnections, getSshSessions, deleteSshSession } from "../api";
 import Terminal, { DEFAULT_SID } from "./Terminal";
 import ConnectionsModal from "./ConnectionsModal";
 
@@ -40,8 +40,7 @@ export default function TerminalPanel() {
   // sonst würde ein bloß im Hintergrund offenes Dashboard die Session eines
   // anderen PCs klauen, sobald es Fokus bekommt. Reattach dann per Tab-Klick.
   const loadSessions = (autoOpen = false) =>
-    fetch("/api/ssh/sessions")
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
+    getSshSessions()
       .then((d) => {
         const sess = d.sessions.map((s) => ({ name: s.name, sid: s.sid }));
         setRunning(sess);
@@ -95,16 +94,25 @@ export default function TerminalPanel() {
   };
 
   // ⏻ — Session serverseitig beenden (killt die Shell auf dem Agenten-PC).
-  const endSession = (tab) => {
-    fetch(
-      `/api/ssh/${encodeURIComponent(tab.name)}/session?sid=${encodeURIComponent(tab.sid)}`,
-      { method: "DELETE" },
+  // Unumkehrbar (ein laufender claude-Lauf stirbt mit) → Rückfrage. Der echte
+  // Zustand kommt aus loadSessions(), nicht aus lokalem Wegfiltern: sonst
+  // verschwindet der Punkt auch dann, wenn das Beenden gescheitert ist.
+  const endSession = async (tab) => {
+    const label = tab.sid === DEFAULT_SID ? tab.name : `${tab.name} ·${tab.sid}`;
+    if (
+      !window.confirm(
+        `Session „${label}“ wirklich beenden?\nDie Shell auf dem Agenten-PC wird gekillt — Laufendes geht verloren.`,
+      )
     )
-      .catch(() => {})
-      .finally(() => {
-        setRunning((r) => r.filter((t) => keyOf(t) !== keyOf(tab)));
-        close(tab);
-      });
+      return;
+    try {
+      await deleteSshSession(tab.name, tab.sid);
+      close(tab);
+    } catch (e) {
+      alert(`Beenden fehlgeschlagen: ${e.message}`);
+    } finally {
+      loadSessions();
+    }
   };
 
   // Shell hat sich selbst beendet (exit) oder wurde anderweitig gekillt.

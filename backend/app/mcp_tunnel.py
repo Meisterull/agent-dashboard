@@ -11,9 +11,12 @@ Hand zwischen den Instanzen vermitteln.
 Kanal-Identität: Das Forward-Ziel ist nicht mehr pauschal :9000, sondern der
 Port des Agenten aus der Port-Map (mcp_ports.json), die der MCP-Server beim
 Start schreibt — die Identität kommt damit fälschungssicher aus dem Kanal.
-Fehlt ein Agent in der Map (Server älter als der Eintrag): Fallback auf den
-freien Kanal :9000, AUSSER der Agent hat eine Tool-Allowlist konfiguriert —
-dann wird der Tunnel ausgesetzt statt die Allowlist zu umgehen.
+Fehlt ein Agent in der Map (Server älter als der Eintrag), wird sein Tunnel
+AUSGESETZT (M11): der freie Kanal :9000 war als Fallback doppelt schädlich —
+er gibt dem Agenten eine frei wählbare Identität, und der Automatik-Watcher
+schickt dort nie einen `agent`-Parameter mit, läuft also in endlose
+"agent fehlt"-Fehler, während das Panel "an" anzeigt. Sichtbar ausgesetzt ist
+besser als still kaputt; Abhilfe ist ein Neustart des MCP-Servers.
 
 Sicherheitsmodell: Alle MCP-Ports bleiben im Container auf 127.0.0.1 und werden
 nirgends veröffentlicht. Erreichbar sind sie ausschließlich über die
@@ -44,8 +47,8 @@ def _load_ssh_agents() -> dict[str, dict[str, Any]]:
     """name -> Tunnel-Config aller SSH-Agenten, deren Key-Datei existiert.
 
     `ziel_port` = gebundener Kanal des Agenten aus der Port-Map des MCP-Servers;
-    None solange die Map den Agenten (noch) nicht kennt. `nur_gebunden` = Agent
-    hat eine Tool-Allowlist — für ihn ist der freie Kanal kein Fallback."""
+    None solange die Map den Agenten (noch) nicht kennt — dann bekommt er
+    keinen Tunnel (M11)."""
     from app import mcp_scope
     from app.config import load_agents_full
 
@@ -70,7 +73,6 @@ def _load_ssh_agents() -> dict[str, dict[str, Any]]:
             "key_file": key_file,
             "remote_port": int(conn.get("mcp_port", REMOTE_PORT_DEFAULT)),
             "ziel_port": port_map.get(name),
-            "nur_gebunden": mcp_scope._tools_of(agent) is not None,
         }
     return out
 
@@ -90,10 +92,10 @@ async def _tunnel_loop(name: str, cfg: dict[str, Any]) -> None:
                 await conn.forward_remote_port(
                     "127.0.0.1", cfg["remote_port"], "127.0.0.1", cfg["ziel_port"]
                 )
-                kanal = "frei" if cfg["ziel_port"] == MCP_PORT else "gebunden"
                 print(
                     f"[mcp-tunnel] {name}: aktiv — auf {cfg['host']} lauscht "
-                    f"127.0.0.1:{cfg['remote_port']} -> Container-MCP :{cfg['ziel_port']} ({kanal})",
+                    f"127.0.0.1:{cfg['remote_port']} -> gebundener Container-MCP "
+                    f":{cfg['ziel_port']}",
                     flush=True,
                 )
                 last_error = None
@@ -123,29 +125,22 @@ async def main() -> None:
         agents = _load_ssh_agents()
         for name, cfg in list(agents.items()):
             if cfg["ziel_port"] is None:
-                if cfg["nur_gebunden"]:
-                    # Allowlist konfiguriert, aber kein gebundener Kanal in der
-                    # Port-Map -> Tunnel aussetzen statt die Allowlist über den
-                    # freien Kanal zu umgehen (Server-Neustart nötig).
-                    if name not in gewarnt:
-                        print(
-                            f"[mcp-tunnel] {name}: hat Tool-Allowlist, aber keinen Kanal in "
-                            f"der Port-Map — Tunnel ausgesetzt (MCP-Server neu starten).",
-                            flush=True,
-                        )
-                        gewarnt.add(name)
-                    agents.pop(name)
-                    continue
+                # Kein gebundener Kanal in der Port-Map -> Tunnel aussetzen.
+                # KEIN Fallback auf den freien Kanal :9000 (M11): dort hätte
+                # der Agent eine frei wählbare Identität, und der
+                # Automatik-Watcher (schickt nie `agent`) läuft in eine
+                # Endlosschleife aus "agent fehlt"-Fehlern.
                 if name not in gewarnt:
                     print(
-                        f"[mcp-tunnel] {name}: kein Kanal in der Port-Map — Fallback auf "
-                        f"freien Kanal :{MCP_PORT} (MCP-Server neu starten für Bindung).",
+                        f"[mcp-tunnel] {name}: kein Kanal in der Port-Map — Tunnel "
+                        f"ausgesetzt (MCP-Server neu starten, damit der gebundene "
+                        f"Kanal entsteht).",
                         flush=True,
                     )
                     gewarnt.add(name)
-                cfg["ziel_port"] = MCP_PORT
-            else:
-                gewarnt.discard(name)
+                agents.pop(name)
+                continue
+            gewarnt.discard(name)
         for name, cfg in agents.items():
             sig = tuple(sorted(cfg.items()))
             if name in running and running[name][0] == sig:

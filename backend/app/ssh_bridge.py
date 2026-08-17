@@ -203,12 +203,21 @@ async def bridge(websocket, agent_name: str) -> None:
                 await old.close(code=4000)
             except Exception:
                 pass
+        # Schnappschuss VOR dem Senden (N10): _pump hängt nebenher an und
+        # verwirft links, sobald BUFFER_LIMIT greift — mit laufendem Index
+        # würden dabei Stücke übersprungen oder doppelt gesendet.
+        schnappschuss = list(sess.buffer)
         try:
-            i = 0
-            while i < len(sess.buffer):
-                await websocket.send_text(sess.buffer[i])
-                i += 1
+            for teil in schnappschuss:
+                await websocket.send_text(teil)
         except Exception:
+            # Replay gescheitert (Client schon wieder weg): Verfallsuhr wieder
+            # anwerfen, sonst bleibt die Session ohne Client unsterblich (N10).
+            if not sess.closed:
+                sess.detached_at = time.time()
+                if sess.expire_task:
+                    sess.expire_task.cancel()
+                sess.expire_task = asyncio.create_task(_expire_later(sess))
             return
         sess.ws = websocket
         sess.detached_at = None

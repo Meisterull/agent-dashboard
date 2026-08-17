@@ -12,6 +12,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,8 @@ _init_done = False
 
 
 def _conn() -> sqlite3.Connection:
+    """Neue Verbindung. Immer in `closing(...)` benutzen: `with con:` committet
+    nur die Transaktion, es schließt die Verbindung NICHT."""
     global _init_done
     con = sqlite3.connect(DB_PATH)
     con.execute("PRAGMA journal_mode=WAL")
@@ -47,7 +50,7 @@ def _conn() -> sqlite3.Connection:
 
 
 def load(session_id: str) -> list[dict[str, Any]]:
-    with _lock, _conn() as con:
+    with _lock, closing(_conn()) as con, con:
         rows = con.execute(
             "SELECT payload FROM messages WHERE session_id=? ORDER BY idx",
             (session_id,),
@@ -62,7 +65,7 @@ def save(session_id: str, messages: list[dict[str, Any]]) -> None:
             title = str(m.get("content", ""))[:80]
             break
     now = time.time()
-    with _lock, _conn() as con:
+    with _lock, closing(_conn()) as con, con:
         con.execute(
             "INSERT INTO sessions (id, title, created, updated) VALUES (?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET updated=excluded.updated, title=excluded.title",
@@ -79,7 +82,7 @@ def save(session_id: str, messages: list[dict[str, Any]]) -> None:
 
 
 def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
-    with _lock, _conn() as con:
+    with _lock, closing(_conn()) as con, con:
         rows = con.execute(
             "SELECT s.id, s.title, s.updated, "
             "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) "
@@ -92,7 +95,7 @@ def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def delete_session(session_id: str) -> bool:
-    with _lock, _conn() as con:
+    with _lock, closing(_conn()) as con, con:
         cur = con.execute("DELETE FROM sessions WHERE id=?", (session_id,))
         con.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
     return cur.rowcount > 0

@@ -76,19 +76,43 @@ export default function Workspace({
   const panelsRef = useRef(panels);
   panelsRef.current = panels;
 
+  // Ids, die in DIESER Sitzung schon einmal als Panel da waren. Nur solche
+  // dürfen beim Verschwinden aus dem Layout fliegen — beim Start sind die
+  // externen Fenster noch nicht geladen (kommen asynchron aus den Settings),
+  // ihre gespeicherten Positionen sollen das überleben.
+  const gesehenRef = useRef(new Set());
+
   // Panels können sich zur Laufzeit ändern (externe Fenster aus den
-  // Settings): neuen Fenstern ein Rechteck geben, order nachziehen.
+  // Settings): neuen Fenstern ein Rechteck geben, gelöschte aus Layout und
+  // localStorage entfernen, order nachziehen.
   const idsKey = panels.map((p) => p.id).join("|");
   useEffect(() => {
     setLayout((l) => {
       const out = { ...l };
       let changed = false;
+      const aktuell = new Set(panelsRef.current.map((p) => p.id));
       panelsRef.current.forEach((p, i) => {
         if (!out[p.id]) {
           out[p.id] = defaultRect(p.id, i);
           changed = true;
         }
       });
+      // Karteileichen: Fenster, die es gab und die der Nutzer in den
+      // Einstellungen gelöscht hat — sonst wächst der localStorage-Eintrag
+      // mit jedem je angelegten externen Fenster.
+      for (const id of Object.keys(out))
+        if (!aktuell.has(id) && gesehenRef.current.has(id)) {
+          delete out[id];
+          changed = true;
+        }
+      aktuell.forEach((id) => gesehenRef.current.add(id));
+      if (changed) {
+        try {
+          localStorage.setItem(LS_KEY, JSON.stringify(out));
+        } catch {
+          /* voller/gesperrter Storage — Layout gilt trotzdem für die Sitzung */
+        }
+      }
       return changed ? out : l;
     });
     setOrder((o) => {
@@ -176,6 +200,17 @@ export default function Workspace({
     raise(id);
     const cont = containerRef.current.getBoundingClientRect();
     if (!cont.width || !cont.height) return;
+    // Pointer festnageln: ohne Capture schluckt ein iframe unter dem Zeiger
+    // (noVNC & Co.) die pointermove-Events, sobald die Geste darüber läuft —
+    // das Fenster „friert" dann mitten im Ziehen ein. Mit Capture werden die
+    // Events weiter am Griff zugestellt (und blubbern bis zum window-Listener).
+    const griff = e.currentTarget;
+    const pid = e.pointerId;
+    try {
+      griff?.setPointerCapture?.(pid);
+    } catch {
+      /* alter Browser / kein Pointer-Event — Fallback bleibt das window-Listening */
+    }
     const start = { px: e.clientX, py: e.clientY, ...layoutRef.current[id] };
     const minW = (MIN_W_PX / cont.width) * 100;
     const minH = (MIN_H_PX / cont.height) * 100;
@@ -200,6 +235,11 @@ export default function Workspace({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      try {
+        griff?.releasePointerCapture?.(pid);
+      } catch {
+        /* schon freigegeben */
+      }
       try {
         localStorage.setItem(LS_KEY, JSON.stringify(layoutRef.current));
       } catch {

@@ -18,6 +18,10 @@ Protokoll:
   verloren gehen (Issue #15). Gelesene message/answer wandern per mark_read
   nach inbox/.archive/ -> die Inbox enthält nur Offenes, nichts wird doppelt
   ausgeliefert.
+- Read-Modify-Write (Rückfragen parken/auflösen, Anspruch stempeln, Antwort
+  schreiben) läuft unter einem Datei-Lock je Mailbox (`<agent>/.lock`).
+  Atomares Schreiben verhindert nur halbe Dateien — NICHT verlorene Updates:
+  API-Prozess, MCP-Server und Watcher ändern dieselben Envelopes nebenläufig.
 """
 from __future__ import annotations
 
@@ -25,11 +29,19 @@ import json
 import os
 import re
 import tempfile
+import threading
+import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
+
+try:  # POSIX-Lock; auf Plattformen ohne fcntl bleibt nur die Atomarität
+    import fcntl
+except ImportError:  # pragma: no cover — Windows
+    fcntl = None  # type: ignore[assignment]
 
 VALID_STATUS = {"pending", "running", "done", "error", "needs_confirm"}
 
@@ -52,8 +64,35 @@ def _now() -> str:
 
 
 def new_id(prefix: str = "msg") -> str:
-    """Kurze, kollisionsarme ID für Envelopes (z.B. msg-1a2b3c4d)."""
-    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+    """Kollisionsarme ID für Envelopes (z.B. msg-1a2b3c4d5e6f7a8b).
+
+    16 Hex-Zeichen statt 8: bei 8 liegt die Kollisionsschwelle (Geburtstag) bei
+    ~65k Nachrichten, und eine Kollision würde einen fremden Envelope beim
+    Schreiben still überschreiben.
+    """
+    return f"{prefix}-{uuid.uuid4().hex[:16]}"
+
+
+class AlreadyClaimed(RuntimeError):
+    """Task wird bereits bearbeitet — ein zweiter Claim ist kein Erfolg.
+
+    Ohne dieses Signal liefert claim_task einen fremd beanspruchten Task erneut
+    aus, und zwei Watcher führen denselben Auftrag doppelt aus.
+    """
+
+    def __init__(self, task_id: str, seit: str | None = None) -> None:
+        self.task_id = task_id
+        self.seit = seit
+        super().__init__(
+            f"Task {task_id} wird bereits bearbeitet"
+            + (f" (seit {seit})" if seit else "")
+        )
+
+
+# Welche Mailbox-Locks dieser Thread schon hält — flock ist an die geöffnete
+# Datei gebunden, ein verschachtelter Lock auf denselben Pfad würde sich also
+# selbst blockieren.
+_gehaltene_locks = threading.local()
 
 
 def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -123,7 +162,55 @@ def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
         "status": env.get("status", "pending"),
         "reply_to": env.get("reply_to"),
         "created_at": env.get("created_at"),
+        # project/files gehören zum Auftrag: der Watcher wählt daraus sein
+        # Arbeitsverzeichnis (Issue #19). Fehlen sie hier, arbeitet er still im
+        # falschen Verzeichnis statt zu scheitern.
+        "project": env.get("project"),
+        "files": env.get("files") or [],
     }
+
+
+def _sortier_schluessel(env: dict[str, Any], pfad: Path) -> tuple[str, str]:
+    """Eingangsreihenfolge (FIFO): created_at, ersatzweise die Dateizeit.
+
+    Nach Dateinamen zu sortieren hieße nach Zufalls-Hex zu sortieren — Tasks
+    liefen dann in beliebiger Reihenfolge statt in der ihrer Einreichung.
+    """
+    stamp = env.get("created_at")
+    if not stamp:
+        try:
+            stamp = datetime.fromtimestamp(
+                pfad.stat().st_mtime, timezone.utc
+            ).astimezone().isoformat(timespec="seconds")
+        except OSError:
+            stamp = ""
+    return (str(stamp), pfad.name)
+
+
+def _alter_sekunden(env: dict[str, Any], pfad: Path) -> float:
+    """Wie lange liegt dieser Envelope schon in Arbeit? (claimed_at, sonst mtime)"""
+    stamp = env.get("claimed_at")
+    if stamp:
+        try:
+            return max(0.0, time.time() - datetime.fromisoformat(str(stamp)).timestamp())
+        except ValueError:
+            pass
+    try:
+        return max(0.0, time.time() - pfad.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _lese_ordner(ordner: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Alle Envelopes eines Ordners in Eingangsreihenfolge (kaputte übersprungen)."""
+    out = []
+    for p in ordner.glob("*.json"):
+        try:
+            out.append((p, json.loads(p.read_text(encoding="utf-8"))))
+        except (json.JSONDecodeError, OSError):
+            continue
+    out.sort(key=lambda paar: _sortier_schluessel(paar[1], paar[0]))
+    return out
 
 
 class Mailbox:
@@ -143,11 +230,62 @@ class Mailbox:
         for d in (self.inbox, self.processing, self.archive, self.failed, self.outbox):
             d.mkdir(parents=True, exist_ok=True)
 
+    # --- Nebenläufigkeit ----------------------------------------------------
+    @contextmanager
+    def _lock(self) -> Iterator[None]:
+        """Exklusiver Lock für Read-Modify-Write-Folgen auf DIESER Mailbox.
+
+        Nötig, weil API-Prozess und MCP-Server getrennte Prozesse sind und
+        beide dieselben Envelopes ändern (Frage parken vs. Antwort einarbeiten
+        überschrieben sich sonst gegenseitig). Ohne fcntl (Windows) bleibt es
+        beim atomaren Schreiben — dort läuft nur der Datei-Watcher.
+        """
+        gehalten = getattr(_gehaltene_locks, "pfade", None)
+        if gehalten is None:
+            gehalten = _gehaltene_locks.pfade = set()
+        key = str(self.base)
+        if fcntl is None or key in gehalten:
+            yield  # kein flock verfügbar oder in diesem Thread schon gehalten
+            return
+        gehalten.add(key)
+        try:
+            try:
+                fh = open(self.base / ".lock", "a", encoding="utf-8")
+            except OSError as exc:
+                # Kein Lock möglich (z.B. Dateisystem ohne flock) — weiterarbeiten
+                # ist besser als gar nicht: atomares Schreiben greift trotzdem.
+                print(f"[mailbox] {self.agent}: Lock nicht möglich ({exc})", flush=True)
+                yield
+                return
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX)
+            except OSError as exc:
+                print(f"[mailbox] {self.agent}: flock nicht unterstützt ({exc})", flush=True)
+                fh.close()
+                yield
+                return
+            try:
+                yield
+            finally:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                finally:
+                    fh.close()
+        finally:
+            gehalten.discard(key)
+
+    def _freier_pfad(self, ordner: Path, env_id: str) -> Path:
+        """Zielpfad für einen neuen Envelope — nie einen bestehenden treffen."""
+        ziel = ordner / f"{env_id}.json"
+        if not ziel.exists():
+            return ziel
+        raise FileExistsError(f"Envelope {env_id} existiert bereits")
+
     # --- Orchestrator-Seite ------------------------------------------------
     def put_task(self, task: Task) -> Path:
         if task.status not in VALID_STATUS:
             raise ValueError(f"ungültiger Status: {task.status}")
-        target = self.inbox / f"{task.task_id}.json"
+        target = self._freier_pfad(self.inbox, task.task_id)
         atomic_write_json(target, task.to_dict())
         return target
 
@@ -167,20 +305,23 @@ class Mailbox:
             raise ValueError(f"ungültiges kind: {env['kind']}")
         if env["status"] not in VALID_STATUS:
             raise ValueError(f"ungültiger Status: {env['status']}")
-        atomic_write_json(self.inbox / f"{env['id']}.json", env)
-        return env
+        for _ in range(5):
+            try:
+                ziel = self._freier_pfad(self.inbox, env["id"])
+            except FileExistsError:
+                env["id"] = new_id(env["kind"])  # ID-Kollision: neu würfeln
+                continue
+            atomic_write_json(ziel, env)
+            return env
+        raise FileExistsError(f"keine freie Envelope-ID in {self.inbox}")
 
     def read_inbox(self, kind: str | None = None) -> list[dict[str, Any]]:
         """Inbox lesen (ohne zu beanspruchen). Optional nach kind filtern."""
-        out = []
-        for p in sorted(self.inbox.glob("*.json")):
-            try:
-                env = json.loads(p.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
-            if kind is None or env.get("kind", "task") == kind:
-                out.append(env)
-        return out
+        return [
+            env
+            for _, env in _lese_ordner(self.inbox)
+            if kind is None or env.get("kind", "task") == kind
+        ]
 
     def mark_read(self, env_id: str) -> bool:
         """Gelesenen Envelope aus der Inbox ins Archiv verschieben.
@@ -189,31 +330,39 @@ class Mailbox:
         jedem Inbox-Lesen erneut auftauchen. Offene Tasks sind tabu — die schließt
         write_response (sonst verschwände Arbeit ohne Rückmeldung).
         """
-        src = self.inbox / f"{env_id}.json"
-        try:
-            env = json.loads(src.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return False
-        if env.get("kind", "task") == "task" and env.get("status") not in ("done", "error"):
-            raise ValueError(
-                f"{env_id} ist ein offener Task — mit complete_task/write_response "
-                f"abschließen statt archivieren"
-            )
-        try:
-            os.replace(src, self.archive / f"{env_id}.json")
-        except FileNotFoundError:
-            return False
-        return True
+        with self._lock():
+            src = self.inbox / f"{env_id}.json"
+            try:
+                env = json.loads(src.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                return False
+            if env.get("kind", "task") == "task" and env.get("status") not in ("done", "error"):
+                raise ValueError(
+                    f"{env_id} ist ein offener Task — mit complete_task/write_response "
+                    f"abschließen statt archivieren"
+                )
+            try:
+                os.replace(src, self.archive / f"{env_id}.json")
+            except FileNotFoundError:
+                return False
+            return True
 
-    def read_responses(self) -> list[dict[str, Any]]:
+    def read_responses(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Antworten aus der Outbox, neueste zuerst.
+
+        `limit` deckelt die Menge: die Outbox wächst unbegrenzt, und ein
+        ungedeckelter Aufruf schiebt irgendwann das halbe Archiv in den
+        LLM-Kontext.
+        """
         out = []
-        for p in sorted(self.outbox.glob("*-response.json")):
+        for p in self.outbox.glob("*-response.json"):
             try:
                 out.append(json.loads(p.read_text(encoding="utf-8")))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, OSError):
                 # Halb geschriebene Datei beim nächsten Tick erneut versuchen.
                 continue
-        return out
+        out.sort(key=lambda r: str(r.get("responded_at") or ""), reverse=True)
+        return out[:limit] if limit else out
 
     # --- Agent-Seite (Watcher) --------------------------------------------
     def claim_tasks(self) -> Iterable[tuple[str, dict[str, Any]]]:
@@ -222,11 +371,7 @@ class Mailbox:
         Nur kind == "task" (oder ohne kind, Rückwärtskompatibilität) wird
         beansprucht — message/question/answer bleiben für Koordinator/Dashboard.
         """
-        for p in sorted(self.inbox.glob("*.json")):
-            try:
-                env = json.loads(p.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
+        for p, env in _lese_ordner(self.inbox):
             if env.get("kind", "task") != "task":
                 continue
             claimed = self.processing / p.name
@@ -234,31 +379,53 @@ class Mailbox:
                 os.replace(p, claimed)  # atomar -> exklusiver Anspruch
             except FileNotFoundError:
                 continue
+            env["claimed_at"] = _now()
+            try:
+                atomic_write_json(claimed, env)
+            except OSError:
+                pass  # Stempel ist Diagnose, kein Grund den Task fallenzulassen
             yield claimed.name, env
 
-    def claim_task(self, task_id: str) -> Optional[dict[str, Any]]:
+    def task_offen(self, task_id: str) -> bool:
+        """Liegt der Task noch irgendwo offen (Inbox oder in Arbeit)?"""
+        return (self.inbox / f"{task_id}.json").exists() or (
+            self.processing / f"{task_id}.json"
+        ).exists()
+
+    def claim_task(self, task_id: str, erneut: bool = False) -> Optional[dict[str, Any]]:
         """EINEN bestimmten Task beanspruchen (inbox → .processing).
 
-        Für interaktive Agenten (MCP), die einen Task gezielt annehmen —
-        macht "in Arbeit" sichtbar und verhindert Doppel-Pickup durch einen
-        Watcher. Idempotent: ein schon beanspruchter Task wird erneut
-        geliefert. None, wenn der Task nirgends (mehr) liegt.
+        Der Anspruch ist EXKLUSIV: liegt der Task schon in .processing, wirft
+        das AlreadyClaimed statt ihn erneut auszuliefern — sonst führen zwei
+        Watcher (Netz-Flap, manuell gestarteter zweiter Watcher) denselben
+        Auftrag doppelt aus. `erneut=True` liefert ihn trotzdem: der EIGENE
+        Bearbeiter braucht nach einem Kontextverlust seinen Auftragstext.
+        None, wenn der Task nirgends (mehr) liegt.
         """
         src = self.inbox / f"{task_id}.json"
         dst = self.processing / f"{task_id}.json"
-        try:
-            env = json.loads(src.read_text(encoding="utf-8"))
-            if env.get("kind", "task") != "task":
-                raise ValueError(f"{task_id} ist kein Task (kind={env.get('kind')!r})")
-            os.replace(src, dst)  # atomar -> exklusiver Anspruch
-            return env
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
-        # Nicht (mehr) in der Inbox — evtl. schon beansprucht.
-        try:
-            return json.loads(dst.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return None
+        with self._lock():
+            env = None
+            try:
+                env = json.loads(src.read_text(encoding="utf-8"))
+                if env.get("kind", "task") != "task":
+                    raise ValueError(f"{task_id} ist kein Task (kind={env.get('kind')!r})")
+                os.replace(src, dst)  # atomar -> exklusiver Anspruch
+            except (FileNotFoundError, json.JSONDecodeError):
+                env = None
+            if env is not None:
+                # Zeitstempel des Anspruchs: Grundlage für "verwaist?" und für
+                # die Fehlermeldung an einen zweiten Claimer.
+                env["claimed_at"] = _now()
+                atomic_write_json(dst, env)
+                return env
+            try:
+                laufend = json.loads(dst.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                return None
+            if not erneut:
+                raise AlreadyClaimed(task_id, laufend.get("claimed_at"))
+            return laufend
 
     # --- Rückfragen während eines Tasks (Issue #17) --------------------------
 
@@ -269,19 +436,16 @@ class Mailbox:
         bekommt die Frage in `open_questions`. complete_task weiß dadurch
         später, dass der Task nicht wirklich fertig ist — ohne dass der Agent
         etwas mitschicken muss (der Watcher hat genau einen Task in Arbeit)."""
-        for p in sorted(self.processing.glob("*.json")):
-            try:
-                env = json.loads(p.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
-            if env.get("kind", "task") != "task":
-                continue
-            fragen = env.get("open_questions") or []
-            if any(f.get("id") == question_id for f in fragen):
-                continue
-            fragen.append({"id": question_id, "frage": question_text})
-            env["open_questions"] = fragen
-            atomic_write_json(p, env)
+        with self._lock():
+            for p, env in _lese_ordner(self.processing):
+                if env.get("kind", "task") != "task":
+                    continue
+                fragen = env.get("open_questions") or []
+                if any(f.get("id") == question_id for f in fragen):
+                    continue
+                fragen.append({"id": question_id, "frage": question_text})
+                env["open_questions"] = fragen
+                atomic_write_json(p, env)
 
     def _beantwortet(self, question_id: str) -> bool:
         """Liegt bereits eine Antwort auf diese Frage in Inbox oder Archiv?"""
@@ -304,21 +468,22 @@ class Mailbox:
         auf Antwort" im Panel); resolve_question stößt ihn nach der Antwort
         wieder an. Rückgabe: die offenen Fragen, oder None (nichts offen,
         normal abschließen)."""
-        p = self.processing / f"{task_id}.json"
-        try:
-            env = json.loads(p.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return None
-        offen = [f for f in env.get("open_questions") or []
-                 if f.get("id") and not self._beantwortet(f["id"])]
-        if not offen:
-            return None
-        env["open_questions"] = offen
-        env["status"] = "needs_confirm"
-        if zwischenstand:
-            env["zwischenstand"] = zwischenstand
-        atomic_write_json(p, env)
-        return offen
+        with self._lock():
+            p = self.processing / f"{task_id}.json"
+            try:
+                env = json.loads(p.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                return None
+            offen = [f for f in env.get("open_questions") or []
+                     if f.get("id") and not self._beantwortet(f["id"])]
+            if not offen:
+                return None
+            env["open_questions"] = offen
+            env["status"] = "needs_confirm"
+            if zwischenstand:
+                env["zwischenstand"] = zwischenstand
+            atomic_write_json(p, env)
+            return offen
 
     def resolve_question(self, question_id: str, antwort: str) -> list[str]:
         """Antwort auf eine Rückfrage in geparkte/laufende Tasks einarbeiten.
@@ -330,35 +495,44 @@ class Mailbox:
         offene Fragen zurück in die Inbox — der Watcher greift sie beim
         nächsten Tick. Gibt die IDs der wieder angestoßenen Tasks zurück."""
         wieder: list[str] = []
-        for p in sorted(self.processing.glob("*.json")):
-            try:
-                env = json.loads(p.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
-            fragen = env.get("open_questions") or []
-            passend = [f for f in fragen if f.get("id") == question_id]
-            if not passend:
-                continue
-            env["open_questions"] = [f for f in fragen if f.get("id") != question_id]
-            env.setdefault("nachtraege", []).append(
-                {"frage": passend[0].get("frage", ""), "antwort": antwort}
-            )
-            if env.get("status") == "needs_confirm" and not env["open_questions"]:
-                # Erst in .processing/ aktualisieren, DANN atomar in die Inbox
-                # schieben — so existiert der Task nie an zwei Orten zugleich.
-                env["status"] = "pending"
-                atomic_write_json(p, env)
-                try:
-                    os.replace(p, self.inbox / p.name)
-                except FileNotFoundError:
+        with self._lock():
+            for p, env in _lese_ordner(self.processing):
+                fragen = env.get("open_questions") or []
+                passend = [f for f in fragen if f.get("id") == question_id]
+                if not passend:
                     continue
-                wieder.append(env.get("task_id") or p.stem)
-            else:
-                # Task läuft noch (oder weitere Fragen offen): nur vermerken.
-                atomic_write_json(p, env)
+                env["open_questions"] = [f for f in fragen if f.get("id") != question_id]
+                env.setdefault("nachtraege", []).append(
+                    {"frage": passend[0].get("frage", ""), "antwort": antwort}
+                )
+                if env.get("status") == "needs_confirm" and not env["open_questions"]:
+                    # Erst in .processing/ aktualisieren, DANN atomar in die Inbox
+                    # schieben — so existiert der Task nie an zwei Orten zugleich.
+                    env["status"] = "pending"
+                    env.pop("claimed_at", None)  # zurück in der Warteschlange
+                    atomic_write_json(p, env)
+                    try:
+                        os.replace(p, self.inbox / p.name)
+                    except FileNotFoundError:
+                        continue
+                    wieder.append(env.get("task_id") or p.stem)
+                else:
+                    # Task läuft noch (oder weitere Fragen offen): nur vermerken.
+                    atomic_write_json(p, env)
         return wieder
 
     def write_response(
+        self, task_id: str, result: str, status: str = "done", log: str = ""
+    ) -> Path:
+        """Task abschließen: Response schreiben, zustellen, Task abräumen.
+
+        Läuft unter dem Mailbox-Lock, weil Abschluss und Rückfragen-Parken
+        (Issue #17) denselben Envelope anfassen.
+        """
+        with self._lock():
+            return self._write_response(task_id, result, status, log)
+
+    def _write_response(
         self, task_id: str, result: str, status: str = "done", log: str = ""
     ) -> Path:
         if status not in VALID_STATUS:
@@ -431,3 +605,160 @@ class Mailbox:
             else:
                 stale.unlink(missing_ok=True)
         return target
+
+    # --- Aufräumen / Wiederanlauf -------------------------------------------
+
+    def beantworte_frage(
+        self, question_id: str, text: str, an: str | None = None
+    ) -> dict[str, Any]:
+        """Eine Rückfrage aus DIESER Inbox beantworten — eine Wahrheit für alle Wege.
+
+        Dashboard und MCP-`answer` liefen früher auseinander: der eine setzte
+        die Frage auf "done" und ließ sie liegen (Inbox wuchs), der andere
+        fasste sie gar nicht an (Banner zeigte sie weiter als offen). Hier
+        passiert beides zusammen: Antwort in die Inbox des Fragestellers, Frage
+        ins Archiv, geparkte Tasks des Fragestellers wieder anstoßen.
+        """
+        qpath = self.inbox / f"{question_id}.json"
+        frage: dict[str, Any] | None = None
+        with self._lock():
+            try:
+                frage = json.loads(qpath.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                frage = None
+            if frage is not None:
+                frage["status"] = "done"
+                frage["answered_at"] = _now()
+                atomic_write_json(qpath, frage)
+                try:
+                    os.replace(qpath, self.archive / qpath.name)
+                except FileNotFoundError:
+                    pass
+        ziel = (frage or {}).get("sender") or an
+        if not ziel:
+            raise ValueError(f"kein Empfänger für die Antwort auf {question_id}")
+        # Lock ist hier bewusst wieder frei: die nächsten Schritte laufen auf
+        # der Mailbox des FRAGESTELLERS, die ihren eigenen Lock nimmt.
+        fragesteller = Mailbox(self.root, ziel)
+        antwort = fragesteller.post(
+            {
+                "kind": "answer",
+                "sender": self.agent,
+                "to": ziel,
+                "text": text,
+                "reply_to": question_id,
+            }
+        )
+        wieder = fragesteller.resolve_question(question_id, text)
+        return {
+            "answer": antwort,
+            "to": ziel,
+            "frage_archiviert": frage is not None,
+            "wieder_angestossen": wieder,
+        }
+
+    def requeue_stale(
+        self, max_alter: float, max_versuche: int = 3
+    ) -> dict[str, list[str]]:
+        """Verwaiste Tasks aus .processing/ zurück in die Warteschlange.
+
+        Stirbt ein Watcher mitten im Lauf (Absturz, Not-Aus, Stromausfall,
+        SSH-Abbruch), bleibt sein Task für immer "running" — .processing/ liest
+        sonst niemand mehr. Wartet ein Task auf eine Rückfrage (needs_confirm),
+        bleibt er unangetastet. Nach `max_versuche` vergeblichen Anläufen wird
+        er als Fehlschlag abgeschlossen, damit ein giftiger Task nicht ewig
+        zwischen Inbox und .processing kreist.
+        """
+        requeued: list[str] = []
+        aufgegeben: list[str] = []
+        with self._lock():
+            for p, env in _lese_ordner(self.processing):
+                if env.get("kind", "task") != "task":
+                    continue
+                if env.get("status") == "needs_confirm":
+                    continue  # wartet auf eine Antwort, nicht verwaist
+                if _alter_sekunden(env, p) < max_alter:
+                    continue
+                versuche = int(env.get("requeues") or 0) + 1
+                task_id = env.get("task_id") or p.stem
+                if versuche > max_versuche:
+                    aufgegeben.append(task_id)
+                    continue
+                env["requeues"] = versuche
+                env["status"] = "pending"
+                env.pop("claimed_at", None)
+                atomic_write_json(p, env)
+                try:
+                    os.replace(p, self.inbox / p.name)
+                except FileNotFoundError:
+                    continue
+                requeued.append(task_id)
+        # Aufgeben heißt abschließen — außerhalb der Schleife, weil
+        # write_response denselben Lock nimmt (bei uns re-entrant, aber die
+        # Ordner-Iteration soll nicht unter der Hand verändert werden).
+        for task_id in aufgegeben:
+            self.write_response(
+                task_id,
+                f"[Abgebrochen: {max_versuche}× ohne Ergebnis wieder aufgenommen — "
+                f"der Bearbeiter bricht offenbar reproduzierbar ab.]",
+                "error",
+                log="requeue-limit erreicht",
+            )
+        return {"requeued": requeued, "aufgegeben": aufgegeben}
+
+    def aufraeumen(self, max_tage: float) -> int:
+        """Alte Ablagen rotieren: .archive/, .failed/ und Outbox-Responses.
+
+        Ohne das wächst die Mailbox unbegrenzt — und `read_responses` bzw. das
+        Agenten-Panel liefern irgendwann Jahresarchive aus.
+        """
+        grenze = time.time() - max_tage * 86400
+        weg = 0
+        for ordner in (self.archive, self.failed, self.outbox):
+            for p in ordner.glob("*.json"):
+                try:
+                    if p.stat().st_mtime >= grenze:
+                        continue
+                    p.unlink()
+                    weg += 1
+                except OSError:
+                    continue
+        return weg
+
+
+# --- Wartung über alle Mailboxen ------------------------------------------
+
+def alle_mailboxen(root: str | os.PathLike) -> list["Mailbox"]:
+    """Jede existierende Mailbox unter root (ungültige Ordnernamen ignoriert)."""
+    basis = Path(root)
+    if not basis.is_dir():
+        return []
+    out = []
+    for p in sorted(basis.iterdir()):
+        if not p.is_dir() or not AGENT_NAME_RE.fullmatch(p.name):
+            continue
+        try:
+            out.append(Mailbox(basis, p.name))
+        except (ValueError, OSError):
+            continue
+    return out
+
+
+def pflege(
+    root: str | os.PathLike, stale_alter: float, archiv_tage: float
+) -> dict[str, Any]:
+    """Periodische Mailbox-Pflege: verwaiste Tasks + alte Ablagen.
+
+    Wird vom API-Prozess regelmäßig aufgerufen (main.py). Bewusst hier und
+    nicht im Watcher: der Watcher ist genau der Prozess, der stirbt.
+    """
+    bericht: dict[str, Any] = {"requeued": [], "aufgegeben": [], "geloescht": 0}
+    for box in alle_mailboxen(root):
+        try:
+            ergebnis = box.requeue_stale(stale_alter)
+            bericht["requeued"] += [f"{box.agent}/{t}" for t in ergebnis["requeued"]]
+            bericht["aufgegeben"] += [f"{box.agent}/{t}" for t in ergebnis["aufgegeben"]]
+            bericht["geloescht"] += box.aufraeumen(archiv_tage)
+        except OSError:
+            continue
+    return bericht

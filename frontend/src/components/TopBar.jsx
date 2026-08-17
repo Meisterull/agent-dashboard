@@ -5,6 +5,7 @@ export default function TopBar({
   onToggleTheme,
   viewMode,
   onToggleViewMode,
+  onLogout,
 }) {
   return (
     <header className="flex items-center justify-between border-b bg-white px-4 py-2.5 dark:border-slate-700 dark:bg-slate-900">
@@ -45,6 +46,13 @@ export default function TopBar({
           className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-800"
         >
           Einstellungen
+        </button>
+        <button
+          onClick={onLogout}
+          title="Session-Cookie löschen und zum Login zurück"
+          className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-800"
+        >
+          Abmelden
         </button>
       </div>
     </header>

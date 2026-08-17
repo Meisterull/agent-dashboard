@@ -8,6 +8,7 @@ import { getQuestions, answerQuestion } from "../api";
 // doppelt einfügen; außerdem übersteht der Entwurf so das 5-s-Polling.
 export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
   const [questions, setQuestions] = useState([]);
+  const [offline, setOffline] = useState(false); // letzter Poll fehlgeschlagen
   const inputsRef = useRef({}); // q.id -> <input>-Element
   const prevIdsRef = useRef(null); // erste Antwort = Basis, kein Blinken beim Laden
   const onNewRef = useRef(onNew);
@@ -16,6 +17,7 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
   function load() {
     getQuestions()
       .then((d) => {
+        setOffline(false);
         setQuestions(d.questions);
         const ids = d.questions.map((q) => `${q.agent}/${q.id}`);
         // neue Rückfrage aufgetaucht → Agenten-Reiter blinken lassen
@@ -23,13 +25,27 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
           onNewRef.current?.();
         prevIdsRef.current = ids;
       })
-      .catch(() => setQuestions([]));
+      // Fragen STEHEN lassen: ein fehlgeschlagener Poll würde das Banner
+      // sonst ausblenden — samt der halb getippten Antwort-Entwürfe in den
+      // (uncontrolled) Inputs, die mit dem DOM verschwinden.
+      .catch(() => setOffline(true));
   }
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000); // Rückfragen tauchen auch ohne Aktion auf
-    return () => clearInterval(t);
+    // Rückfragen tauchen auch ohne Aktion auf — aber nicht im Hintergrund-Tab
+    // pollen; beim Zurückkommen dafür sofort einmal laden.
+    const t = setInterval(() => {
+      if (!document.hidden) load();
+    }, 5000);
+    const onVisible = () => {
+      if (!document.hidden) load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refreshKey]);
 
   async function submit(q) {
@@ -52,6 +68,14 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
     <div className="border-b border-amber-300 bg-amber-50 px-4 py-2 dark:border-amber-800 dark:bg-amber-950">
       <div className="mb-1 text-xs font-semibold text-amber-700 dark:text-amber-400">
         Offene Rückfragen ({questions.length})
+        {offline && (
+          <span
+            title="Letzte Aktualisierung fehlgeschlagen — angezeigt wird der letzte bekannte Stand."
+            className="ml-2 font-normal text-amber-600 dark:text-amber-500"
+          >
+            · Verbindung gestört
+          </span>
+        )}
       </div>
       <div className="space-y-2">
         {questions.map((q) => (

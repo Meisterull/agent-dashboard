@@ -55,6 +55,7 @@ from app import auth, auto_watcher, chat_store, llm, remote_files
 from app.config import (
     KEYS_DIR,
     add_ui_connection,
+    ist_erlaubtes_ext_ziel,
     load_agents_full,
     load_connections,
     load_settings,
@@ -72,7 +73,8 @@ from app.files import (
 )
 from app.remote_files import RemoteFilesError
 from app.integrations import list_integrations
-from app.mailbox import Mailbox, atomic_write_json, normalize_envelope
+from app.mailbox import AGENT_NAME_RE, Mailbox, normalize_envelope
+from app.mailbox import pflege as mailbox_pflege
 from app.orchestrator_core import mcp_session, run_turn
 from app.ssh_bridge import bridge as ssh_bridge, get_buffer, kill_session, list_sessions
 
@@ -89,10 +91,55 @@ async def _automatik_start() -> None:
     auto_watcher.manager.start()
 
 
+# Mailbox-Pflege: wie lange darf ein Task in .processing/ liegen, bevor er als
+# verwaist gilt (Watcher gestorben), und wie lange bleiben Archiv/Outbox liegen.
+# WICHTIG: STALE_TASK_ALTER muss deutlich über dem CLAUDE_TIMEOUT des Watchers
+# liegen (dort 1800 s), sonst wird ein noch laufender Task ein zweites Mal
+# eingereiht und doppelt ausgeführt. 3 h = 6-facher Sicherheitsabstand.
+PFLEGE_INTERVALL = float(os.environ.get("MAILBOX_PFLEGE_INTERVALL", "900"))
+STALE_TASK_ALTER = float(os.environ.get("MAILBOX_STALE_ALTER", "10800"))  # 3 h
+ARCHIV_TAGE = float(os.environ.get("MAILBOX_ARCHIV_TAGE", "30"))
+
+_pflege_task: asyncio.Task | None = None
+
+
+async def _mailbox_pflege_schleife() -> None:
+    """Verwaiste Tasks zurück in die Warteschlange, alte Ablagen rotieren.
+
+    Bewusst im API-Prozess und nicht im Watcher: der Watcher ist genau der
+    Prozess, der bei Absturz/Not-Aus/Stromausfall stirbt und seinen Task als
+    ewiges "running" hinterlässt.
+    """
+    while True:
+        await asyncio.sleep(PFLEGE_INTERVALL)
+        try:
+            bericht = await asyncio.to_thread(
+                mailbox_pflege, MAILBOXES, STALE_TASK_ALTER, ARCHIV_TAGE
+            )
+        except Exception as exc:  # noqa: BLE001 — Pflege darf die API nie killen
+            print(f"[pflege] Fehler: {exc}", flush=True)
+            continue
+        if bericht["requeued"] or bericht["aufgegeben"] or bericht["geloescht"]:
+            print(
+                f"[pflege] wieder eingereiht: {bericht['requeued'] or '-'}; "
+                f"aufgegeben: {bericht['aufgegeben'] or '-'}; "
+                f"alte Ablagen gelöscht: {bericht['geloescht']}",
+                flush=True,
+            )
+
+
+@app.on_event("startup")
+async def _pflege_start() -> None:
+    global _pflege_task
+    _pflege_task = asyncio.create_task(_mailbox_pflege_schleife())
+
+
 @app.on_event("shutdown")
 async def _automatik_stop() -> None:
     # Container fährt herunter — hart schließen, die Reconcile-Logik startet
     # die Watcher nach dem Neustart aus settings.json neu.
+    if _pflege_task is not None:
+        _pflege_task.cancel()
     await auto_watcher.manager.stopp_alle_hart()
 
 # --- Auth ---------------------------------------------------------------
@@ -121,12 +168,21 @@ class LoginIn(BaseModel):
 
 
 @app.get("/api/auth/verify")
-async def auth_verify() -> Response:
+async def auth_verify(request: Request) -> Response:
     """nginx auth_request für /ext/ (externe Fenster, z. B. noVNC).
 
-    Die Session-Middleware hat den Cookie hier schon geprüft (Pfad ist nicht
-    öffentlich) — kommt die Anfrage bis hierher, ist sie autorisiert.
+    Die Session-Middleware hat den Cookie schon geprüft — das allein genügt
+    aber nicht: der /ext/-Proxy erlaubt nginx-seitig JEDE private IPv4, und
+    was er ausliefert, läuft unter der Origin des Dashboards. Eine beliebige
+    LAN-Seite könnte damit per JavaScript die gesamte API mit dem
+    Session-Cookie bedienen (Dateien, SSH-Keys, Terminals). Deshalb hier die
+    zweite Hälfte der Prüfung: nur ausdrücklich eingetragene Ziele.
+
+    Maßgeblich ist X-Ext-Ziel (nginx-Captures = echtes Proxy-Ziel), NICHT die
+    Original-URI — siehe ist_erlaubtes_ext_ziel.
     """
+    if not ist_erlaubtes_ext_ziel(request.headers.get("X-Ext-Ziel")):
+        return Response(status_code=403)
     return Response(status_code=204)
 
 
@@ -168,7 +224,16 @@ _locks: dict[str, asyncio.Lock] = {}
 
 
 def _lock_for(session_id: str) -> asyncio.Lock:
-    return _locks.setdefault(session_id, asyncio.Lock())
+    lock = _locks.setdefault(session_id, asyncio.Lock())
+    if len(_locks) > 200:
+        # Ohne Aufräumen wächst der Dict mit jeder je gesehenen Session-ID.
+        # Ungenutzte Locks (niemand wartet, keiner hält) dürfen weg.
+        for sid, l in [(s, x) for s, x in _locks.items() if s != session_id]:
+            if not l.locked():
+                _locks.pop(sid, None)
+    return lock
+
+
 
 
 # --- Modelle ---------------------------------------------------------------
@@ -190,9 +255,9 @@ class ExternalWindowIn(BaseModel):
 
 
 class SettingsIn(BaseModel):
-    llm_provider: str | None = None
+    # Achtung: neue Felder müssen AUCH in config.ALLOWED_KEYS stehen, sonst
+    # verwirft save_settings sie still.
     language: str | None = None
-    telegram_enabled: bool | None = None
     orch_model: str | None = None
     external_windows: list[ExternalWindowIn] | None = None
 
@@ -211,6 +276,28 @@ async def agents() -> dict:
     return {"agents": names}
 
 
+# Envelope-/Task-IDs kommen als Pfadsegment aus der URL. Ohne Prüfung wäre
+# `%2e%2e` ein Weg aus mailboxes/ heraus — und answer_question SCHREIBT auf
+# den zusammengebauten Pfad. Konvention des Projekts: nie roh joinen.
+_ENV_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _agent_base(name: str) -> Path:
+    """Geprüftes Mailbox-Verzeichnis eines Agenten."""
+    if not AGENT_NAME_RE.fullmatch(name):
+        raise HTTPException(400, f"ungültiger Agentenname: {name!r}")
+    base = MAILBOXES / name
+    if not base.is_dir():
+        raise HTTPException(404, f"Agent '{name}' unbekannt.")
+    return base
+
+
+def _geprüfte_id(wert: str, feld: str) -> str:
+    if not _ENV_ID_RE.fullmatch(wert or ""):
+        raise HTTPException(400, f"ungültige {feld}: {wert!r}")
+    return wert
+
+
 def _read_jsons(folder: Path) -> list[dict[str, Any]]:
     out = []
     if folder.exists():
@@ -224,9 +311,7 @@ def _read_jsons(folder: Path) -> list[dict[str, Any]]:
 
 @app.get("/api/agents/{name}/tasks")
 async def agent_tasks(name: str) -> dict:
-    base = MAILBOXES / name
-    if not base.exists():
-        raise HTTPException(404, f"Agent '{name}' unbekannt.")
+    base = _agent_base(name)
     inbox = [e for e in _read_jsons(base / "inbox") if e.get("kind", "task") == "task"]
     # Beanspruchte Tasks (.processing/) sichtbar machen — als "running";
     # geparkte (Rückfrage offen, Issue #17) behalten ihr needs_confirm.
@@ -241,9 +326,7 @@ async def agent_tasks(name: str) -> dict:
 @app.get("/api/agents/{name}/inbox")
 async def agent_inbox(name: str, kind: str | None = None) -> dict:
     """Alle Eingänge eines Agenten (Tasks + Nachrichten + Rückfragen), normalisiert."""
-    base = MAILBOXES / name
-    if not base.exists():
-        raise HTTPException(404, f"Agent '{name}' unbekannt.")
+    base = _agent_base(name)
     items = [normalize_envelope(e) for e in _read_jsons(base / "inbox")]
     if kind:
         items = [i for i in items if i["kind"] == kind]
@@ -272,23 +355,25 @@ class AnswerIn(BaseModel):
 
 @app.post("/api/questions/{agent}/{qid}/answer")
 async def answer_question(agent: str, qid: str, body: AnswerIn) -> dict:
-    """Eine Rückfrage beantworten: Antwort an den Fragesteller, Frage erledigen."""
-    qpath = MAILBOXES / agent / "inbox" / f"{qid}.json"
-    if not qpath.exists():
+    """Eine Rückfrage beantworten: Antwort an den Fragesteller, Frage erledigen.
+
+    Dieselbe Primitive wie das MCP-Tool `answer` (mailbox.beantworte_frage) —
+    sonst driften die beiden Wege auseinander (Frage bleibt offen bzw. liegt
+    für immer in der Inbox).
+    """
+    base = _agent_base(agent)
+    _geprüfte_id(qid, "Rückfrage-ID")
+    if not (base / "inbox" / f"{qid}.json").exists():
         raise HTTPException(404, "Rückfrage nicht gefunden.")
-    question = json.loads(qpath.read_text(encoding="utf-8"))
-    asker = question.get("sender") or "orchestrator"
-    # Antwort in die Inbox des Fragestellers legen (Absender = der Beantworter = agent).
-    Mailbox(MAILBOXES, asker).post(
-        {"kind": "answer", "sender": agent, "to": asker, "text": body.text, "reply_to": qid}
-    )
-    # Frage als erledigt markieren (atomar überschreiben).
-    question["status"] = "done"
-    atomic_write_json(qpath, question)
-    # Wegen dieser Frage geparkte Tasks des Fragestellers wieder anstoßen —
-    # mit der Antwort im Kontext (Issue #17).
-    wieder = Mailbox(MAILBOXES, asker).resolve_question(qid, body.text)
-    return {"answered": qid, "to": asker, "wieder_angestossen": wieder}
+    try:
+        ergebnis = Mailbox(MAILBOXES, agent).beantworte_frage(qid, body.text)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "answered": qid,
+        "to": ergebnis["to"],
+        "wieder_angestossen": ergebnis["wieder_angestossen"],
+    }
 
 
 class CloseTaskIn(BaseModel):
@@ -305,9 +390,8 @@ async def close_task(agent: str, task_id: str, body: CloseTaskIn) -> dict:
     """
     if body.status not in ("done", "error"):
         raise HTTPException(400, 'status muss "done" oder "error" sein.')
-    base = MAILBOXES / agent
-    if not base.exists():
-        raise HTTPException(404, f"Agent '{agent}' unbekannt.")
+    base = _agent_base(agent)
+    _geprüfte_id(task_id, "Task-ID")
     open_task = [base / "inbox" / f"{task_id}.json",
                  base / "inbox" / ".processing" / f"{task_id}.json"]
     if not any(p.exists() for p in open_task):
@@ -339,8 +423,13 @@ async def chat(body: ChatIn) -> ChatOut:
             async with mcp_session() as (session, tools):
                 result = await run_turn(session, tools, messages, cfg)
         except Exception as exc:  # noqa: BLE001
+            # History trotzdem sichern: bis hierher ausgeführte Tool-Calls
+            # (send_task!) sind echte Seiteneffekte. Würfe man die Runde weg,
+            # wüsste der Orchestrator beim nächsten Turn nichts davon und
+            # verschickte womöglich alles ein zweites Mal.
+            chat_store.save(session_id, llm.repariere_history(messages))
             raise HTTPException(502, f"Orchestrator-Fehler: {exc}") from exc
-        chat_store.save(session_id, messages)  # erst nach erfolgreichem Turn
+        chat_store.save(session_id, messages)
     return ChatOut(session_id=session_id, reply=result["text"], tool_calls=result["tool_calls"])
 
 
@@ -633,7 +722,9 @@ async def models() -> dict:
     return {
         "provider": cfg["provider"],
         "current": cfg.get("model", ""),
-        "models": llm.list_models(cfg),
+        # Synchroner HTTP-Aufruf mit 10 s Timeout: im Thread, sonst steht bei
+        # hängendem Ollama der ganze Event-Loop (API + Terminals).
+        "models": await asyncio.to_thread(llm.list_models, cfg),
     }
 
 

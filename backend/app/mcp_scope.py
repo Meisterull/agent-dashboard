@@ -12,6 +12,9 @@ Quelle der Wahrheit für die Port→Agent-Zuordnung ist der LAUFENDE Server: er
 schreibt beim Start die aktive Zuordnung nach MCP_PORT_MAP (JSON), der Tunnel
 liest sie und forwardet dorthin. So können Server und Tunnel nie auseinander
 laufen, wenn sich agents.yaml zwischen Server-Start und Tunnel-Reconcile ändert.
+Beim Neuberechnen übernimmt compute_scopes die Ports aus der vorhandenen Map,
+damit sie beim Umsortieren von agents.yaml NICHT wandern — sonst zeigt ein noch
+offener Tunnel für bis zu 60 s auf den Kanal eines anderen Agenten.
 
 Reine Logik (stdlib) — testbar ohne mcp/fastapi (backend/tests/test_mcp_scope.py).
 """
@@ -72,8 +75,14 @@ def compute_scopes(
     """Port- und Tool-Zuordnung für alle tunnel-fähigen (SSH-)Agenten.
 
     Liefert (scopes, warnungen); scopes: name -> {"port": int, "tools": list|None}.
-    Explizite Ports via `mcp_local_port` in der connection; sonst fortlaufend ab
-    SCOPED_PORT_BASE. Kollisionen werden automatisch aufgelöst (Warnung)."""
+    Explizite Ports via `mcp_local_port` in der connection; sonst der Port aus
+    der bestehenden Port-Map (Stabilität, M10) und erst dann fortlaufend ab
+    SCOPED_PORT_BASE. Kollisionen werden automatisch aufgelöst (Warnung).
+
+    Warum die alte Map gewinnt: die Auto-Vergabe folgte bisher der Reihenfolge
+    in agents.yaml — ein neuer Eintrag OBEN verschob alle Ports darunter. Bis
+    der Tunnel das (nach bis zu 60 s) merkt, forwardet er auf den Kanal eines
+    ANDEREN Agenten: fremde Identität, fremde Tool-Allowlist."""
     scopes: dict[str, dict[str, Any]] = {}
     warnungen: list[str] = []
     belegt = {MCP_PORT}
@@ -98,6 +107,19 @@ def compute_scopes(
             continue
         belegt.add(port)
         scopes[name] = {"port": port}
+
+    # Dann die bereits vergebenen Ports der letzten Runde übernehmen (nur für
+    # Agenten, die es noch gibt — Ports verschwundener Agenten bleiben frei).
+    bekannt = read_port_map()
+    for agent in kandidaten:
+        name = agent["name"]
+        if name in scopes:
+            continue
+        alt = bekannt.get(name)
+        if alt is None or alt in belegt or alt == MCP_PORT:
+            continue
+        belegt.add(alt)
+        scopes[name] = {"port": alt}
 
     naechster = SCOPED_PORT_BASE
     for agent in kandidaten:

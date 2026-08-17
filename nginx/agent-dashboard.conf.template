@@ -8,11 +8,30 @@ map $http_upgrade $ext_connection {
     ""      "";
 }
 
+# Brute-Force-Bremse fürs Login (M17). limit_req_zone MUSS auf http-Ebene
+# stehen; genutzt wird sie unten nur in "location = /api/auth/login".
+# Die 0.8-s-Verzögerung im Backend wirkt nur pro Request und hält parallele
+# Versuche nicht auf — das hier tut es.
+# 10m Zonenspeicher ≈ 160.000 IPs. $binary_remote_addr überlebt das Rendern:
+# der entrypoint ruft envsubst mit einer expliziten Variablenliste auf (nur
+# EFFECTIVE_SSL_DIR und EXTERNAL_HTTPS_PORT), alle anderen $-Namen bleiben
+# unangetastet. Neue nginx-Variablen hier brauchen also kein Escaping.
+limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+
 # HTTP -> HTTPS. Browser muss auf den extern veröffentlichten HTTPS-Port
 # (${EXTERNAL_HTTPS_PORT}) — der ist NICHT 443, sondern das Host-Mapping.
 server {
     listen 80;
     server_name _;
+
+    # M20: Logs nur nach stdout/stderr, nicht zusätzlich nach /var/log/nginx.
+    # Im server-Block gesetzt, NICHT auf http-Ebene: mehrere access_log-
+    # Direktiven derselben Ebene schreiben in alle Ziele, im server-Block
+    # ersetzt die Angabe dagegen das geerbte /var/log/nginx/access.log.
+    # Rotation macht dann Docker (logging-Block in docker-compose.yml).
+    access_log /dev/stdout;
+    error_log  /dev/stderr;
+
     return 301 https://$host:${EXTERNAL_HTTPS_PORT}$request_uri;
 }
 
@@ -26,7 +45,17 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
 
-    # HSTS erst aktivieren, wenn echtes Zertifikat steht.
+    # M20: siehe Kommentar im :80-Block — Logs ausschließlich nach stdout/stderr.
+    access_log /dev/stdout;
+    error_log  /dev/stderr;
+
+    # HSTS bleibt bewusst AUS (Bewertung zu N19). Es gilt pro HOSTNAME, NICHT
+    # pro Port: wer das Dashboard über die nackte Host-IP aufruft (das Zert hat
+    # dafür SANs), zwingt seinen Browser damit auch für alle anderen Dienste
+    # auf derselben IP auf https — auf diesem Server laufen dort Paperless,
+    # scanservjs & Co. ohne TLS. Rücknahme ginge nur über einmaliges Ausliefern
+    # von max-age=0. Nutzen im LAN mit eigener CA: gering. Wer ausschließlich
+    # über agent-dashboard.local zugreift, kann die Zeilen einkommentieren.
     # add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;
@@ -55,6 +84,7 @@ server {
     # nosniff/X-Frame-Options hier deshalb wiederholen.
     location = /index.html {
         add_header Cache-Control "no-cache" always;
+        # add_header Strict-Transport-Security "max-age=31536000" always;
         add_header X-Content-Type-Options nosniff always;
         add_header X-Frame-Options DENY always;
     }
@@ -65,8 +95,24 @@ server {
         # stumm blockt).
         try_files $uri =404;
         add_header Cache-Control "public, max-age=31536000, immutable" always;
+        # add_header Strict-Transport-Security "max-age=31536000" always;
         add_header X-Content-Type-Options nosniff always;
         add_header X-Frame-Options DENY always;
+    }
+
+    # Login: einzige Route mit Brute-Force-Bremse (M17). 5 Versuche/Minute je
+    # IP, burst 5 + nodelay lässt Vertipper sofort durch und drosselt erst
+    # danach; weitere Versuche bekommen 429 statt des Default-503.
+    # Die exakte Location gewinnt gegen das /api/-Präfix unten, deshalb müssen
+    # die proxy_set_header hier wiederholt werden.
+    location = /api/auth/login {
+        limit_req zone=login burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     # REST-API
@@ -89,11 +135,20 @@ server {
     }
 
     # Session-Check für /ext/ — interner Subrequest gegen die API.
+    # Maßgeblich ist X-Ext-Ziel: das sind die Captures DIESES Requests, also
+    # exakt das Ziel, das proxy_pass unten anspricht. X-Original-URI wäre dafür
+    # untauglich — nginx normalisiert die URI VOR dem Location-Matching, eine
+    # ausbalancierte Traversal wie
+    #   /ext/<erlaubt>/6080/a/../../../../ext/<fremd>/80/x
+    # landet also bei <fremd>, während $request_uri noch mit <erlaubt> beginnt
+    # (im Wegwerf-Container mit nginx 1.22.1 nachgestellt). Der Header bleibt
+    # nur zur Fehlersuche/Protokollierung erhalten.
     location = /_ext_auth {
         internal;
         proxy_pass http://127.0.0.1:5000/api/auth/verify;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
+        proxy_set_header X-Ext-Ziel $ext_ziel;
         proxy_set_header X-Original-URI $request_uri;
     }
 
@@ -104,6 +159,8 @@ server {
     # über auth_request. IP-Literale brauchen keinen nginx-resolver.
     # Regex mit {}-Quantifiern muss in nginx zwingend gequotet werden.
     location ~ "^/ext/(?<ext_host>10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2[0-9]|3[01])(?:\.\d{1,3}){2})/(?<ext_port>\d{1,5})(?<ext_path>/.*)$" {
+        # Das tatsächliche Proxy-Ziel — die API lässt nur eingetragene durch.
+        set $ext_ziel "$ext_host:$ext_port";
         auth_request /_ext_auth;
         proxy_pass http://$ext_host:$ext_port$ext_path$is_args$args;
         proxy_http_version 1.1;
@@ -115,6 +172,7 @@ server {
         # X-Frame-Options DENY nicht erben und nicht vom Ziel durchreichen.
         proxy_hide_header X-Frame-Options;
         proxy_hide_header Content-Security-Policy;
+        # add_header Strict-Transport-Security "max-age=31536000" always;
         add_header X-Content-Type-Options nosniff always;
     }
 }

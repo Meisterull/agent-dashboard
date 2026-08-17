@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import Modal from "./Modal";
 import {
   getConnections,
   getFiles,
@@ -22,6 +23,62 @@ function fmtSize(n) {
   return `${(n / 1024 / 1024).toFixed(1)} M`;
 }
 
+const dlgBtn =
+  "rounded border border-slate-300 px-3 py-1 text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800";
+
+// Eigene Dialoge statt prompt()/confirm(): die blockieren den Tab, sehen auf
+// dem Handy fremd aus und werden von manchen Browsern (installierte PWA)
+// unterdrückt — dann fiele "+Datei" ersatzlos aus.
+function FileDialog({ dlg, onClose }) {
+  const inputRef = useRef(null);
+  const submit = (e) => {
+    e.preventDefault();
+    if (dlg.kind === "prompt") {
+      const value = (inputRef.current?.value || "").trim();
+      if (!value) return;
+      onClose();
+      dlg.run(value);
+    } else {
+      onClose();
+      dlg.run();
+    }
+  };
+  return (
+    <Modal title={dlg.title} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3 text-sm">
+        {dlg.kind === "prompt" ? (
+          <label className="block">
+            <span className="mb-1 block text-slate-600 dark:text-slate-300">
+              {dlg.label}
+            </span>
+            <input
+              ref={inputRef}
+              autoFocus
+              defaultValue={dlg.initial || ""}
+              className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
+            />
+          </label>
+        ) : (
+          <p className="text-slate-600 dark:text-slate-300">{dlg.text}</p>
+        )}
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className={dlgBtn}>
+            Abbrechen
+          </button>
+          <button
+            type="submit"
+            className={`rounded px-3 py-1 font-medium text-white ${
+              dlg.danger ? "bg-red-600 hover:bg-red-700" : "bg-blue-600 hover:bg-blue-700"
+            }`}
+          >
+            {dlg.ok}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 export default function FilesPanel({ refreshKey, onOpenFile }) {
   const [connections, setConnections] = useState([]);
   const [source, setSource] = useState("ws");
@@ -30,6 +87,7 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [localKey, setLocalKey] = useState(0); // ↻-Button: Listing neu laden
+  const [dlg, setDlg] = useState(null); // Anlegen/Umbenennen/Löschen-Dialog
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -73,17 +131,16 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   const curDir = source === "ws" ? path : data?.path || "";
   const joinDir = (name) => (curDir ? `${curDir}/${name}` : name);
 
-  async function reload() {
-    const d = source === "ws" ? await getFiles(path) : await getRemoteFiles(source, path);
-    setData(d);
-  }
-
   async function run(fn) {
     setBusy(true);
     setError(null);
     try {
       await fn();
-      await reload();
+      // Neu laden über den Lade-Effekt statt über ein eigenes reload(): der
+      // Effekt verwirft veraltete Antworten (stale-Flag). Das eigene reload()
+      // kannte den Wechsel nicht und hat nach einer Navigation das frische
+      // Listing wieder mit dem alten Verzeichnis überschrieben.
+      setLocalKey((k) => k + 1);
     } catch (err) {
       setError(String(err.message || err));
     } finally {
@@ -100,36 +157,60 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   }
 
   function onNewFile() {
-    const name = prompt("Name der neuen Datei:");
-    if (!name) return;
-    // leere Datei anlegen und direkt im Editor öffnen
-    run(async () => {
-      const target = joinDir(name);
-      await saveFile(source, target, "");
-      onOpenFile({ source, path: target });
+    setDlg({
+      kind: "prompt",
+      title: "Neue Datei",
+      label: "Name der neuen Datei",
+      ok: "Anlegen",
+      // leere Datei anlegen und direkt im Editor öffnen
+      run: (name) =>
+        run(async () => {
+          const target = joinDir(name);
+          await saveFile(source, target, "");
+          onOpenFile({ source, path: target });
+        }),
     });
   }
 
   function onNewDir() {
-    const name = prompt("Name des neuen Ordners:");
-    if (!name) return;
-    run(() => mkdir(source, joinDir(name)));
+    setDlg({
+      kind: "prompt",
+      title: "Neuer Ordner",
+      label: "Name des neuen Ordners",
+      ok: "Anlegen",
+      run: (name) => run(() => mkdir(source, joinDir(name))),
+    });
   }
 
   function onRename(entry) {
-    const name = prompt("Neuer Name:", entry.name);
-    if (!name || name === entry.name) return;
-    run(() => renamePath(source, entry.path, joinDir(name)));
+    setDlg({
+      kind: "prompt",
+      title: "Umbenennen",
+      label: `Neuer Name für „${entry.name}“`,
+      initial: entry.name,
+      ok: "Umbenennen",
+      run: (name) => {
+        if (name === entry.name) return;
+        run(() => renamePath(source, entry.path, joinDir(name)));
+      },
+    });
   }
 
   function onDelete(entry) {
     const what = entry.type === "dir" ? "Ordner (samt Inhalt)" : "Datei";
-    if (!confirm(`${what} „${entry.name}“ wirklich löschen?`)) return;
-    run(() => deletePath(source, entry.path));
+    setDlg({
+      kind: "confirm",
+      title: "Löschen",
+      text: `${what} „${entry.name}“ wirklich löschen?`,
+      ok: "Löschen",
+      danger: true,
+      run: () => run(() => deletePath(source, entry.path)),
+    });
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {dlg && <FileDialog dlg={dlg} onClose={() => setDlg(null)} />}
       <div className="flex items-center gap-1 overflow-x-auto border-b bg-slate-50 px-2 py-1 dark:border-slate-700 dark:bg-slate-900">
         <button
           onClick={() => switchSource("ws")}

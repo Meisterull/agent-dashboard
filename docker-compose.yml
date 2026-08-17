@@ -22,7 +22,19 @@ services:
       - ./config:/app/config:ro
       # Vom Dashboard editierbare Settings landen in /workspace/config (s.u.),
       # NICHT im read-only /app/config.
-      - ./ssl:/app/ssl:ro
+      #
+      # TLS: bewusst einzelne Dateien statt ./ssl:/app/ssl:ro — sonst landet
+      # auch ssl/ca.key (der Schlüssel der lokalen CA, mit dem man beliebige
+      # Zertifikate fürs LAN ausstellen kann) im Container. Gebraucht werden
+      # dort nur diese drei.
+      # HINWEIS: Die Dateien müssen vor dem ersten `up` existieren
+      # (scripts/make_cert.sh) — sonst legt Docker gleichnamige LEERE
+      # VERZEICHNISSE an. Der Container startet dann trotzdem (der entrypoint
+      # baut sich einen self-signed Platzhalter in /workspace/ssl);
+      # make_cert.sh räumt die Verzeichnisse beim nächsten Lauf weg.
+      - ./ssl/fullchain.pem:/app/ssl/fullchain.pem:ro
+      - ./ssl/privkey.pem:/app/ssl/privkey.pem:ro
+      - ./ssl/ca.crt:/app/ssl/ca.crt:ro
       # SSH-Keys als Secrets, read-only.
       - ./secrets:/run/secrets:ro
       # HINWEIS: /var/run/docker.sock wird bewusst NICHT gemountet.
@@ -73,6 +85,16 @@ services:
         limits:
           memory: 1g
           cpus: "1.5"
+
+    # M20: Ohne das wächst /var/lib/docker/containers/<id>/*-json.log unbegrenzt
+    # — der Server hatte schon einmal Root-Disk-Druck. nginx-Access-Logs gehen
+    # laut nginx-Template nach stdout und landen genau hier, also hart deckeln:
+    # 5 × 20 MB = maximal 100 MB pro Container.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
 
     healthcheck:
       test: ["CMD", "curl", "-fsk", "https://localhost:443/api/health"]

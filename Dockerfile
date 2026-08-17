@@ -5,8 +5,13 @@
 # ---------------------------------------------------------------------------
 FROM node:20-slim AS frontend-build
 WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci || npm install
+# package-lock.json ist getrackt und MUSS mitkommen: `npm ci` baut exakt die
+# gepinnten Versionen. Früher stand hier `npm ci || npm install` — das hat bei
+# einem veralteten/fehlenden Lockfile still auf eine freie Auflösung
+# umgeschaltet und damit reproduzierbare Builds ausgehebelt. Lieber laut
+# scheitern und `npm install` lokal nachziehen + Lockfile committen.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -30,9 +35,12 @@ FROM python:3.12-slim-bookworm AS runtime
 
 # Nur, was zur Laufzeit wirklich gebraucht wird.
 # Key-Only-SSH => sshpass entfällt bewusst (siehe Security-Kapitel).
+# certbot ist raus: Let's Encrypt braucht eine öffentlich erreichbare Domäne,
+# das Dashboard läuft im LAN hinter der lokalen CA aus scripts/make_cert.sh.
+# Das Paket zieht den halben Python-2-artigen Abhängigkeitsbaum mit und wurde
+# nie aufgerufen. Falls doch mal ACME kommt: hier wieder aufnehmen.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx \
-        certbot \
         openssh-client \
         gettext-base \
         supervisor \

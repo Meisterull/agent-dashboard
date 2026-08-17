@@ -8,8 +8,29 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import tempfile
 from pathlib import Path
 from typing import Any
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Datei atomar ersetzen (tmp + fsync + replace) — Muster aus der Mailbox."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
 
 DATA_CONFIG_DIR = Path(os.environ.get("DATA_CONFIG_DIR", "/workspace/config"))
 SETTINGS_PATH = DATA_CONFIG_DIR / "settings.json"
@@ -22,9 +43,7 @@ KEYS_DIR = Path(os.environ.get("WORKSPACE_DIR", "/workspace")) / "keys"
 
 # Nicht-geheime UI-Settings. API-Keys/Tokens bleiben in .env / Secrets.
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "llm_provider": "claude-api",
     "language": "de",
-    "telegram_enabled": False,
     # Leer = Env-Default (OLLAMA_MODEL / ORCH_MODEL). Gesetzt = Live-Override
     # des Orchestrator-Modells über das Dashboard.
     "orch_model": "",
@@ -59,10 +78,47 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         if key in ALLOWED_KEYS:
             settings[key] = value
     DATA_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(
-        json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8"
+    # Atomar schreiben wie die Mailbox: hier stehen auch die Automatik-Schalter
+    # und der Not-Aus. Ein Crash mitten im Schreiben hinterließe kaputtes JSON,
+    # load_settings fiele still auf die Defaults zurück — der Not-Aus wäre weg.
+    _atomic_write_text(
+        SETTINGS_PATH, json.dumps(settings, ensure_ascii=False, indent=2)
     )
     return settings
+
+
+# --- Externe Fenster (nginx-Proxy /ext/) ----------------------------------
+# Der Proxy erlaubt nginx-seitig JEDE private IPv4. Was er ausliefert, läuft
+# unter der Origin des Dashboards und könnte dessen API mit dem Session-Cookie
+# bedienen — deshalb prüft /api/auth/verify zusätzlich gegen diese Liste.
+_EXT_ZIEL_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})(?:/|$)")
+
+
+def erlaubte_ext_ziele(settings: dict[str, Any] | None = None) -> set[str]:
+    """`ip:port` aller eingetragenen externen Fenster (ohne volle https-URLs)."""
+    ziele: set[str] = set()
+    for fenster in (settings or load_settings()).get("external_windows") or []:
+        roh = str((fenster or {}).get("url") or "").strip()
+        if not roh or roh.lower().startswith("https://"):
+            continue  # volle https-URLs landen direkt im iframe, nicht über /ext/
+        m = _EXT_ZIEL_RE.match(re.sub(r"^http://", "", roh, flags=re.IGNORECASE))
+        if m:
+            ziele.add(f"{m.group(1)}:{m.group(2)}")
+    return ziele
+
+
+def ist_erlaubtes_ext_ziel(ziel: str | None) -> bool:
+    """Darf der /ext/-Proxy dieses `ip:port` ansprechen?
+
+    `ziel` kommt als Header X-Ext-Ziel aus den nginx-Captures — also aus der
+    NORMALISIERTEN URI und damit aus genau dem Wert, den proxy_pass benutzt.
+    Die URI selbst zu zerlegen wäre falsch: nginx normalisiert `..`-Segmente
+    vor dem Location-Matching, `$request_uri` kann also ein anderes (erlaubtes)
+    Ziel vortäuschen als das, was am Ende wirklich angesprochen wird.
+    """
+    if not ziel or not _EXT_ZIEL_RE.match(ziel):
+        return False
+    return ziel in erlaubte_ext_ziele()
 
 
 def _yaml_agents(path: Path) -> list[dict[str, Any]]:
@@ -144,11 +200,11 @@ def add_ui_connection(
         }
     )
     DATA_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    AGENTS_UI_YAML.write_text(
+    _atomic_write_text(
+        AGENTS_UI_YAML,
         "# Vom Dashboard verwaltete Verbindungen — NICHT von Hand editieren,\n"
         "# handgepflegte Einträge gehören in agents.yaml.\n"
         + yaml.safe_dump({"agents": agents}, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
     )
 
 
@@ -161,10 +217,10 @@ def remove_ui_connection(name: str) -> dict[str, Any] | None:
     if removed is None:
         return None
     agents = [a for a in agents if a.get("name") != name]
-    AGENTS_UI_YAML.write_text(
+    _atomic_write_text(
+        AGENTS_UI_YAML,
         "# Vom Dashboard verwaltete Verbindungen — NICHT von Hand editieren,\n"
         "# handgepflegte Einträge gehören in agents.yaml.\n"
         + yaml.safe_dump({"agents": agents}, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
     )
     return removed

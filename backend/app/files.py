@@ -19,6 +19,13 @@ MAX_READ_BYTES = 256 * 1024  # erzeugte Dateien sind klein; großes nicht ins UI
 TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "utf-16", "cp1252")
 
 
+# Was im Workspace liegt, aber nichts im Datei-Panel zu suchen hat: die
+# privaten SSH-Keys der Agenten-PCs, die Server-Zertifikate und die Chat-DB.
+# Ohne diese Sperre zeigt ein Klick im Browser Key-Material an — und jede
+# Lücke, die Requests unter der Dashboard-Origin erlaubt, kann es abziehen.
+GESPERRT = {"keys", "ssl", "chat.db", "chat.db-wal", "chat.db-shm"}
+
+
 class FilesError(Exception):
     """Ungültiger Pfad oder nicht lesbar — vom Router als 400/404 behandelt."""
 
@@ -67,6 +74,8 @@ def _safe(relpath: str) -> Path:
     p = (WORKSPACE / rel).resolve()
     if not (p == WORKSPACE or WORKSPACE in p.parents):
         raise FilesError(f"Pfad verlässt den Workspace: {relpath}")
+    if p != WORKSPACE and p.relative_to(WORKSPACE).parts[0] in GESPERRT:
+        raise FilesError(f"gesperrter Bereich: {relpath}")
     return p
 
 
@@ -80,6 +89,8 @@ def list_dir(relpath: str = "") -> dict[str, Any]:
     entries = []
     for child in sorted(base.iterdir(), key=lambda c: (c.is_file(), c.name.lower())):
         if child.name.startswith("."):
+            continue
+        if base == WORKSPACE and child.name in GESPERRT:
             continue
         is_dir = child.is_dir()
         entries.append(

@@ -40,7 +40,11 @@ backend/
                            (done mit offener Frage → needs_confirm in
                            .processing), resolve_question (answer → Nachtrag +
                            zurück in die Inbox), merged_instruction (Prompt
-                           inkl. Antworten/Zwischenstand für den Folgelauf)
+                           inkl. Antworten/Zwischenstand für den Folgelauf);
+                           beantworte_frage = die EINE Antwort-Primitive
+                           (Dashboard + MCP-`answer`: zustellen, Frage
+                           archivieren, geparkte Tasks anstoßen);
+                           requeue_stale/aufraeumen/pflege (Wartung, s.u.)
     files.py               pfad-sichere Datei-Ops (Dateibaum, Editor, Up-/Download)
     remote_files.py        SFTP-Datei-Ops auf den Agenten-PCs (/api/remote/…)
     chat_store.py          SQLite-Persistenz der Chat-Sessions (/workspace/chat.db)
@@ -68,11 +72,17 @@ frontend/                  React 18 + Vite 6 + Tailwind v4 (komplettes Dashboard
   src/App.jsx              Layout; src/api.js fetch-Helfer; src/components/*.jsx
 scripts/agent_watcher.py   Remote-Watcher, nur Standardlib. Transporte: --root
                            (Datei-Mailbox) ODER --mcp-url (über den gebundenen
-                           MCP-Kanal, kein Mount); "stop" auf stdin/EOF = sanft
-                           beenden (--mcp-hint: Identitäts-Kontext voranstellen);
+                           MCP-Kanal, kein Mount); auf stdin: "stop"/EOF = sanft
+                           beenden, "kill" = laufenden claude-Lauf sofort
+                           abschießen (--mcp-hint: Identitäts-Kontext
+                           voranstellen); Instanz-Lock je Agent (rc=2 bei
+                           Doppelstart, rc=1 bei Preflight/Fehlerserie);
                            claude läuft mit stream-json (#18): Tool-Calls/Text
                            als Live-Fortschritt ins Panel, Timeout killt die
-                           ganze Prozessgruppe, stdin=DEVNULL (#16)
+                           ganze Prozessgruppe, stdin=DEVNULL (#16); fertige
+                           Ergebnisse werden mit eigener Retry-Schleife
+                           abgeliefert — auch nach "stop" (30 min Arbeit dürfen
+                           nicht an einem Tunnel-Reconnect verloren gehen)
 scripts/setup_agent_pc.sh  auf dem Agenten-PC: Dashboard-MCP in Claude-Code
                            registrieren (http://127.0.0.1:<mcp_port>/mcp)
 Dockerfile · docker-compose.yml · entrypoint.sh · supervisord.conf · nginx/
@@ -92,10 +102,13 @@ cd backend && python orchestrator.py           # CLI-Chat statt Web
 
 # Vertical Slice ohne LLM (nur Standardlib, läuft überall)
 python scripts/agent_watcher.py --agent frontend --root /tmp/mb/mailboxes --dry-run --once
-cd backend && python -m tests.test_mcp_scope       # Scoping-Logik (stdlib)
+
+# Tests: alles Standardlib, läuft auf dem Host wie im Container
+cd backend && python -m tests.run_alle             # alle Module (je eigener Prozess)
+cd backend && python -m tests.test_mcp_tools       # einzelnes Modul
 
 # Ganzer Stack
-docker compose up --build                      # nginx+api+mcp+telegram via supervisord
+docker compose up --build                      # nginx+api+mcp(+tunnel) via supervisord
 ```
 
 ## Architektur-Kernpunkte
@@ -105,13 +118,37 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   und führt Tool-Calls über `session.call_tool` aus. CLI und FastAPI teilen diesen Kern.
 - **Mailbox ist die riskanteste Primitive** → `app/mailbox.py` schreibt atomar
   (`tmp` + `fsync` + `os.replace`) und beansprucht Tasks exklusiv über `.processing/`.
-  Nie naiv `open(...).write()` für Mailbox-JSON.
+  Nie naiv `open(...).write()` für Mailbox-JSON. Dazu drei Regeln aus dem
+  Review vom 16.08.2026:
+  - **Read-Modify-Write nur unter `self._lock()`** (flock auf `<agent>/.lock`).
+    Atomares Schreiben verhindert halbe Dateien, nicht verlorene Updates —
+    API-Prozess und MCP-Server sind getrennte Prozesse und fassen dieselben
+    Envelopes an. Der Lock ist pro Thread re-entrant, aber NIEMALS über zwei
+    Mailboxen verschachteln (Deadlock-Gefahr).
+  - **`claim_task` ist exklusiv, nicht idempotent**: ein schon beanspruchter
+    Task wirft `AlreadyClaimed` (der zweite Watcher überspringt ihn); nur
+    `erneut=True` liefert ihn dem eigenen Bearbeiter noch einmal aus.
+    `complete_task` ist dagegen absichtlich wiederholbar (`already: true`) —
+    der Watcher liefert bei Verbindungsabriss erneut ab.
+  - **Wartung läuft im API-Prozess** (`mailbox.pflege`, alle
+    `MAILBOX_PFLEGE_INTERVALL` s): Tasks, die länger als
+    `MAILBOX_STALE_ALTER` (Default 3 h) in `.processing` liegen, gelten als
+    verwaist und gehen zurück in die Inbox; `MAILBOX_ARCHIV_TAGE` rotiert
+    Archiv/Fehlschläge/Outbox. Der Wert MUSS über dem `CLAUDE_TIMEOUT` des
+    Watchers (1800 s) bleiben, sonst wird ein laufender Task doppelt gestartet.
 - **Multi-Provider (`app/llm.py`):** `ORCH_PROVIDER=anthropic|ollama`. Neutrale
   History (`user`/`assistant`+`tool_calls`/`tool`), erst beim Aufruf ins Provider-
   Format übersetzt. Ollama über Standardlib-HTTP (kein pip), Anthropic lazy via SDK
-  (`claude-opus-4-8`, adaptives Thinking, `effort: high`). Agentic-Loop gegen Ollama
-  real getestet. **Beim Erweitern provider-neutral bleiben** — nichts Anthropic-
-  Spezifisches in orchestrator_core/main.
+  (`claude-opus-4-8`, adaptives Thinking, `effort: high`, Prompt-Caching auf
+  System+Tools). Agentic-Loop gegen Ollama real getestet. **Beim Erweitern
+  provider-neutral bleiben** — nichts Anthropic-Spezifisches in
+  orchestrator_core/main. Zwei History-Regeln:
+  Assistant-Nachrichten führen auf dem Anthropic-Pfad die rohen Content-Blöcke
+  in `_anthropic` mit und geben sie unverändert zurück — **Thinking-Blöcke
+  tragen eine Signatur**, ein Neubau aus Text+tool_calls verliert sie und die
+  API weist die Fortsetzung ab. Und jeder `tool_call` braucht ein `tool_result`:
+  bricht ein Turn ab, trägt `llm.repariere_history` die fehlenden nach, statt
+  die Runde (und das Wissen um bereits ausgeführte Tools) wegzuwerfen.
 - **MCP-Rollen:** (1) Werkzeugkasten des Orchestrators. (2) Transport zu Agenten =
   Reverse-SSH-Tunnel (`app/mcp_tunnel.py`): pro SSH-Agent aus agents.yaml lauscht auf
   dem Agenten-PC 127.0.0.1:<mcp_port> (Default 9000) auf den Container-MCP. Claude-Code
@@ -120,13 +157,22 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   unveröffentlicht (nur Loopback + Key-Auth-Tunnel). Einträge ohne existierende
   key_file werden übersprungen; agents.yaml wird alle 60 s neu eingelesen.
   Aufgaben-Transport an die Watcher bleibt die Datei-Mailbox.
+  `list_agents` liefert Mailbox-Ordner **plus** konfigurierte Agenten — und genau
+  diese Menge akzeptieren `send_task`/`send_message`/`ask` als Empfänger. Ein
+  Tippfehler legt damit keine Geister-Mailbox mehr an (die sich sonst über
+  `list_agents` selbst bestätigt hätte).
 - **Kanal-Identität + Tool-Scoping (Issue #13, `app/mcp_scope.py`):** Pro SSH-Agent
   lauscht im Container ein EIGENER, an den Agentennamen gebundener MCP-Port (auto ab
   :9100, explizit `mcp_local_port`); der Tunnel forwardet dorthin statt auf :9000.
   Auf gebundenen Kanälen leitet der Server agent/sender aus der Bindung ab und lehnt
   fremde Werte ab; `tools:` am Agenten (agents.yaml) blendet nicht erlaubte Tools
   komplett aus. Server schreibt die aktive Port-Map nach mcp_ports.json, der Tunnel
-  liest sie (Fallback :9000 nur für Agenten OHNE Allowlist). Der freie Kanal :9000
+  liest sie. **Kein Fallback auf :9000**: fehlt der gebundene Kanal, bleibt der
+  Tunnel für den Agenten ausgesetzt (Logzeile) — auf dem freien Kanal wären
+  agent/sender frei wählbar. Auto-Ports sind stabil (bestehende Zuordnungen
+  aus mcp_ports.json werden wiederverwendet), sonst rutschte beim Einfügen
+  eines Agenten die Bindung eines anderen weiter und ein Tunnel zeigte
+  kurzzeitig auf eine FREMDE Identität. Der freie Kanal :9000
   (Orchestrator) verhält sich unverändert. Tool-Registrierung läuft über
   `register_tools(mcp, identity, allowed)` in mcp_server.py — beim Tool-Ergänzen dort
   registrieren UND den Namen in mcp_scope.KNOWN_TOOLS aufnehmen. Nach Änderungen an
@@ -139,8 +185,15 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
   Kanal (#13). GEWÜNSCHT lebt in settings.json (`automatik`, `automatik_notaus`),
   IST = echter Prozess (stirbt er → "fehler" + Reconnect, nie falsches "an").
   Aus = sanft ("stop" auf stdin, laufender claude-Lauf darf fertig werden, Deckel
-  AUTO_STOP_GRACE 1860 s); Not-Aus = hart (Verbindung schließen — portabel, auch
-  Windows ohne Signal-Support). Optional je Agent in agents.yaml: `workdir`,
+  AUTO_STOP_GRACE 1860 s, läuft im Hintergrund — der HTTP-Request wartet NICHT
+  darauf); Not-Aus = hart: **"kill" auf stdin** beendet die claude-Prozessgruppe
+  (POSIX killpg, Windows `taskkill /F /T`), erst danach wird die Verbindung
+  geschlossen. Verbindung-schließen allein reicht NICHT — ohne PTY schickt sshd
+  kein SIGHUP, der Lauf liefe verwaist weiter und änderte Dateien, während der
+  Task schon als Fehler gemeldet wäre. Ein Instanz-Lock
+  (`~/.agent-dashboard/<agent>.lock`) verhindert zwei Watcher für denselben
+  Agenten; ein Watcher, der wegen Preflight/Fehlerserie mit rc=1 endet, wird
+  NICHT automatisch neu gestartet (Status "gesperrt", erst der Toggle löst ihn). Optional je Agent in agents.yaml: `workdir`,
   `python` (Default python3), `claude_bin` (Pfad/Name des Claude-Binaries).
   Robustheit (Issue #14): Preflight VOR dem ersten Claim (workdir + Binary via
   `finde_claude` — sucht nach `which` auch ~/.local/bin & Co., weil die
@@ -181,9 +234,22 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
 ## Konventionen / Sicherheit
 
 - **Path-Traversal:** jeder Workspace-Zugriff über `app/files._safe` bzw. `_safe` im
-  MCP-Server (resolve + Prüfung gegen WORKSPACE). Nie roh joinen.
+  MCP-Server (resolve + Prüfung gegen WORKSPACE). Nie roh joinen — das gilt auch
+  für Pfadsegmente aus der URL (`main._agent_base`/`_geprüfte_id`).
 - **Secrets:** API-Keys/Tokens nur in `.env`/Docker-Secrets, nie ins Frontend, nie in
   `agents.yaml` im Klartext. `/api/connections` gibt nur Name/Host/User zurück.
+  `SESSION_SECRET` setzen — sonst wird das Cookie-Secret aus dem Admin-Passwort
+  abgeleitet (per PBKDF2 gebremst, aber vermeidbar). `files.GESPERRT` hält
+  `keys/`, `ssl/` und `chat.db` aus dem Datei-Panel heraus.
+- **`/ext/`-Proxy ist eine Allowlist:** nginx lässt jede private IPv4 durch,
+  die zweite Hälfte der Prüfung macht `/api/auth/verify` gegen
+  `settings.external_windows` (`config.ist_erlaubtes_ext_ziel`). Ohne sie liefe
+  eine beliebige LAN-Seite unter der Dashboard-Origin und könnte mit dem
+  Session-Cookie die ganze API bedienen. **Geprüft wird der Header `X-Ext-Ziel`
+  (nginx-Captures = echtes proxy_pass-Ziel), NIEMALS die URI:** nginx
+  normalisiert `..`-Segmente vor dem Location-Matching, `$request_uri` kann
+  also ein erlaubtes Ziel vortäuschen, während wirklich ein anderes
+  angesprochen wird (nachgestellt und behoben 16.08.2026).
 - **Settings-Whitelist:** `config.ALLOWED_KEYS` — `/api/settings` ignoriert unbekannte Keys.
 - **Container:** non-root `app`-User, `cap_drop: ALL`, kein `docker.sock`-Mount.
 - **`/api/health` darf NICHT von MCP/Anthropic abhängen** (Docker-Healthcheck).
@@ -204,9 +270,14 @@ docker compose up --build                      # nginx+api+mcp+telegram via supe
 | SSH-Bridge (`/ws/ssh`) | ✅ E2E getestet 12.07.2026 (persistente Sessions, sid-Reattach) |
 | MCP-Tunnel (`app/mcp_tunnel.py`) | ✅ E2E verifiziert 07.07.2026 (Host als Test-Agent `lokal`, Port 9100: Handshake + `claude mcp list` ✔ Connected) |
 
+| Backend-Tests (`python -m tests.run_alle`) | ✅ 11 Module grün 16.08.2026 (Standardlib, Host wie Container) |
+| Review 16.08.2026 (H/M/N-Befunde) | ✅ Code gefixt + Tests + deployt 16.08.2026 (mit Issues #12–#19) |
+
 Wenn du etwas änderst: bei reinen Standardlib-Modulen (mailbox, files, config, watcher)
-gibt es echte Tests/Smoke-Checks — nutze sie. Beim LLM-Pfad ehrlich kennzeichnen, was
-verifiziert ist und was nicht.
+gibt es echte Tests — `cd backend && python -m tests.run_alle` läuft ohne pip und ohne
+Container. Beim LLM-Pfad ehrlich kennzeichnen, was verifiziert ist und was nicht:
+der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Blöcke,
+`stop_reason` — nie gegen die echte API gelaufen, hier läuft Ollama).
 
 ## Gotchas
 

@@ -15,6 +15,15 @@ Sanftes Beenden (Automatikmodus): "stop" auf stdin (oder stdin-EOF, wenn die
 haltende SSH-Verbindung stirbt) → kein neuer Task wird mehr angenommen, ein
 laufender Claude-Lauf darf fertig werden und sein Ergebnis abliefern.
 
+Hartes Beenden (Not-Aus): "kill" auf stdin → der laufende Claude-Lauf wird
+SOFORT samt Kindprozessen abgeschossen (POSIX killpg, Windows taskkill /T) und
+der Watcher endet. Ohne dieses Kommando würde ein bloßes Schließen der
+SSH-Verbindung claude verwaist weiterlaufen lassen (kein PTY = kein SIGHUP).
+
+Pro Agent läuft nur EIN Watcher je PC: eine Lock-Datei
+(~/.agent-dashboard/<agent>.lock) verhindert, dass ein zweiter Start denselben
+Task ein zweites Mal ausführt.
+
 Test ohne echtes Claude-Code:  --dry-run  (echoed die instruction zurück).
 
     python3 agent_watcher.py --agent frontend \
@@ -43,6 +52,20 @@ from pathlib import Path
 
 # Sanft-Stopp-Signal: gesetzt durch "stop" auf stdin oder stdin-EOF.
 STOP = threading.Event()
+# Hart-Stopp-Signal (Not-Aus): gesetzt durch "kill" auf stdin. Bricht den
+# laufenden Claude-Lauf ab, statt ihn fertig werden zu lassen.
+HART = threading.Event()
+
+# Der aktuell laufende claude-Prozess — der Not-Aus muss ihn von außen (aus dem
+# stdin-Thread) samt Kindern beenden können.
+_PROZESS_LOCK = threading.Lock()
+_LAUFENDER: "subprocess.Popen | None" = None
+
+# Ablieferung des Ergebnisses (M8): eigene Retry-Schleife, entkoppelt vom
+# Poll-Loop — bis zu 30 min Claude-Arbeit dürfen nicht an einem Netz-Blip
+# oder am gerade gesetzten Sanft-Stopp verloren gehen.
+ABLIEFER_VERSUCHE = 5
+ABLIEFER_PAUSE = 10.0
 
 # Fehlschlag-Dämpfung (Issue #14): Scheitern mehrere Tasks unmittelbar
 # hintereinander, ist die Umgebung kaputt (Binary weg, workdir weg, …) —
@@ -57,6 +80,18 @@ AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 def now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def sicher_print(text: str) -> None:
+    """print, das eine tote stdout-Leitung überlebt.
+
+    stdout ist die SSH-Session zum Dashboard. Wird sie geschlossen (Not-Aus,
+    Netzabriss), wirft das nächste print BrokenPipeError — mitten in der
+    Ausgabe-Schleife von run_claude würde das den Lauf verwaisen lassen."""
+    try:
+        print(text, flush=True)
+    except (BrokenPipeError, OSError, ValueError):
+        pass
 
 
 def atomic_write_json(path: Path, data: dict) -> None:
@@ -177,6 +212,94 @@ def fehlerserie(status: str, dauer: float) -> bool:
 CLAUDE_TIMEOUT = 1800.0  # Sekunden je Task-Lauf
 
 
+def beende_prozessgruppe(proc) -> None:
+    """claude SAMT Kindprozessen beenden — eine Funktion für alle Abbrüche.
+
+    Genutzt von Timeout und Not-Aus ("kill" auf stdin). claude startet Tools als
+    eigene Prozesse; überlebt auch nur eines davon, hält es die stdout-Pipe
+    offen und die Lese-Schleife blockiert für immer.
+      POSIX:   killpg auf die eigene Prozessgruppe (start_new_session).
+      Windows: `taskkill /F /T` — killpg gibt es dort nicht, und proc.kill()
+               allein lässt die Kinder stehen."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=20)
+    except Exception:  # noqa: BLE001 — Abbruch darf nie selbst crashen
+        pass
+    try:
+        proc.kill()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _merke_prozess(proc) -> None:
+    global _LAUFENDER
+    with _PROZESS_LOCK:
+        _LAUFENDER = proc
+
+
+def _vergiss_prozess(proc) -> None:
+    global _LAUFENDER
+    with _PROZESS_LOCK:
+        if _LAUFENDER is proc:
+            _LAUFENDER = None
+
+
+def abbrechen_laufenden() -> None:
+    """Not-Aus von außen: den gerade laufenden Claude-Lauf sofort abschießen."""
+    with _PROZESS_LOCK:
+        proc = _LAUFENDER
+    beende_prozessgruppe(proc)
+
+
+def lock_pfad(agent: str) -> Path:
+    return Path.home() / ".agent-dashboard" / f"{agent}.lock"
+
+
+def instanz_lock(agent: str):
+    """Exklusiver Lock je Agent und PC (H2) — nur Standardlib.
+
+    Zwei Watcher für denselben Agenten (Netz-Flap: Container startet einen
+    neuen, der alte lebt noch; oder ein von Hand gestarteter neben der
+    Automatik) würden denselben Task doppelt ausführen. Gibt das offene
+    Datei-Objekt zurück (muss bis Prozessende offen bleiben!) oder None, wenn
+    schon ein Watcher läuft. Der Lock stirbt mit dem Prozess — auch beim
+    Absturz, ohne aufzuräumende Stale-Datei."""
+    pfad = lock_pfad(agent)
+    try:
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        datei = open(pfad, "a+", encoding="utf-8")
+    except OSError:
+        return None  # kein Home/kein Schreibrecht: lieber laufen als blockieren
+    try:
+        if os.name == "posix":
+            import fcntl
+            fcntl.flock(datei.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            import msvcrt
+            datei.seek(0)
+            msvcrt.locking(datei.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        datei.close()
+        return None
+    except ImportError:  # exotische Plattform ohne fcntl/msvcrt
+        return datei
+    try:
+        datei.seek(0)
+        datei.truncate()
+        datei.write(f"pid={os.getpid()} seit={now()}\n")
+        datei.flush()
+    except OSError:
+        pass
+    return datei
+
+
 def kurz(text: str, n: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= n else text[: n - 1] + "…"
@@ -222,6 +345,12 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     Berechtigungs-Rückfrage beantworten — was der Lauf dürfen soll, muss als
     Flag mitkommen. Verweigerte Werkzeuge landen ausdrücklich im log, statt
     nur im Fließtext des Ergebnisses unterzugehen.
+
+    Abbruch (Not-Aus, H3): der Prozess ist global registriert, "kill" auf
+    stdin schießt ihn samt Kindern ab. Die Lese-Schleife läuft unter
+    try/finally — verlässt sie der Lauf auf irgendeinem anderen Weg (z.B.
+    tote stdout-Leitung), stirbt die Prozessgruppe trotzdem, statt verwaist
+    weiter Dateien zu ändern.
     """
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
@@ -250,21 +379,35 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
         # errno 2 allein nennt die Datei nicht — hier Klartext liefern (#14).
         return "", f"Claude-Binary nicht ausführbar: {claude_bin}", 127
 
+    _merke_prozess(proc)
+    if HART.is_set():  # Not-Aus kam zwischen Prüfung und Start
+        beende_prozessgruppe(proc)
+
+    def melde(text: str) -> None:
+        """Fortschritt melden, ohne den Lauf an einer toten Leitung zu
+        verlieren (H3) — der Callback schreibt auf stdout = SSH-Session."""
+        if not fortschritt:
+            return
+        try:
+            fortschritt(text)
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
     stderr_teile: list[str] = []
-    leser = threading.Thread(target=lambda: stderr_teile.append(proc.stderr.read()),
-                             daemon=True)
+
+    def _stderr_lesen() -> None:
+        try:
+            stderr_teile.append(proc.stderr.read())
+        except Exception:  # noqa: BLE001 — Pipe beim Abbruch zu: nichts gelesen
+            stderr_teile.append("")
+
+    leser = threading.Thread(target=_stderr_lesen, daemon=True)
     leser.start()
     abgelaufen = threading.Event()
 
     def _abbrechen() -> None:
         abgelaufen.set()
-        try:
-            if os.name == "posix":
-                os.killpg(proc.pid, signal.SIGKILL)
-            else:  # Windows-OpenSSH-Agenten: kein killpg
-                proc.kill()
-        except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
+        beende_prozessgruppe(proc)  # POSIX killpg / Windows taskkill /T (M13)
 
     wecker = threading.Timer(CLAUDE_TIMEOUT, _abbrechen)
     wecker.start()
@@ -275,6 +418,7 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     roh: list[str] = []    # Nicht-JSON-Zeilen (Binary ohne stream-json)
     werkzeug_namen: dict[str, str] = {}  # tool_use_id → Tool-Name
     abgelehnt: list[str] = []            # verweigerte Werkzeuge (Issue #19)
+    vollstaendig = False
     try:
         for zeile in proc.stdout:
             zeile = zeile.strip()
@@ -291,13 +435,11 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                     if block.get("type") == "tool_use":
                         if block.get("id"):
                             werkzeug_namen[block["id"]] = block.get("name", "?")
-                        if fortschritt:
-                            fortschritt(kurz(f"→ {block.get('name', '?')} "
-                                             f"{tool_hinweis(block)}", 100))
+                        melde(kurz(f"→ {block.get('name', '?')} "
+                                   f"{tool_hinweis(block)}", 100))
                     elif block.get("type") == "text" and block.get("text"):
                         texte.append(block["text"])
-                        if fortschritt:
-                            fortschritt(kurz(block["text"], 100))
+                        melde(kurz(block["text"], 100))
             elif typ == "user":
                 # Abgelehnte Werkzeuge sichtbar machen (Issue #19): der Lauf
                 # endet sonst normal, und der Grund steht nur im Fließtext.
@@ -312,8 +454,7 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                     name = werkzeug_namen.get(block.get("tool_use_id") or "", "?")
                     if name not in abgelehnt:
                         abgelehnt.append(name)
-                    if fortschritt:
-                        fortschritt(kurz(f"✗ {name} abgelehnt: {text}", 100))
+                    melde(kurz(f"✗ {name} abgelehnt: {text}", 100))
             elif typ == "result":
                 ergebnis = ev.get("result") or ""
                 fehler_event = bool(ev.get("is_error"))
@@ -321,11 +462,26 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                     name = (d.get("tool_name") if isinstance(d, dict) else None) or "?"
                     if name not in abgelehnt:
                         abgelehnt.append(name)
+        vollstaendig = True
     finally:
         wecker.cancel()
+        # Abbruch auf JEDEM Weg (Not-Aus, Ausnahme in der Schleife, tote
+        # Leitung): die Prozessgruppe muss sterben, sonst arbeitet claude
+        # unbeaufsichtigt weiter (H3).
+        if not vollstaendig or HART.is_set():
+            beende_prozessgruppe(proc)
+        _vergiss_prozess(proc)
     rc = proc.wait()
     leser.join(timeout=5)
+    for pipe in (proc.stdout, proc.stderr):  # Dauerläufer: keine fds ansammeln
+        try:
+            pipe.close()
+        except Exception:  # noqa: BLE001
+            pass
     log = (stderr_teile[0] if stderr_teile else "").strip()
+    if HART.is_set():
+        log = (log + "\n[watcher] Not-Aus — Lauf abgebrochen (kill)").strip()
+        rc = rc or 143
     if abgelaufen.is_set():
         log = (log + f"\n[watcher] Timeout nach {CLAUDE_TIMEOUT:.0f}s — "
                      f"Prozess abgebrochen").strip()
@@ -390,16 +546,27 @@ def unbeantwortete_fragen(inbox: Path, claimed: Path) -> list[dict]:
 
 
 def stdin_stop_waechter() -> None:
-    """Daemon-Thread: "stop" auf stdin = sanft beenden; EOF (haltende
-    SSH-Verbindung weg) ebenso — so bleibt nie ein verwaister Watcher zurück."""
+    """Daemon-Thread: Kommandos auf stdin.
+
+      "stop"  = sanft beenden (laufender Claude-Lauf darf fertig werden);
+                stdin-EOF (haltende SSH-Verbindung weg) wirkt genauso.
+      "kill"  = Not-Aus: laufenden Lauf sofort samt Kindern abschießen (H3) —
+                ein bloßes Schließen der Verbindung erreicht ihn nicht."""
     def _lauscher() -> None:
         try:
             for zeile in sys.stdin:
-                if zeile.strip().lower() == "stop":
-                    print(f"[{now()}] Stop-Kommando empfangen — beende nach laufendem Task.", flush=True)
+                kommando = zeile.strip().lower()
+                if kommando == "kill":
+                    HART.set()
+                    sicher_print(f"[{now()}] Not-Aus empfangen — laufenden "
+                                 f"Claude-Lauf abbrechen.")
+                    abbrechen_laufenden()
+                    break
+                if kommando == "stop":
+                    sicher_print(f"[{now()}] Stop-Kommando empfangen — beende nach laufendem Task.")
                     break
             else:
-                print(f"[{now()}] stdin geschlossen — beende nach laufendem Task.", flush=True)
+                sicher_print(f"[{now()}] stdin geschlossen — beende nach laufendem Task.")
         except Exception:  # noqa: BLE001 — stdin-Eigenheiten dürfen nie crashen
             pass
         STOP.set()
@@ -503,6 +670,39 @@ class McpClient:
         return daten
 
 
+def liefere_ergebnis(client: "McpClient | None", url: str, task_id: str,
+                     result: str, status: str, log: str
+                     ) -> tuple[object, "McpClient | None", str | None]:
+    """complete_task mit eigener Retry-Schleife (M8).
+
+    Läuft bewusst AUCH nach gesetztem Sanft-Stopp weiter — sonst wirft ein
+    "stop" kurz vor Schluss das Ergebnis eines halbstündigen Laufs weg und der
+    Task bliebe beim Server ewig "running". Nur der Not-Aus (HART) bricht ab.
+    Gibt (antwort, client, fehler) zurück; client ist None, wenn die Session
+    neu aufgebaut werden muss."""
+    fehler: str | None = None
+    for versuch in range(ABLIEFER_VERSUCHE):
+        try:
+            if client is None:
+                client = McpClient(url)
+                client.connect()
+            antwort = client.call("complete_task", {
+                "task_id": task_id, "result": result,
+                "status": status, "log": log,
+            })
+            return antwort, client, None
+        except (McpFehler, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            fehler = f"{type(exc).__name__}: {exc}"
+            client = None  # Session neu aufbauen
+            if versuch < ABLIEFER_VERSUCHE - 1 and not HART.is_set():
+                sicher_print(f"[{now()}] Ablieferung von {task_id} fehlgeschlagen "
+                             f"({fehler}) — neuer Versuch in {ABLIEFER_PAUSE:.0f}s")
+                HART.wait(ABLIEFER_PAUSE)  # Not-Aus bricht das Warten sofort ab
+            if HART.is_set():
+                break
+    return None, client, fehler
+
+
 def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: float,
              dry_run: bool, with_mcp_hint: bool, once: bool = False,
              permission_mode: str | None = None,
@@ -543,8 +743,9 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 if with_mcp_hint:
                     instruction = mcp_hint(agent) + instruction
                 def fortschritt(text: str, _tid: str = task_id) -> None:
-                    # Fließt via stdout ins Automatik-Panel (Issue #18).
-                    print(f"[{now()}] {agent}: {_tid} · {text}", flush=True)
+                    # Fließt via stdout ins Automatik-Panel (Issue #18); eine
+                    # tote Leitung darf den Lauf nicht abbrechen (H3).
+                    sicher_print(f"[{now()}] {agent}: {_tid} · {text}")
 
                 task_dir, wd_fehler = projekt_workdir(workdir, projekt)
                 start = time.monotonic()
@@ -561,21 +762,26 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 dauer = time.monotonic() - start
                 if status == "error":
                     result = fehler_result(result, err)
-                fertig = client.call("complete_task", {
-                    "task_id": task_id, "result": result,
-                    "status": status, "log": err,
-                })
+                # Ablieferung vom Poll-Loop entkoppeln (M8): das Ergebnis von
+                # bis zu 30 min Arbeit darf nicht verloren gehen, nur weil der
+                # Tunnel gerade neu verbindet oder inzwischen "stop" kam.
+                fertig, client, liefer_fehler = liefere_ergebnis(
+                    client, url, task_id, result, status, err)
+                if liefer_fehler:
+                    sicher_print(f"[{now()}] {agent}: {task_id} — Ergebnis konnte nicht "
+                                 f"abgeliefert werden ({liefer_fehler}); Task bleibt beim "
+                                 f"Server als laufend. Ergebnis: {kurz(result, 500)}")
                 if isinstance(fertig, dict) and fertig.get("parked"):
                     # Rückfrage offen (Issue #17): Server hat den Task geparkt,
                     # nach der Antwort landet er automatisch wieder in der Inbox.
-                    print(f"[{now()}] {agent}: {task_id} wartet auf Antwort "
-                          f"einer Rückfrage (geparkt)", flush=True)
-                else:
-                    print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})", flush=True)
+                    sicher_print(f"[{now()}] {agent}: {task_id} wartet auf Antwort "
+                                 f"einer Rückfrage (geparkt)")
+                elif not liefer_fehler:
+                    sicher_print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})")
                 if fehlerserie(status, dauer):
-                    print(f"[{now()}] {agent}: {FEHLER_SCHWELLE} Tasks in Folge sofort "
-                          f"gescheitert — Umgebungsproblem vermutet, Watcher hält an. "
-                          f"Letzter Fehler: {err[:300]}", flush=True)
+                    sicher_print(f"[{now()}] {agent}: {FEHLER_SCHWELLE} Tasks in Folge sofort "
+                                 f"gescheitert — Umgebungsproblem vermutet, Watcher hält an. "
+                                 f"Letzter Fehler: {err[:300]}")
                     return 1
             if once:
                 break
@@ -595,6 +801,26 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
     return 0
 
 
+def inbox_tasks(inbox: Path) -> list[Path]:
+    """Task-Dateien der Inbox in FIFO-Reihenfolge (N1).
+
+    Sortiert nach `created_at`, nicht nach dem zufälligen uuid-Dateinamen —
+    sonst bestimmt der Zufall, welcher Auftrag zuerst läuft. Envelopes ohne
+    Zeitstempel hängen sich hinten an. Nicht-Tasks (message/question/answer)
+    bleiben liegen: die liest der Koordinator bzw. das Dashboard."""
+    eintraege: list[tuple[str, str, Path]] = []
+    for pfad in inbox.glob("*.json"):
+        try:
+            env = json.loads(pfad.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(env, dict) or env.get("kind", "task") != "task":
+            continue
+        eintraege.append((str(env.get("created_at") or ""), pfad.name, pfad))
+    eintraege.sort(key=lambda e: (e[0] == "", e[0], e[1]))
+    return [e[2] for e in eintraege]
+
+
 def process_once(inbox: Path, processing: Path, outbox: Path,
                  agent: str, claude_bin: str, workdir: Path, dry_run: bool,
                  with_mcp_hint: bool = False,
@@ -602,15 +828,11 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                  allowed_tools: str | None = None) -> int:
     """Gibt die Zahl bearbeiteter Tasks zurück; -1 = Fehlerserie, bitte anhalten."""
     handled = 0
-    for task_path in sorted(inbox.glob("*.json")):
-        # Nur Arbeitsaufträge ausführen; Agent-↔-Agent-Nachrichten (message/
-        # question/answer) liegen lassen — die liest der Koordinator/das Dashboard.
-        try:
-            peek = json.loads(task_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, FileNotFoundError):
-            continue
-        if peek.get("kind", "task") != "task":
-            continue
+    for task_path in inbox_tasks(inbox):
+        if STOP.is_set():
+            # "stop" (oder Not-Aus) wirkt sofort, nicht erst nach dem ganzen
+            # Stapel — 5 Tasks à 30 min wären sonst 2,5 h Weiterarbeit (M14).
+            break
         claimed = processing / task_path.name
         try:
             os.replace(task_path, claimed)  # atomarer, exklusiver Anspruch
@@ -639,8 +861,8 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             else:
                 result, err, rc = run_claude(
                     claude_bin, instruction, task_dir, dry_run,
-                    lambda text, _tid=task_id: print(
-                        f"[{now()}] {agent}: {_tid} · {text}", flush=True),
+                    lambda text, _tid=task_id: sicher_print(
+                        f"[{now()}] {agent}: {_tid} · {text}"),
                     permission_mode, allowed_tools)
                 status = "done" if rc == 0 else "error"
                 if status == "error":
@@ -723,6 +945,17 @@ def main() -> int:
     if bool(args.root) == bool(args.mcp_url):
         ap.error("genau eines von --root und --mcp-url angeben")
     workdir = Path(args.workdir).resolve()
+
+    # Nur EIN Watcher je Agent und PC (H2) — sonst führen zwei Instanzen
+    # denselben Task doppelt aus (z.B. Netz-Flap: der Container startet einen
+    # neuen, während der alte noch lebt). Muss bis Prozessende offen bleiben.
+    lock = instanz_lock(args.agent)
+    if lock is None:
+        print(f"[{now()}] Es läuft bereits ein Watcher für '{args.agent}' auf diesem PC "
+              f"(Lock: {lock_pfad(args.agent)}) — dieser Start beendet sich, damit kein "
+              f"Task doppelt ausgeführt wird.", flush=True)
+        return 2
+
     stdin_stop_waechter()
 
     # Preflight VOR dem ersten Claim: kaputte Umgebung → gar nicht erst

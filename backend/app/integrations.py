@@ -51,7 +51,10 @@ def load_integrations() -> dict[str, dict[str, Any]]:
         import yaml
 
         data = yaml.safe_load(INTEGRATIONS_YAML.read_text(encoding="utf-8")) or {}
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        # Nicht still schlucken: sonst sieht der LLM einfach eine leere Liste
+        # und niemand erfährt, dass die Datei kaputt ist.
+        print(f"[integrations] {INTEGRATIONS_YAML} nicht lesbar: {exc}", flush=True)
         return {}
     return data.get("integrations", {}) or {}
 
@@ -104,5 +107,11 @@ def call_integration(
     except Exception as exc:  # noqa: BLE001
         raise IntegrationError(f"Aufruf fehlgeschlagen: {exc}") from exc
 
-    text = resp.text[:MAX_BODY_CHARS]
-    return {"status": resp.status_code, "body": text}
+    voll = resp.text
+    gekuerzt = len(voll) > MAX_BODY_CHARS
+    text = voll[:MAX_BODY_CHARS]
+    if gekuerzt:
+        # Sichtbar kürzen: ein stumm abgeschnittener Body sieht für das Modell
+        # aus wie eine vollständige (und damit falsch interpretierte) Antwort.
+        text += f"\n…[gekürzt auf {MAX_BODY_CHARS} von {len(voll)} Zeichen]"
+    return {"status": resp.status_code, "body": text, "truncated": gekuerzt}

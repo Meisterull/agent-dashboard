@@ -1,23 +1,39 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
-import { getSettings, putSettings } from "../api";
+import { getSettings, putSettings, getModels } from "../api";
 
+// Das Orchestrator-Modell (`orch_model`) wird bewusst HIER umgeschaltet und
+// nicht im Chat-Kopf: der ist mobil schon voll (Titel + Verlauf-Auswahl +
+// Neu/Löschen), und die Modellwahl gilt global für alle Sessions — sie gehört
+// zu den Einstellungen, nicht zum einzelnen Verlauf. Der Provider bleibt
+// env-bestimmt (app/llm.py liest ihn NICHT aus den Settings), deshalb steht er
+// hier nur noch als Information.
 export default function Settings({ onClose }) {
   const [settings, setSettings] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState(null);
+  const [models, setModels] = useState(null); // {provider, current, models[]}
 
   useEffect(() => {
     getSettings()
       .then(setSettings)
-      .catch(() => setSettings({ llm_provider: "claude-api", language: "de", telegram_enabled: false }));
+      .catch((e) => {
+        setError(`Einstellungen konnten nicht geladen werden: ${e.message || e}`);
+        setSettings({ language: "de" });
+      });
+    getModels()
+      .then(setModels)
+      .catch(() => setModels(null));
   }, []);
 
   function update(key, value) {
     setSettings((s) => ({ ...s, [key]: value }));
     setSaved(false);
+    setError(null);
   }
 
   async function save() {
+    setError(null);
     try {
       // leere Fenster-Zeilen (frisch hinzugefügt, nie ausgefüllt) nicht speichern
       const cleaned = {
@@ -30,8 +46,12 @@ export default function Settings({ onClose }) {
       setSettings(result);
       setSaved(true);
       window.dispatchEvent(new Event("settings:changed"));
-    } catch {
+      getModels()
+        .then(setModels)
+        .catch(() => {});
+    } catch (e) {
       setSaved(false);
+      setError(`Speichern fehlgeschlagen: ${e.message || e}`);
     }
   }
 
@@ -48,18 +68,48 @@ export default function Settings({ onClose }) {
         <p className="text-sm text-slate-400">lädt…</p>
       ) : (
         <div className="space-y-4 text-sm">
-          <label className="block">
-            <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">LLM-Provider</span>
-            <select
-              value={settings.llm_provider}
-              onChange={(e) => update("llm_provider", e.target.value)}
-              className="w-full rounded border border-slate-300 px-2 py-1.5 dark:border-slate-600 dark:bg-slate-800"
-            >
-              <option value="claude-api">Claude (Anthropic API)</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="ollama-local">Ollama (lokal)</option>
-            </select>
-          </label>
+          <div>
+            <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+              Orchestrator-Modell
+            </span>
+            {models?.models?.length ? (
+              <select
+                value={settings.orch_model || ""}
+                onChange={(e) => update("orch_model", e.target.value)}
+                className="w-full rounded border border-slate-300 px-2 py-1.5 dark:border-slate-600 dark:bg-slate-800"
+              >
+                <option value="">Standard aus .env{models.current ? ` (${models.current})` : ""}</option>
+                {/* eingestelltes Modell mit aufnehmen, auch wenn es der
+                    Provider (nicht mehr) auflistet — sonst zeigt das Feld
+                    stillschweigend "Standard" und speichert das auch so */}
+                {[...new Set([...models.models, settings.orch_model].filter(Boolean))].map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={settings.orch_model || ""}
+                onChange={(e) => update("orch_model", e.target.value)}
+                placeholder={models?.current || "leer = Standard aus .env"}
+                className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
+              />
+            )}
+            <p className="mt-1 text-xs text-slate-400">
+              Provider:{" "}
+              <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">
+                {models?.provider || "unbekannt"}
+              </code>{" "}
+              — kommt aus <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">.env</code>{" "}
+              (<code className="rounded bg-slate-100 px-1 dark:bg-slate-800">ORCH_PROVIDER</code>)
+              und ist hier bewusst nicht umschaltbar. Wirkt sofort auf neue
+              Chat-Runden.
+              {models && !models.models.length
+                ? " Der Provider liefert keine Modell-Liste — Name von Hand eintragen."
+                : ""}
+            </p>
+          </div>
 
           <label className="block">
             <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">Sprache</span>
@@ -71,15 +121,6 @@ export default function Settings({ onClose }) {
               <option value="de">Deutsch</option>
               <option value="en">English</option>
             </select>
-          </label>
-
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={!!settings.telegram_enabled}
-              onChange={(e) => update("telegram_enabled", e.target.checked)}
-            />
-            <span className="text-slate-600 dark:text-slate-300">Telegram-Bot aktiviert</span>
           </label>
 
           <div>
@@ -132,6 +173,12 @@ export default function Settings({ onClose }) {
             API-Keys und Tokens werden hier nicht verwaltet — sie bleiben in
             <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">.env</code>/Docker-Secrets.
           </p>
+
+          {error && (
+            <p className="rounded bg-red-100 px-2 py-1.5 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+              {error}
+            </p>
+          )}
 
           <div className="flex items-center gap-3 pt-2">
             <button

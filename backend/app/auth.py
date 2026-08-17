@@ -18,6 +18,9 @@ import time
 COOKIE_NAME = "dash_session"
 SESSION_TTL = 30 * 24 * 3600  # 30 Tage — Handy-Komfort
 
+# (Passwort, abgeleitetes Secret) — siehe _secret().
+_abgeleitet: tuple[str, bytes] | None = None
+
 
 def _password() -> str:
     return os.environ.get("ADMIN_INITIAL_PASSWORD", "").strip()
@@ -27,12 +30,21 @@ def _secret() -> bytes:
     """Signier-Secret: SESSION_SECRET aus .env, sonst vom Passwort abgeleitet.
 
     Die Ableitung hält Sessions über Container-Neustarts gültig, ohne einen
-    zweiten Pflicht-Konfigwert zu erzwingen.
+    zweiten Pflicht-Konfigwert zu erzwingen. Sie läuft über PBKDF2 statt über
+    ein einzelnes SHA-256: aus einem geleakten Token (Log, Screenshot,
+    Browser-Sync) wäre das Admin-Passwort sonst offline in Sekunden zu raten.
+    Besser trotzdem SESSION_SECRET setzen — dann hängt gar nichts am Passwort.
     """
+    global _abgeleitet
     explicit = os.environ.get("SESSION_SECRET", "").strip()
     if explicit:
         return explicit.encode()
-    return hashlib.sha256(("dash-session:" + _password()).encode()).digest()
+    pw = _password()
+    # Ableitung cachen: _secret() läuft bei JEDEM Request (check_token), und
+    # 200k PBKDF2-Runden pro Request wären eine Selbst-DoS.
+    if _abgeleitet is None or _abgeleitet[0] != pw:
+        _abgeleitet = (pw, hashlib.pbkdf2_hmac("sha256", pw.encode(), b"dash-session", 200_000))
+    return _abgeleitet[1]
 
 
 def enabled() -> bool:

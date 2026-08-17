@@ -37,7 +37,8 @@ Agenten. Nur Tasks werden auf dem Agenten-Rechner ausgeführt. Formuliere sie \
 selbstständig ausführbar: Ziel, nötiger Kontext, erwartetes Ergebnis.
 - Ergebnisse erledigter Aufträge landen als kind="response" in der Inbox des \
 Auftraggebers — für dich: `inbox("orchestrator")`; Verarbeitetes danach mit \
-`mark_read("orchestrator", id)` archivieren.
+`mark_read(id, "orchestrator")` archivieren (erst die Envelope-ID, dann der \
+Agent).
 - `read_responses(worker, for_sender?)` — Outbox-Archiv eines Bearbeiters \
 lesen (worker = der Agent, der gearbeitet hat, nicht du selbst).
 
@@ -110,6 +111,9 @@ async def run_turn(
 
     async def call_tool(name: str, inp: dict) -> str:
         result = await session.call_tool(name, inp or {})
-        return mcp_result_to_text(result)[0]
+        text, ist_fehler = mcp_result_to_text(result)
+        # Fehler markieren: sonst liest das Modell eine Fehlermeldung wie ein
+        # normales Ergebnis und meldet dem Nutzer Vollzug.
+        return f"[TOOL-FEHLER] {text}" if ist_fehler else text
 
     return await llm.run_turn(cfg, SYSTEM, messages, tools, call_tool)

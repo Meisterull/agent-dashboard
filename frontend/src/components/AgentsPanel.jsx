@@ -51,7 +51,10 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
   const [tasksByAgent, setTasksByAgent] = useState({});
   const [auto, setAuto] = useState({ notaus: false, agents: {} });
   const [localKey, setLocalKey] = useState(0); // ↻-Button
+  const [offline, setOffline] = useState(false); // letzter Poll fehlgeschlagen
+  const [logOffen, setLogOffen] = useState(false); // Automatik-Log aufgeklappt
   const prevRef = useRef(null); // "agent/box/task_id" -> status
+  const tasksRef = useRef({}); // letzter bekannter Stand je Agent
   const onAttentionRef = useRef(onAttention);
   onAttentionRef.current = onAttention;
 
@@ -75,11 +78,19 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
         );
         if (stale) return;
         const byAgent = Object.fromEntries(pairs.filter(Boolean));
-        setTasksByAgent(byAgent);
+        // Agenten, deren Task-Abruf gescheitert ist, behalten ihren letzten
+        // Stand — sonst verschwinden ihre Aufgaben kurz aus dem Panel und
+        // blinken beim nächsten erfolgreichen Poll als „neu" wieder auf.
+        const merged = Object.fromEntries(
+          d.agents.map((a) => [a, byAgent[a] || tasksRef.current[a]]),
+        );
+        tasksRef.current = merged;
+        setOffline(pairs.some((p) => !p));
+        setTasksByAgent(merged);
         const snap = {};
-        for (const [a, t] of Object.entries(byAgent))
+        for (const [a, t] of Object.entries(merged))
           for (const box of ["inbox", "outbox"])
-            for (const task of t[box] || [])
+            for (const task of t?.[box] || [])
               snap[`${a}/${box}/${task.task_id}`] = task.status;
         const prev = prevRef.current;
         if (
@@ -91,19 +102,39 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
           onAttentionRef.current?.();
         prevRef.current = snap;
       } catch {
-        if (!stale) setAgents([]);
+        // Letzten bekannten Stand STEHEN lassen — ein einzelner
+        // fehlgeschlagener Poll (Reload des Containers, kurzer Netzhänger)
+        // darf das Panel nicht leerräumen; nur der Hinweis geht an.
+        if (!stale) setOffline(true);
       }
     };
     load();
-    const t = setInterval(load, 8000);
+    // Im Hintergrund-Tab nicht pollen (7 Requests alle 8 s); beim
+    // Zurückkommen sofort einmal laden statt bis zum nächsten Takt zu warten.
+    const t = setInterval(() => {
+      if (!document.hidden) load();
+    }, 8000);
+    const onVisible = () => {
+      if (!document.hidden) load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       stale = true;
       clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [refreshKey, localKey]);
 
   const tasks = selected ? tasksByAgent[selected] : null;
   const autoInfo = selected ? auto.agents?.[selected] : null;
+  // Aufklappbares Fortschritts-Log (Watcher-Ausgabe, Issue #18): nur beim
+  // Dazukommen neuer Zeilen ans Ende scrollen — sonst würde der 8-s-Poll den
+  // Leser alle paar Sekunden nach unten reißen.
+  const logText = (autoInfo?.log || []).join("\n");
+  const logRef = useRef(null);
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [logText, logOffen]);
   const autoAktiv = Object.values(auto.agents || {}).some((a) =>
     ["an", "startet", "stoppt"].includes(a.status),
   );
@@ -153,6 +184,14 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-1 border-b bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
         <span className="flex-1">MCP-Monitor · Aufgaben</span>
+        {offline && (
+          <span
+            title="Letzte Aktualisierung fehlgeschlagen — angezeigt wird der letzte bekannte Stand."
+            className="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+          >
+            Verbindung gestört
+          </span>
+        )}
         {(autoAktiv || auto.notaus) && (
           <button
             onClick={toggleNotaus}
@@ -209,38 +248,56 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto p-3 text-xs">
         {autoInfo && (
-          <div className="flex items-center gap-2 rounded bg-slate-50 p-1.5 dark:bg-slate-800">
-            <button
-              onClick={toggleAutomatik}
-              disabled={auto.notaus || (!autoInfo.gewuenscht && !autoInfo.startbar)}
-              title={
-                auto.notaus
-                  ? "Not-Aus aktiv — erst lösen"
-                  : autoInfo.gewuenscht
-                    ? "Automatik ausschalten (laufender Task darf fertig werden)"
-                    : autoInfo.startbar
-                      ? "Automatik einschalten: Inbox selbständig abarbeiten"
-                      : "keine nutzbare SSH-Verbindung (key_file fehlt?)"
-              }
-              className={`rounded px-2 py-0.5 font-semibold disabled:opacity-40 ${
-                autoInfo.gewuenscht
-                  ? "bg-sky-500 text-white"
-                  : "bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
-              }`}
-            >
-              ▶ Automatik
-            </button>
-            <StatusBadge
-              status={
-                { an: "running", fehler: "error" }[autoInfo.status] || autoInfo.status
-              }
-            />
-            <span
-              className="flex-1 truncate text-slate-500 dark:text-slate-400"
-              title={(autoInfo.log || []).join("\n")}
-            >
-              {auto.notaus ? "Not-Aus aktiv" : autoInfo.detail}
-            </span>
+          <div className="rounded bg-slate-50 p-1.5 dark:bg-slate-800">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleAutomatik}
+                disabled={auto.notaus || (!autoInfo.gewuenscht && !autoInfo.startbar)}
+                title={
+                  auto.notaus
+                    ? "Not-Aus aktiv — erst lösen"
+                    : autoInfo.gewuenscht
+                      ? "Automatik ausschalten (laufender Task darf fertig werden)"
+                      : autoInfo.startbar
+                        ? "Automatik einschalten: Inbox selbständig abarbeiten"
+                        : "keine nutzbare SSH-Verbindung (key_file fehlt?)"
+                }
+                className={`rounded px-2 py-0.5 font-semibold disabled:opacity-40 ${
+                  autoInfo.gewuenscht
+                    ? "bg-sky-500 text-white"
+                    : "bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                }`}
+              >
+                ▶ Automatik
+              </button>
+              <StatusBadge
+                status={
+                  { an: "running", fehler: "error" }[autoInfo.status] || autoInfo.status
+                }
+              />
+              <span className="flex-1 truncate text-slate-500 dark:text-slate-400">
+                {auto.notaus ? "Not-Aus aktiv" : autoInfo.detail}
+              </span>
+              {/* Fortschritts-Log aufklappbar statt nur als Hover-Tooltip —
+                  auf dem Handy war der Verlauf sonst gar nicht erreichbar. */}
+              {logText && (
+                <button
+                  onClick={() => setLogOffen((v) => !v)}
+                  title={logOffen ? "Log einklappen" : "Fortschritts-Log anzeigen"}
+                  className="shrink-0 rounded px-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+                >
+                  {logOffen ? "▾" : "▸"} Log ({autoInfo.log.length})
+                </button>
+              )}
+            </div>
+            {logOffen && logText && (
+              <pre
+                ref={logRef}
+                className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-white p-1.5 font-mono text-[10px] leading-snug text-slate-600 dark:bg-slate-900 dark:text-slate-300"
+              >
+                {logText}
+              </pre>
+            )}
           </div>
         )}
         {tasks && (

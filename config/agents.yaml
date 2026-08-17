@@ -12,8 +12,11 @@
 # Container einen EIGENEN, an seinen Namen gebundenen MCP-Port (automatisch ab
 # 9100; explizit via `mcp_local_port` in der connection). Der Tunnel forwardet
 # dorthin — agent/sender sind dann durch den Kanal festgelegt, abweichende
-# Werte lehnt der Server ab. Optional begrenzt `tools:` am Agenten, welche
-# Tools der Kanal überhaupt sieht (ohne Angabe: alle):
+# Werte lehnt der Server ab. `tools:` am Agenten begrenzt zusätzlich, welche
+# Tools der Kanal überhaupt sieht. OHNE Angabe sieht er ALLE — auch
+# call_integration (Server injiziert dort die Secrets) und fremde Mailboxen.
+# Deshalb gehört an jeden Agenten eine Allowlist; für einen Watcher-Agenten
+# reicht diese hier:
 #
 #  - name: beispiel-desktop
 #    tools: [inbox, mark_read, send_message, ask, answer, claim_task, complete_task]
@@ -21,7 +24,10 @@
 #      ...
 #
 # Nach Änderungen an tools/mcp_local_port den mcp-Dienst neu starten
-# (supervisorctl restart mcp) — der Tunnel zieht binnen 60 s nach.
+# (supervisorctl restart mcp) — der Tunnel zieht binnen 60 s nach. Bis der
+# gebundene Kanal steht, bleibt der Tunnel für diesen Agenten ausgesetzt
+# (sichtbar im Log); einen Rückfall auf den freien Kanal :9000 gibt es
+# bewusst nicht — dort wären agent/sender frei wählbar.
 #
 # Automatikmodus (Issue #12, Toggle im Agenten-Panel): das Dashboard hält per
 # SSH einen agent_watcher.py auf dem Agenten-PC, der die Inbox über den
@@ -42,7 +48,7 @@ agents:
 #    mode: mailbox
 #    connection:
 #      type: ssh
-#      host: 192.168.2.99
+#      host: 192.168.1.99
 #      port: 22
 #      user: dev
 #      auth: key

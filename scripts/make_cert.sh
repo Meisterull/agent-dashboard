@@ -8,7 +8,20 @@
 # Ergebnis in ssl/: ca.crt (aufs Handy!), fullchain.pem, privkey.pem
 # Danach: docker compose restart
 set -euo pipefail
-cd "$(dirname "$0")/../ssl"
+
+# ssl/ ist gitignored, existiert auf einem frischen Clone also nicht — ohne
+# mkdir -p scheiterte das Script hier mit "No such file or directory".
+SSL_DIR="$(cd "$(dirname "$0")/.." && pwd)/ssl"
+mkdir -p "$SSL_DIR"
+cd "$SSL_DIR"
+
+# docker-compose.yml mountet fullchain.pem/privkey.pem/ca.crt einzeln (damit
+# ca.key NICHT in den Container wandert). Startet jemand den Stack vor diesem
+# Script, legt Docker an ihrer Stelle leere Verzeichnisse an — die hier
+# wegräumen, sonst scheitert openssl gleich mit "Is a directory".
+for f in fullchain.pem privkey.pem ca.crt; do
+    [ -d "$f" ] && rmdir "$f" || true
+done
 
 DOMAIN=${1:-agent-dashboard.local}
 shift || true

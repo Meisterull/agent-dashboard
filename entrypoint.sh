@@ -80,5 +80,9 @@ envsubst '${EFFECTIVE_SSL_DIR} ${EXTERNAL_HTTPS_PORT}' \
 rm -f /etc/nginx/sites-enabled/default
 
 log "Setup fertig. Starte supervisord."
-# 5. Prozessaufsicht übernehmen (nginx, api, mcp, telegram-bot).
+# 5. Prozessaufsicht übernehmen (nginx, api, mcp, mcp-tunnel).
+#    exec => supervisord wird PID 1. Darauf baut der fatal_exit-Eventlistener
+#    in supervisord.conf: Er signalisiert seinem Elternprozess, damit ein
+#    endgültig gescheiterter Dienst den Container beendet, statt ihn "gesund
+#    tot" weiterlaufen zu lassen.
 exec "$@"

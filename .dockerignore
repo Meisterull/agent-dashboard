@@ -1,0 +1,41 @@
+# Was hier steht, schickt `docker build` erst gar nicht an den Daemon.
+# Zwei Gründe: (1) Secrets gehören nicht in den Build-Kontext — der landet
+# als Tar beim Daemon und wandert bei Remote-Buildern übers Netz;
+# (2) Tempo: workspace/ und node_modules/ sind die dicksten Brocken im Repo.
+
+# --- Secrets & Laufzeitdaten (spiegelt .gitignore) -------------------------
+.env
+.env.*
+!.env.example
+secrets/
+ssl/
+workspace/
+
+# --- Build-Artefakte / Abhängigkeiten --------------------------------------
+# frontend/dist wird in Stage 1 frisch gebaut; ein lokaler Build würde nur
+# überschrieben und den Kontext aufblähen.
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# --- Versionskontrolle / Werkzeuge -----------------------------------------
+.git/
+.gitignore
+.github/
+.dockerignore
+
+# --- Doku (wird nicht ins Image kopiert) -----------------------------------
+# Nur die Dateien im Wurzelverzeichnis — `*.md` matcht bei Docker kein `/`,
+# ein backend/*.md bliebe also drin. LICENSE steht bewusst NICHT hier, damit
+# ein späteres `COPY LICENSE` (AGPL-Weitergabe im Image) nicht ins Leere läuft.
+*.md
+
+# --- Editor-/OS-Kram -------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+*.swp

@@ -19,12 +19,17 @@ Zustandsmodell:
     Status "fehler"/Reconnect — nie weiter "an", wenn nichts läuft.
   - "Aus" = sanft: "stop" auf stdin des Watchers, laufender Claude-Lauf darf
     fertig werden (Deckel AUTO_STOP_GRACE, Default 1860 s), dann Verbindung zu.
-  - Not-Aus = hart: Verbindung sofort schließen (portabel, auch Windows-
-    OpenSSH ohne Signal-Support — Session weg beendet den Prozess).
+    Der Aufrufer wartet NICHT mit (M7): der Sanft-Stopp läuft im Hintergrund,
+    die API antwortet sofort mit Status "stoppt".
+  - Not-Aus = hart: erst "kill" auf stdin (der Watcher schießt den laufenden
+    claude-Lauf samt Kindern ab — ohne PTY gibt es kein SIGHUP, ein bloßes
+    Schließen der Verbindung ließe claude verwaist weiterarbeiten, H3), kurz
+    auf das Prozessende warten, dann Verbindung schließen.
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shlex
 import time
@@ -37,9 +42,13 @@ from app.config import load_agents_full, load_settings, save_settings
 RECONCILE_INTERVAL = 15   # Sekunden, bis settings-/agents-Änderungen greifen
 RECONNECT_DELAY = 30      # Sekunden zwischen Startversuchen nach Fehler
 STOP_GRACE = int(os.environ.get("AUTO_STOP_GRACE", "1860"))  # > claude-Timeout 1800 s
+# Wartezeit auf das Prozessende nach "kill" (Not-Aus) — danach fällt die
+# Verbindung sowieso. Kurz halten: der Endpunkt wartet mit.
+KILL_GRACE = float(os.environ.get("AUTO_KILL_GRACE", "5"))
 REMOTE_MCP_PORT_DEFAULT = int(os.environ.get("MCP_TUNNEL_REMOTE_PORT",
                                              os.environ.get("MCP_PORT", "9000")))
 REMOTE_SCRIPT = ".agent-dashboard/agent_watcher.py"
+REMOTE_SCRIPT_HASH = REMOTE_SCRIPT + ".sha256"
 
 
 def _watcher_script() -> Path:
@@ -52,6 +61,47 @@ def _watcher_script() -> Path:
         if p.exists():
             return p
     raise FileNotFoundError("scripts/agent_watcher.py nicht gefunden")
+
+
+def _script_hash(pfad: Path) -> str:
+    return hashlib.sha256(pfad.read_bytes()).hexdigest()
+
+
+def _quote_cmd(wert: str) -> str:
+    """Kommando aus agents.yaml für die Remote-Shell absichern (N15).
+
+    Mehrteilige Angaben ("py -3") bleiben erhalten — jeder Teil wird einzeln
+    gequotet, damit weder Leerzeichen noch ein `;`/`&&` aus der Config in die
+    Shell durchschlagen."""
+    try:
+        teile = shlex.split(str(wert), posix=False)
+    except ValueError:
+        teile = []
+    return " ".join(shlex.quote(t) for t in teile) or shlex.quote(str(wert))
+
+
+async def _script_hochladen(sftp, pfad: Path) -> bool:
+    """agent_watcher.py nur bei Hash-Abweichung übertragen (M15).
+
+    Bei jedem Reconnect ~30 kB über SFTP zu schieben ist unnötig; die Summe
+    liegt als Nachbardatei auf dem Agenten-PC. Gibt True zurück, wenn wirklich
+    hochgeladen wurde."""
+    summe = _script_hash(pfad)
+    vorhanden = None
+    try:
+        async with sftp.open(REMOTE_SCRIPT_HASH, "r") as f:
+            vorhanden = (await f.read()).strip()
+        if vorhanden == summe and await sftp.exists(REMOTE_SCRIPT):
+            return False
+    except Exception:  # noqa: BLE001 — keine/kaputte Summe: einfach hochladen
+        pass
+    await sftp.put(str(pfad), REMOTE_SCRIPT)
+    try:
+        async with sftp.open(REMOTE_SCRIPT_HASH, "w") as f:
+            await f.write(summe)
+    except Exception:  # noqa: BLE001 — ohne Summe wird nächstes Mal neu geladen
+        pass
+    return True
 
 
 def _ssh_cfg(agent: dict[str, Any]) -> dict[str, Any] | None:
@@ -92,6 +142,10 @@ class _Watcher:
         self.log: deque[str] = deque(maxlen=20)
         self.beenden = False             # sanfter Stopp angefordert
         self.hart = False                # harter Stopp (Not-Aus)
+        # Fehlerserie auf dem Agenten-PC (Watcher-Exit 1, Issue #14): kein
+        # Auto-Neustart mehr, bis der Nutzer die Automatik neu einschaltet —
+        # sonst frisst der Manager alle 30 s weiter die Warteschlange (M12).
+        self.gesperrt = False
         self.task: asyncio.Task | None = None
         self.conn = None                 # asyncssh-Verbindung
         self.proc = None                 # asyncssh-Prozess
@@ -109,6 +163,7 @@ class _Watcher:
             "detail": self.detail,
             "seit": self.seit,
             "log": list(self.log),
+            "gesperrt": self.gesperrt,
         }
 
 
@@ -117,6 +172,15 @@ class AutoWatcherManager:
         self._watcher: dict[str, _Watcher] = {}
         self._weck = asyncio.Event()
         self._task: asyncio.Task | None = None
+        # Hintergrund-Stopps (M7): Referenz halten, sonst kann der GC einen
+        # noch laufenden Task einsammeln.
+        self._hintergrund: set[asyncio.Task] = set()
+
+    def _im_hintergrund(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._hintergrund.add(task)
+        task.add_done_callback(self._hintergrund.discard)
+        return task
 
     # --- öffentlich (API) ---------------------------------------------------
 
@@ -136,7 +200,8 @@ class AutoWatcherManager:
             agents[name] = {
                 "gewuenscht": bool(gewuenscht.get(name)),
                 "startbar": _ssh_cfg(agent) is not None,
-                **(w.als_dict() if w else {"status": "aus", "detail": "", "seit": None, "log": []}),
+                **(w.als_dict() if w else {"status": "aus", "detail": "", "seit": None,
+                                           "log": [], "gesperrt": False}),
             }
         return {"notaus": bool(settings.get("automatik_notaus")), "agents": agents}
 
@@ -144,10 +209,18 @@ class AutoWatcherManager:
         gewuenscht = dict(load_settings().get("automatik") or {})
         gewuenscht[name] = an
         save_settings({"automatik": gewuenscht})
-        if not an:
-            w = self._watcher.get(name)
-            if w:
-                await self._stopp_sanft(w)
+        w = self._watcher.get(name)
+        if an:
+            # Neu einschalten hebt die Fehlerserien-Sperre auf (M12) — der
+            # Nutzer hat die Umgebung vermutlich repariert.
+            if w is not None and w.gesperrt:
+                self._watcher.pop(name, None)
+        elif w is not None:
+            # Sanft-Stopp NICHT abwarten (M7): bis zu STOP_GRACE (31 min)
+            # Blockade würde nginx/Browser in den Timeout laufen lassen.
+            if w.proc is not None and not w.beenden:
+                w.setze("stoppt", "wartet auf laufenden Task")
+            self._im_hintergrund(self._stopp_sanft(w))
         self._weck.set()
 
     async def notaus(self, an: bool) -> None:
@@ -157,7 +230,7 @@ class AutoWatcherManager:
         self._weck.set()
 
     async def stopp_alle_hart(self) -> None:
-        await asyncio.gather(*(self._stopp_hart(w) for w in self._watcher.values()),
+        await asyncio.gather(*(self._stopp_hart(w) for w in list(self._watcher.values())),
                              return_exceptions=True)
 
     # --- Reconcile ----------------------------------------------------------
@@ -185,13 +258,15 @@ class AutoWatcherManager:
             w = self._watcher.get(name)
             laeuft = w is not None and w.task is not None and not w.task.done()
             if an and not notaus:
+                if w is not None and w.gesperrt:
+                    continue  # Fehlerserie: erst wieder nach manuellem Schalten (M12)
                 if not laeuft and name in agenten and _ssh_cfg(agenten[name]):
                     neu = _Watcher(name)
                     neu.task = asyncio.create_task(self._lauf(neu, agenten[name]["name"]))
                     self._watcher[name] = neu
             elif laeuft and not w.beenden:
                 # gewünscht aus (oder Not-Aus): sanft bzw. hart stoppen
-                asyncio.create_task(
+                self._im_hintergrund(
                     self._stopp_hart(w) if notaus else self._stopp_sanft(w)
                 )
 
@@ -217,9 +292,12 @@ class AutoWatcherManager:
                     async with conn.start_sftp_client() as sftp:
                         if not await sftp.isdir(".agent-dashboard"):
                             await sftp.mkdir(".agent-dashboard")
-                        await sftp.put(str(_watcher_script()), REMOTE_SCRIPT)
+                        if await _script_hochladen(sftp, _watcher_script()):
+                            print(f"[automatik] {name}: agent_watcher.py aktualisiert",
+                                  flush=True)
                     cmd = (
-                        f"{cfg['python']} -u {REMOTE_SCRIPT} --agent {shlex.quote(name)} "
+                        f"{_quote_cmd(cfg['python'])} -u {REMOTE_SCRIPT} "
+                        f"--agent {shlex.quote(name)} "
                         f"--mcp-url http://127.0.0.1:{cfg['mcp_port']}/mcp "
                         f"--mcp-hint --interval 5"
                     )
@@ -245,11 +323,26 @@ class AutoWatcherManager:
                         if zeile:
                             w.log.append(zeile)
                             w.detail = zeile
-                    await proc.wait()
+                    abschluss = await proc.wait()
+                    rc = getattr(abschluss, "exit_status", None)
+                    if rc is None:
+                        rc = getattr(proc, "exit_status", None)
                 w.proc = None
                 w.conn = None
                 if w.beenden:
                     break
+                if rc == 1:
+                    # Der Watcher hat sich selbst gestoppt: Preflight oder
+                    # Fehlerserie (Issue #14). Ein blinder Neustart alle 30 s
+                    # würde die Warteschlange weiter verbrauchen (M12).
+                    w.gesperrt = True
+                    w.setze("fehler", (w.detail or "Watcher-Preflight fehlgeschlagen")
+                            + " — kein Auto-Neustart, Automatik neu einschalten")
+                    print(f"[automatik] {name}: Watcher mit Fehler beendet (rc=1) — "
+                          f"Auto-Neustart ausgesetzt ({w.detail})", flush=True)
+                    return
+                # rc=2 (Instanz-Lock, H2) läuft bewusst in den normalen
+                # Reconnect: der andere Watcher endet irgendwann von selbst.
                 w.setze("fehler", w.detail or "Watcher-Prozess beendet")
                 print(f"[automatik] {name}: Prozess endete — Neustart in {RECONNECT_DELAY}s "
                       f"({w.detail})", flush=True)
@@ -295,9 +388,23 @@ class AutoWatcherManager:
         w.setze("aus")
 
     async def _stopp_hart(self, w: _Watcher) -> None:
-        """Verbindung schließen — beendet die Remote-Session samt Prozess (portabel)."""
+        """Not-Aus: erst "kill" auf stdin, dann Verbindung schließen (H3).
+
+        Das Schließen allein reicht nicht: ohne PTY bekommt der laufende
+        claude-Prozess kein SIGHUP und arbeitet verwaist weiter (ändert
+        Dateien!), während der Task über den separaten MCP-Tunnel längst als
+        Fehler quittiert wurde. Das stdin-Kommando lässt den Watcher die
+        ganze Prozessgruppe abschießen; erst danach fällt die Verbindung."""
         w.beenden = True
         w.hart = True
+        w.setze("stoppt", "Not-Aus: breche laufenden Lauf ab")
+        proc = w.proc
+        if proc is not None:
+            try:
+                proc.stdin.write("kill\n")
+                await asyncio.wait_for(proc.wait(), timeout=KILL_GRACE)
+            except Exception:  # noqa: BLE001 — stdin/Prozess weg: hart schließen
+                pass
         conn = w.conn
         if conn is not None:
             try:

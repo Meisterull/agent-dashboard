@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { postChat, getChatSessions, getChatHistory } from "../api";
+import {
+  postChat,
+  getChatSessions,
+  getChatHistory,
+  deleteChatSession,
+} from "../api";
 
 // Orchestrator-Antworten rendern Markdown (Sessions liegen serverseitig in
 // SQLite); die zuletzt aktive Session wird nach Reload/App-Neustart über
@@ -53,6 +58,11 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const scrollRef = useRef(null);
+  // Zähler des angezeigten Verlaufs: jeder Session-Wechsel (auch "Neu")
+  // erhöht ihn. Eine noch laufende Antwort wird beim Eintreffen dagegen
+  // geprüft und verworfen, statt sie in den inzwischen offenen Verlauf zu
+  // mischen (der bleibt sonst dauerhaft falsch, weil er so gespeichert wird).
+  const viewRef = useRef(0);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -74,7 +84,9 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   function openSession(id) {
     getChatHistory(id)
       .then((d) => {
+        viewRef.current += 1;
         setMessages(d.messages);
+        setError(null);
         setSessionId(id);
         localStorage.setItem("chat-session", id);
       })
@@ -84,10 +96,30 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   }
 
   function newSession() {
+    viewRef.current += 1;
     setSessionId(null);
     setMessages([]);
     setError(null);
     localStorage.removeItem("chat-session");
+  }
+
+  // Verlauf löschen (Endpunkt gibt es seit jeher, nur den Knopf nicht).
+  async function removeSession() {
+    if (!sessionId) return;
+    const s = sessions.find((x) => x.id === sessionId);
+    if (
+      !window.confirm(
+        `Verlauf „${s?.title || sessionId.slice(0, 8)}“ endgültig löschen?`,
+      )
+    )
+      return;
+    try {
+      await deleteChatSession(sessionId);
+      newSession();
+      refreshSessions();
+    } catch (e) {
+      setError(`Löschen fehlgeschlagen: ${e.message || e}`);
+    }
   }
 
   async function send() {
@@ -98,19 +130,34 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     setCanSend(false);
     setMessages((m) => [...m, { role: "user", text }]);
     setLoading(true);
+    const view = viewRef.current;
     try {
       const data = await postChat(text, sessionId);
+      refreshSessions();
+      onActivity?.(); // Mailboxes / Dateibaum können sich geändert haben
+      // Der Verlauf ist serverseitig gespeichert — beim Zurückwechseln ist die
+      // Antwort da; nur hineinmischen dürfen wir sie nicht.
+      if (viewRef.current !== view) return;
       setSessionId(data.session_id);
       localStorage.setItem("chat-session", data.session_id);
       setMessages((m) => [
         ...m,
         { role: "assistant", text: data.reply, toolCalls: data.tool_calls },
       ]);
-      refreshSessions();
-      onActivity?.(); // Mailboxes / Dateibaum können sich geändert haben
       onDone?.(); // Antwort fertig → Chat-Reiter blinkt, bis reingeklickt wird
     } catch (e) {
+      if (viewRef.current !== view) return;
       setError(String(e.message || e));
+      // Die eigene Zeile wieder zurück in die Eingabe, statt sie mit dem
+      // Fehler verschwinden zu lassen — aber nur, wenn der Nutzer nicht
+      // inzwischen schon etwas Neues getippt hat.
+      setMessages((m) =>
+        m.length && m[m.length - 1].role === "user" ? m.slice(0, -1) : m,
+      );
+      if (inputRef.current && !inputRef.current.value) {
+        inputRef.current.value = text;
+        setCanSend(true);
+      }
     } finally {
       setLoading(false);
     }
@@ -147,6 +194,14 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
           className="shrink-0 rounded border border-slate-300 px-2 py-0.5 text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
         >
           Neu
+        </button>
+        <button
+          onClick={removeSession}
+          disabled={!sessionId || loading}
+          title="diesen Verlauf löschen"
+          className="shrink-0 rounded border border-slate-300 px-2 py-0.5 text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-red-950 dark:hover:text-red-400"
+        >
+          🗑
         </button>
       </div>
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-3">

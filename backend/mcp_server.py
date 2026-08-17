@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -38,7 +39,15 @@ from mcp.server.fastmcp import FastMCP
 from app import integrations, mcp_scope
 from app.config import load_agents_full
 from app.files import decode_text
-from app.mailbox import Mailbox, Task, merged_instruction, new_id, normalize_envelope
+from app.mailbox import (
+    AGENT_NAME_RE,
+    AlreadyClaimed,
+    Mailbox,
+    Task,
+    merged_instruction,
+    new_id,
+    normalize_envelope,
+)
 from app.mcp_scope import ScopeError, resolve_ident
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/workspace")).resolve()
@@ -54,6 +63,55 @@ def _safe(root: Path, *parts: str) -> Path:
     if not (p == root or root in p.parents):
         raise ValueError(f"Pfad verlässt erlaubten Bereich: {p}")
     return p
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Text atomar schreiben (tmp + fsync + replace) — Muster aus der Mailbox."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _bekannte_agenten() -> list[str]:
+    """Agenten mit existierender Mailbox — plus die konfigurierten SSH-Agenten."""
+    # Der Orchestrator ist die eingebaute Identität (Default-`sender` überall)
+    # und hat nicht zwingend schon eine Mailbox — Rückfragen an ihn müssen
+    # trotzdem ankommen.
+    namen = {"orchestrator"}
+    if MAILBOX_ROOT.exists():
+        namen |= {p.name for p in MAILBOX_ROOT.iterdir() if p.is_dir()}
+    try:
+        namen |= {a["name"] for a in load_agents_full() if a.get("name")}
+    except Exception:  # noqa: BLE001 — kaputte agents.yaml darf Tools nicht killen
+        pass
+    return sorted(namen)
+
+
+def _pruefe_empfaenger(to: str) -> dict | None:
+    """Fehler-Dict, wenn `to` kein bekannter Agent ist — sonst None.
+
+    Ohne diese Prüfung legt ein Tippfehler des LLM still eine neue Mailbox an:
+    der Auftrag liegt dann für immer in einer Geister-Inbox, und der erfundene
+    Name taucht ab da in list_agents auf und zementiert sich selbst.
+    """
+    if not AGENT_NAME_RE.fullmatch(to or ""):
+        return {"error": f"ungültiger Agentenname: {to!r}"}
+    bekannt = _bekannte_agenten()
+    if to not in bekannt:
+        return {
+            "error": f"unbekannter Agent {to!r} — verfügbar: {', '.join(bekannt) or '(keine)'}"
+        }
+    return None
 
 
 def _log(kanal: str, tool: str, **info: object) -> None:
@@ -91,11 +149,15 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
     if on("list_agents"):
         @mcp.tool()
         def list_agents() -> list[str]:
-            """Listet die konfigurierten Agenten (anhand der Mailbox-Ordner)."""
+            """Listet die ansprechbaren Agenten.
+
+            Das sind die vorhandenen Mailboxen PLUS die in agents.yaml
+            konfigurierten Rechner — ein frisch eingerichteter Agent hat noch
+            keine Mailbox, muss aber adressierbar sein (genau diese Menge
+            akzeptieren send_task/send_message/ask).
+            """
             _log(kanal, "list_agents")
-            if not MAILBOX_ROOT.exists():
-                return []
-            return sorted(p.name for p in MAILBOX_ROOT.iterdir() if p.is_dir())
+            return _bekannte_agenten()
 
     if on("send_task"):
         @mcp.tool()
@@ -118,6 +180,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
             except ScopeError as exc:
                 return {"error": str(exc)}
+            unbekannt = _pruefe_empfaenger(to)
+            if unbekannt:
+                return unbekannt
             _log(kanal, "send_task", to=to, sender=absender, zeichen=len(instruction))
             task = Task(
                 task_id=new_id("task"),
@@ -136,6 +201,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             """Alias für send_task (Rückwärtskompatibilität). Absender = du
             (gebundener Kanal) bzw. "orchestrator" (freier Kanal)."""
             absender = identity or "orchestrator"
+            unbekannt = _pruefe_empfaenger(agent)
+            if unbekannt:
+                return unbekannt
             _log(kanal, "create_task", to=agent, sender=absender, zeichen=len(instruction))
             task = Task(
                 task_id=new_id("task"),
@@ -150,7 +218,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
 
     if on("read_responses"):
         @mcp.tool()
-        def read_responses(worker: str, for_sender: str | None = None) -> list[dict]:
+        def read_responses(worker: str, for_sender: str | None = None, limit: int = 20) -> list[dict]:
             """Rückmeldungen aus der Outbox eines BEARBEITERS lesen (Archiv erledigter Tasks).
 
             `worker` ist der Agent, der für dich gearbeitet hat — NICHT dein eigener
@@ -160,6 +228,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             kind="response" in der Inbox des Auftraggebers — `inbox()` genügt.
             `for_sender` filtert die Outbox auf Antworten an einen bestimmten
             Auftraggeber; auf einem gebundenen Kanal ist das immer dein Name.
+            `limit` begrenzt auf die neuesten Einträge (die Outbox ist ein Archiv).
             """
             if identity is not None:
                 try:
@@ -167,32 +236,52 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 except ScopeError as exc:
                     return [{"error": str(exc)}]
             _log(kanal, "read_responses", worker=worker, for_sender=for_sender)
+            if not AGENT_NAME_RE.fullmatch(worker or ""):
+                return [{"error": f"ungültiger Agentenname: {worker!r}"}]
             out = Mailbox(MAILBOX_ROOT, worker).read_responses()
             if for_sender:
                 out = [r for r in out if r.get("to") == for_sender]
-            return out
+            return out[: max(1, limit)]
 
     if on("claim_task"):
         @mcp.tool()
-        def claim_task(task_id: str, agent: str | None = None) -> dict:
+        def claim_task(task_id: str, agent: str | None = None, erneut: bool = False) -> dict:
             """Einen Task aus der eigenen Inbox annehmen, BEVOR du daran arbeitest.
 
             Markiert ihn als "in Arbeit" (inbox → .processing) — im Dashboard sichtbar,
             und kein Watcher greift ihn doppelt. `agent` = du selbst (der Bearbeiter;
             auf einem gebundenen Kanal weglassen). Danach: Aufgabe erledigen und mit
-            complete_task abschließen.
+            complete_task abschließen. Ein bereits laufender Task wird NICHT erneut
+            vergeben; arbeitest du selbst daran und brauchst den Auftragstext noch
+            einmal, dann `erneut=True`.
             """
             try:
                 wer = ident(agent, "agent")
             except ScopeError as exc:
                 return {"error": str(exc)}
             _log(kanal, "claim_task", agent=wer, task=task_id)
-            env = Mailbox(MAILBOX_ROOT, wer).claim_task(task_id)
+            try:
+                env = Mailbox(MAILBOX_ROOT, wer).claim_task(task_id, erneut=erneut)
+            except AlreadyClaimed as exc:
+                return {
+                    "error": str(exc) + ". Falls du selbst daran arbeitest: "
+                    "claim_task(..., erneut=True).",
+                    "already_claimed": True,
+                }
             if env is None:
                 return {"error": f"Task {task_id} liegt nicht (mehr) bei {wer}."}
             # merged_instruction: nach einem geparkten Lauf (Issue #17) stehen
             # Rückfrage-Antworten und Zwischenstand mit im Prompt.
-            return {"claimed": task_id, "instruction": merged_instruction(env), "status": "running"}
+            # project/files müssen mit: der Watcher wählt daraus sein
+            # Arbeitsverzeichnis (Issue #19) — fehlen sie, arbeitet er im
+            # falschen Verzeichnis, statt sichtbar zu scheitern.
+            return {
+                "claimed": task_id,
+                "instruction": merged_instruction(env),
+                "status": "running",
+                "project": env.get("project"),
+                "files": env.get("files") or [],
+            }
 
     if on("complete_task"):
         @mcp.tool()
@@ -219,6 +308,17 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             except ScopeError as exc:
                 return {"error": str(exc)}
             box = Mailbox(MAILBOX_ROOT, wer)
+            # Wiederholter Abschluss ist KEIN Fehler: geht die Antwort auf dem
+            # Rückweg verloren (Tunnel-Reconnect), liefert der Watcher dasselbe
+            # Ergebnis erneut ab. Der Task ist dann schon abgeräumt — das als
+            # Erfolg melden, statt ihn 5 Retrys lang gegen eine Wand laufen zu
+            # lassen und am Ende fälschlich "nicht abgeliefert" zu loggen.
+            if not box.task_offen(task_id):
+                if (box.outbox / f"{task_id}-response.json").exists():
+                    _log(kanal, "complete_task", agent=wer, task=task_id, status="bereits")
+                    return {"task_id": task_id, "agent": wer, "status": status,
+                            "already": True}
+                return {"error": f"Task {task_id} liegt nicht (mehr) bei {wer}."}
             if status == "done":
                 # Offene Rückfrage? Dann ist die Arbeit NICHT getan — Task
                 # parken statt Erfolg zu melden; nach der Antwort wird er
@@ -247,6 +347,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
             except ScopeError as exc:
                 return {"error": str(exc)}
+            unbekannt = _pruefe_empfaenger(to)
+            if unbekannt:
+                return unbekannt
             _log(kanal, "send_message", to=to, sender=absender, zeichen=len(text))
             return Mailbox(MAILBOX_ROOT, to).post(
                 {"kind": "message", "sender": absender, "to": to, "text": text}
@@ -265,6 +368,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
             except ScopeError as exc:
                 return {"error": str(exc)}
+            unbekannt = _pruefe_empfaenger(to)
+            if unbekannt:
+                return unbekannt
             _log(kanal, "ask", to=to, sender=absender)
             env = Mailbox(MAILBOX_ROOT, to).post(
                 {
@@ -295,17 +401,28 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             except ScopeError as exc:
                 return {"error": str(exc)}
             _log(kanal, "answer", to=to, sender=absender)
-            env = Mailbox(MAILBOX_ROOT, to).post(
+            if reply_to:
+                # Ein Weg für Dashboard und Tool (mailbox.beantworte_frage):
+                # Antwort zustellen, die Frage aus DER EIGENEN Inbox archivieren
+                # (sonst bleibt sie dort ewig als offen liegen) und die deswegen
+                # geparkten Tasks des Fragestellers anstoßen (Issue #17).
+                try:
+                    ergebnis = Mailbox(MAILBOX_ROOT, absender).beantworte_frage(
+                        reply_to, text, an=to
+                    )
+                except ValueError as exc:
+                    return {"error": str(exc)}
+                if ergebnis["wieder_angestossen"]:
+                    _log(kanal, "answer", to=ergebnis["to"],
+                         wieder_angestossen=",".join(ergebnis["wieder_angestossen"]))
+                return {**ergebnis["answer"],
+                        "wieder_angestossen": ergebnis["wieder_angestossen"]}
+            unbekannt = _pruefe_empfaenger(to)
+            if unbekannt:
+                return unbekannt
+            return Mailbox(MAILBOX_ROOT, to).post(
                 {"kind": "answer", "sender": absender, "to": to, "text": text, "reply_to": reply_to}
             )
-            if reply_to:
-                # Wegen dieser Frage geparkte Tasks des Fragestellers wieder
-                # anstoßen — mit der Antwort im Kontext (Issue #17).
-                wieder = Mailbox(MAILBOX_ROOT, to).resolve_question(reply_to, text)
-                if wieder:
-                    _log(kanal, "answer", to=to, wieder_angestossen=",".join(wieder))
-                    env = {**env, "wieder_angestossen": wieder}
-            return env
 
     if on("inbox"):
         @mcp.tool()
@@ -359,7 +476,10 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             _log(kanal, "write_project_file", project=project, pfad=relpath, zeichen=len(content))
             target = _safe(PROJECTS_ROOT, project, relpath)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            # Atomar wie die Mailbox: ein zweiter Agent liest über
+            # read_project_file/SFTP evtl. gerade mit und darf keine halb
+            # geschriebene Datei sehen.
+            _atomic_write_text(target, content)
             return {"path": str(target), "bytes": len(content.encode("utf-8"))}
 
     if on("read_project_file"):

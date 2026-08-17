@@ -1,14 +1,37 @@
+import { useEffect, useRef } from "react";
+
+// Schließen per Backdrop nur, wenn Drücken UND Loslassen auf dem Backdrop
+// passieren: sonst schließt ein Klick, der in einem Eingabefeld beginnt und
+// beim Markieren über den Rand hinaus endet, den Dialog samt Eingaben.
+// Escape schließt zusätzlich (erwartet man bei jedem Dialog).
 export default function Modal({ title, onClose, children, wide }) {
+  const downAufBackdrop = useRef(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onCloseRef.current?.();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={onClose}
+      onPointerDown={(e) => {
+        downAufBackdrop.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && downAufBackdrop.current) onClose();
+        downAufBackdrop.current = false;
+      }}
     >
       <div
         className={`flex max-h-[85vh] w-full flex-col rounded-lg bg-white shadow-xl dark:bg-slate-900 dark:text-slate-100 ${
           wide ? "max-w-3xl" : "max-w-md"
         }`}
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b px-4 py-2.5 dark:border-slate-700">
           <h2 className="text-sm font-semibold">{title}</h2>

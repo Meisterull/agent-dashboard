@@ -86,7 +86,7 @@ Derselbe Agentic-Loop und dieselben MCP-Tools für beide.
 ```
 
 Alle Teile laufen im selben Container, beaufsichtigt von **supervisord**
-(nginx · uvicorn · mcp_server · optional telegram-bot).
+(nginx · uvicorn · mcp_server · optional mcp-tunnel).
 
 ---
 
@@ -135,7 +135,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `orchestrator.py` | CLI-Variante des Orchestrators (Chat im Terminal) |
 | `app/orchestrator_core.py` | Gemeinsamer Kern: `mcp_session()` + `run_turn()`. CLI **und** API nutzen ihn |
 | `app/llm.py` | Provider-neutrale LLM-Schicht (ein Loop, Backends **ollama** + **anthropic**) |
-| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox`, `claim_tasks`/`claim_task` (nur Tasks), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `normalize_envelope` |
+| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox` (FIFO nach `created_at`), `claim_tasks`/`claim_task` (nur Tasks, **exklusiv**: ein laufender Task wirft `AlreadyClaimed`), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `beantworte_frage` (die eine Antwort-Primitive für Dashboard und MCP), `requeue_stale`/`aufraeumen`/`pflege` (verwaiste Tasks zurück in die Warteschlange, alte Ablagen rotieren), `normalize_envelope`. Read-Modify-Write läuft unter einem Datei-Lock je Mailbox |
 | `app/files.py` | Pfad-sichere Datei-Ops (`list_dir`, `read_file`) für den Dateibaum |
 | `app/config.py` | Settings (`settings.json`) + Verbindungen (`agents.yaml`, ohne Credentials) |
 | `app/integrations.py` | Config-getriebene HTTP-Integrationen (`integrations.yaml`, generisch) |
@@ -145,8 +145,8 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 
 **MCP-Tools** (im `mcp_server.py`, pfad-gehärtet gegen `WORKSPACE_DIR`):
 - Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?)` (`create_task` als Alias) · `read_responses(worker, for_sender?)` (Outbox-Archiv des Bearbeiters)
-- Task-Lebenszyklus (Agent-Seite): `claim_task(agent, task_id)` (→ "in Arbeit") · `complete_task(agent, task_id, result, status?, log?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab
-- Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` · `inbox(agent, kind?)` · `mark_read(agent, envelope_id)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder)
+- Task-Lebenszyklus (Agent-Seite): `claim_task(task_id, agent?, erneut?)` (→ "in Arbeit"; ein bereits laufender Task wird **nicht** erneut vergeben — `erneut=True` holt dem eigenen Bearbeiter seinen Auftragstext zurück) · `complete_task(task_id, result, status?, log?, agent?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab; ein wiederholter Aufruf ist kein Fehler (`already: true`), damit eine verlorene Antwort erneut abgeliefert werden kann
+- Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` (archiviert die beantwortete Frage gleich mit) · `inbox(agent, kind?)` · `mark_read(envelope_id, agent?)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder). Empfänger müssen bekannt sein (Mailbox oder `agents.yaml`) — sonst Fehler statt Geister-Mailbox
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
 - Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)`
 
@@ -214,7 +214,7 @@ Ergebnisses unterzugehen.
 | `components/FileViewer.jsx` | Datei-Inhalt im Modal |
 | `components/AgentsPanel.jsx` | MCP-Monitor: Inbox/Outbox je Agent mit Status-Badges |
 | `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; pro Verbindung mehrere Terminals (⧉-Knopf, z. B. Claude Code + eigene Shell nebeneinander); Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
-| `components/Settings.jsx` | Einstellungen-Modal (Provider/Sprache/Telegram) |
+| `components/Settings.jsx` | Einstellungen-Modal (Modellwahl/Sprache/externe Fenster) |
 | `components/Modal.jsx` | generischer Modal-Container |
 
 ### Agenten-Seite (`scripts/`)
@@ -270,7 +270,7 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 ```
 
 **`.env`** (aus `.env.example` kopieren) — Secrets, nie committen:
-`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `OLLAMA_BASE_URL`, `TELEGRAM_*`,
+`ANTHROPIC_API_KEY`, `OLLAMA_BASE_URL`, `ADMIN_INITIAL_PASSWORD`,
 `SESSION_SECRET`, …
 
 **Wichtige Env-Variablen:** `WORKSPACE_DIR` (Default `/workspace`),
@@ -334,7 +334,8 @@ docker compose up --build
 Der Build ist **mehrstufig**: Node baut das Frontend, ein Build-Stage kompiliert
 die Python-Wheels, das schlanke Runtime-Image enthält weder `npm` noch
 `build-essential`. **supervisord** startet nginx + uvicorn + mcp_server (+ optional
-telegram-bot) und startet abgestürzte Dienste neu.
+mcp-tunnel) und startet abgestürzte Dienste neu; bleibt ein Dienst endgültig
+unten (FATAL), beendet sich der Container, damit Docker ihn neu startet.
 
 Härtung in `docker-compose.yml`: non-root, `no-new-privileges`, `cap_drop: ALL`
 + nur nötige Caps, Healthcheck auf `/api/health`, **kein** `docker.sock`-Mount,

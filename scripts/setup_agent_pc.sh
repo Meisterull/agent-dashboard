@@ -21,6 +21,11 @@ command -v claude >/dev/null 2>&1 || {
   exit 1
 }
 
+# Idempotent (N14): ein zweiter Lauf (anderer Port, neue Installation) würde
+# sonst an "server already exists" scheitern. Alten Eintrag erst entfernen —
+# fehlt er, ist das kein Fehler.
+claude mcp remove --scope user dashboard >/dev/null 2>&1 || true
+
 # --scope user: gilt für alle Projekte dieses Users, nicht nur das aktuelle cwd.
 claude mcp add --scope user --transport http dashboard "$URL"
 

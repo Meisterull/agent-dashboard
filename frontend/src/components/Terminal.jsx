@@ -79,6 +79,12 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   const [mouseCaptured, setMouseCaptured] = useState(false);
   const [copyView, setCopyView] = useState(null); // {text} | null = Kopier-Modus
   const [copied, setCopied] = useState(false);
+  // Sitzung wurde in einem anderen Fenster übernommen (Close-Code 4000):
+  // KEIN automatischer Reconnect — sonst klauen sich zwei Tabs die Session
+  // im Wechsel (der visibilitychange-Handler hat das früher getan). Zurück
+  // geht es nur über den Knopf "Wieder verbinden".
+  const [takenOver, setTakenOver] = useState(false);
+  const reconnectRef = useRef(null); // vom Effect gesetzt: erzwungener Reconnect
   const [mods, setMods] = useState({ ctrl: false, alt: false, shift: false });
   const modsRef = useRef(mods);
   modsRef.current = mods;
@@ -186,6 +192,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     });
 
     let gone = false; // Komponente weg oder Session endgültig zu
+    let stolen = false; // Session in einem anderen Fenster übernommen (4000)
     let retry = 0;
     let retryTimer = null;
 
@@ -204,6 +211,10 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
 
       ws.onopen = () => {
         retry = 0;
+        // Der Server spielt beim Reattach den KOMPLETTEN Sitzungspuffer nach
+        // (ssh_bridge.bridge). Ohne Leeren stünde der Verlauf nach jedem
+        // Netz-Blip doppelt/dreifach im Terminal.
+        term.reset();
         sendResize(ws);
       };
       ws.onmessage = (ev) => term.write(ev.data);
@@ -222,6 +233,8 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         }
         if (ev.code === 4000) {
           term.write("\r\n[Sitzung in anderem Fenster übernommen]\r\n");
+          stolen = true;
+          setTakenOver(true);
           return; // kein Reconnect — sonst klauen sich zwei Tabs die Session
         }
         // Netz weg / Handy gesperrt → automatisch neu verbinden
@@ -232,6 +245,22 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       };
     };
     connect();
+
+    // Expliziter Reattach über den Knopf "Wieder verbinden" — der einzige Weg
+    // zurück, nachdem ein anderes Fenster die Sitzung übernommen hat.
+    reconnectRef.current = () => {
+      if (gone) return;
+      stolen = false;
+      setTakenOver(false);
+      clearTimeout(retryTimer);
+      retry = 0;
+      try {
+        wsRef.current?.close();
+      } catch {
+        /* egal */
+      }
+      connect();
+    };
 
     term.onData((data) => {
       let out = data;
@@ -250,6 +279,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       if (
         !document.hidden &&
         !gone &&
+        !stolen && // übernommene Sitzung NICHT von selbst zurückholen
         (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED)
       ) {
         clearTimeout(retryTimer);
@@ -271,7 +301,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       clearTimeout(retryTimer);
       fitRef.current = null;
       termRef.current = null;
+      reconnectRef.current = null;
       setMouseCaptured(false);
+      setTakenOver(false);
       mouseObs.disconnect();
       termEl.removeEventListener("mousedown", onTermMouseDown);
       document.removeEventListener("mouseup", handleMouseUp);
@@ -359,6 +391,17 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     <div className="flex h-full w-full flex-col">
       <div className="relative min-h-0 w-full flex-1">
         <div ref={ref} className="h-full w-full" />
+        {takenOver && !copyView && (
+          <div className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-2 rounded border border-amber-600 bg-slate-900/90 px-2 py-1 text-[11px] text-amber-300">
+            <span>Sitzung in einem anderen Fenster übernommen</span>
+            <button
+              onClick={() => reconnectRef.current?.()}
+              className="rounded border border-amber-500 px-2 py-0.5 text-amber-200 hover:bg-amber-900"
+            >
+              Wieder verbinden
+            </button>
+          </div>
+        )}
         {mouseCaptured && !copyView && (
           <div className="pointer-events-none absolute right-2 top-1 z-10 max-w-[90%] rounded border border-slate-600 bg-slate-900/85 px-2 py-0.5 text-[10px] text-slate-300">
             App steuert die Maus — Markieren: Shift+Ziehen (Mac: ⌥) · Touch: ⎘

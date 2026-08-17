@@ -43,6 +43,19 @@ export default function EditorModal({ source, path, onClose }) {
   }
   saveRef.current = doSave;
 
+  // Ungespeichertes nicht kommentarlos wegwerfen (der ●-Punkt allein wird
+  // beim Zuklappen leicht übersehen).
+  function requestClose() {
+    if (
+      dirty &&
+      !window.confirm(
+        `„${filename}“ hat ungespeicherte Änderungen. Trotzdem schließen?`,
+      )
+    )
+      return;
+    onClose();
+  }
+
   useEffect(() => {
     let view;
     let cancelled = false;
@@ -157,7 +170,7 @@ export default function EditorModal({ source, path, onClose }) {
           Speichern
         </button>
         <button
-          onClick={onClose}
+          onClick={requestClose}
           className="shrink-0 rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
         >
           ✕
