@@ -347,6 +347,31 @@ class Mailbox:
                 return False
             return True
 
+    def alle_gelesen(self) -> int:
+        """Alles Archivierbare auf einmal aus der Inbox räumen (Issue #21).
+
+        Wer nur beauftragt und die Ergebnisse im Dashboard liest, ruft nie
+        `mark_read` — die Responses stapeln sich dann für immer. Das hier ist
+        der Knopf dafür: ein Durchgang, alles Erledigte ins Archiv.
+
+        Tabu bleiben offene Tasks (die schließt write_response) und offene
+        Rückfragen — eine weggeräumte `needs_confirm`-Frage verschwände aus
+        dem Banner, ohne dass jemand geantwortet hätte.
+        """
+        weg = 0
+        for _, env in _lese_ordner(self.inbox):
+            env_id = env.get("id")
+            if not env_id:
+                continue
+            if env.get("kind") == "question" and env.get("status") == "needs_confirm":
+                continue
+            try:
+                if self.mark_read(env_id):
+                    weg += 1
+            except ValueError:
+                continue  # offener Task
+        return weg
+
     def read_responses(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Antworten aus der Outbox, neueste zuerst.
 
@@ -706,11 +731,20 @@ class Mailbox:
             )
         return {"requeued": requeued, "aufgegeben": aufgegeben}
 
-    def aufraeumen(self, max_tage: float) -> int:
+    def aufraeumen(self, max_tage: float, inbox_tage: float = 0) -> int:
         """Alte Ablagen rotieren: .archive/, .failed/ und Outbox-Responses.
 
         Ohne das wächst die Mailbox unbegrenzt — und `read_responses` bzw. das
         Agenten-Panel liefern irgendwann Jahresarchive aus.
+
+        `inbox_tage` > 0 nimmt zusätzlich die Inbox mit (Issue #21), aber nur
+        alte **Protokoll**-Envelopes: `response` und `answer`. Die stapeln sich
+        bei einem Agenten, der nur beauftragt und nie `mark_read` ruft. Tasks
+        und Fragen bleiben ausdrücklich liegen — das ist Arbeitsvorrat, kein
+        Protokoll, und niemand darf ihn im Hintergrund verschwinden lassen.
+        Gelöscht wird hier nichts: die Envelopes wandern ins Archiv und
+        verfallen erst dort nach `max_tage`. Deshalb ist `inbox_tage` sinnvoll
+        kleiner als `max_tage`.
         """
         grenze = time.time() - max_tage * 86400
         weg = 0
@@ -723,6 +757,19 @@ class Mailbox:
                     weg += 1
                 except OSError:
                     continue
+        if inbox_tage > 0:
+            grenze_inbox = time.time() - inbox_tage * 86400
+            with self._lock():
+                for p, env in _lese_ordner(self.inbox):
+                    if env.get("kind") not in ("response", "answer"):
+                        continue
+                    try:
+                        if p.stat().st_mtime >= grenze_inbox:
+                            continue
+                        os.replace(p, self.archive / p.name)
+                        weg += 1
+                    except OSError:
+                        continue
         return weg
 
 
@@ -745,12 +792,16 @@ def alle_mailboxen(root: str | os.PathLike) -> list["Mailbox"]:
 
 
 def pflege(
-    root: str | os.PathLike, stale_alter: float, archiv_tage: float
+    root: str | os.PathLike, stale_alter: float, archiv_tage: float,
+    inbox_tage: float = 0
 ) -> dict[str, Any]:
     """Periodische Mailbox-Pflege: verwaiste Tasks + alte Ablagen.
 
     Wird vom API-Prozess regelmäßig aufgerufen (main.py). Bewusst hier und
     nicht im Watcher: der Watcher ist genau der Prozess, der stirbt.
+
+    `inbox_tage` reicht die Inbox-Rotation aus Issue #21 durch (nur alte
+    response/answer, siehe `Mailbox.aufraeumen`).
     """
     bericht: dict[str, Any] = {"requeued": [], "aufgegeben": [], "geloescht": 0}
     for box in alle_mailboxen(root):
@@ -758,7 +809,7 @@ def pflege(
             ergebnis = box.requeue_stale(stale_alter)
             bericht["requeued"] += [f"{box.agent}/{t}" for t in ergebnis["requeued"]]
             bericht["aufgegeben"] += [f"{box.agent}/{t}" for t in ergebnis["aufgegeben"]]
-            bericht["geloescht"] += box.aufraeumen(archiv_tage)
+            bericht["geloescht"] += box.aufraeumen(archiv_tage, inbox_tage)
         except OSError:
             continue
     return bericht

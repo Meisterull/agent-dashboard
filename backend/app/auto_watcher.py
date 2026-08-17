@@ -309,8 +309,11 @@ class AutoWatcherManager:
                         cmd += f" --permission-mode {shlex.quote(str(cfg['permission_mode']))}"
                     tools = cfg.get("allowed_tools")
                     if tools:
-                        # YAML-Liste → EIN Komma-Argument (claude versteht das,
-                        # und nichts verschluckt die instruction, Issue #19)
+                        # YAML-Liste → EIN Komma-Argument (Issue #19). Hier ist
+                        # es die Kommandozeile des WATCHERS (argparse, ein Wert)
+                        # — dass claudes eigene Option variadisch ist und den
+                        # Prompt verschluckt, löst baue_claude_cmd mit "--"
+                        # im Watcher selbst (Issue #20).
                         if isinstance(tools, (list, tuple)):
                             tools = ",".join(str(t).strip() for t in tools if str(t).strip())
                         cmd += f" --allowed-tools {shlex.quote(str(tools))}"

@@ -1,4 +1,5 @@
-"""Mailbox-Lebenszyklus: Fehlschläge (#15) und Rückfragen-Parken (#17).
+"""Mailbox-Lebenszyklus: Fehlschläge (#15), Rückfragen-Parken (#17) und das
+Inbox-Aufräumen (#21: alle_gelesen + Rotation alter response/answer).
 
 Nur Standardlib — läuft überall:  cd backend && python -m tests.test_mailbox_lifecycle
 """
@@ -106,10 +107,52 @@ def test_antwort_waehrend_lauf_parkt_nicht(root: Path) -> None:
     assert env["nachtraege"][0]["antwort"] == "8080" and not env["open_questions"]
 
 
+def test_alles_gelesen_raeumt_nur_erledigtes(root: Path) -> None:
+    """#21: der 'alles gelesen'-Knopf archiviert Protokoll, nie Arbeitsvorrat."""
+    mb = _neu(root, "task-offen")                      # offener Task
+    mb.post({"kind": "response", "sender": "worker", "to": "chef",
+             "text": "fertig", "reply_to": "task-alt"})
+    mb.post({"kind": "message", "sender": "chef", "to": "worker", "text": "hallo"})
+    mb.post({"kind": "question", "sender": "worker", "to": "chef",
+             "text": "welcher Port?", "status": "needs_confirm"})
+
+    assert mb.alle_gelesen() == 2                      # response + message
+
+    uebrig = {e.get("kind", "task") for e in mb.read_inbox()}
+    assert uebrig == {"task", "question"}, uebrig      # beides bleibt liegen
+    assert len(list(mb.archive.glob("*.json"))) == 2
+
+
+def test_inbox_rotation_nimmt_nur_alte_antworten(root: Path) -> None:
+    """#21: aufraeumen(inbox_tage) verschiebt alte response/answer ins Archiv."""
+    import os
+    import time
+
+    mb = _neu(root, "task-jung")
+    alt = mb.post({"kind": "response", "sender": "worker", "to": "chef", "text": "alt"})
+    neu = mb.post({"kind": "response", "sender": "worker", "to": "chef", "text": "neu"})
+    vorgestern = time.time() - 20 * 86400
+    os.utime(mb.inbox / f"{alt['id']}.json", (vorgestern, vorgestern))
+    # Auch ein ALTER Task darf nicht angefasst werden — Arbeitsvorrat.
+    os.utime(mb.inbox / "task-jung.json", (vorgestern, vorgestern))
+
+    assert mb.aufraeumen(30, inbox_tage=14) == 1
+    ids = {e.get("id") for e in mb.read_inbox()}   # Tasks haben kein 'id'
+    assert neu["id"] in ids and alt["id"] not in ids
+    assert (mb.inbox / "task-jung.json").exists()
+    assert (mb.archive / f"{alt['id']}.json").exists()  # verschoben, nicht gelöscht
+
+    # Ohne inbox_tage bleibt die Inbox unangetastet (Altverhalten).
+    os.utime(mb.inbox / f"{neu['id']}.json", (vorgestern, vorgestern))
+    assert mb.aufraeumen(30) == 0
+
+
 def main() -> None:
     for test in (test_error_behaelt_beschreibung,
                  test_rueckfrage_parkt_und_stoesst_wieder_an,
-                 test_antwort_waehrend_lauf_parkt_nicht):
+                 test_antwort_waehrend_lauf_parkt_nicht,
+                 test_alles_gelesen_raeumt_nur_erledigtes,
+                 test_inbox_rotation_nimmt_nur_alte_antworten):
         tmp = Path(tempfile.mkdtemp(prefix="mailbox-test-"))
         try:
             test(tmp)

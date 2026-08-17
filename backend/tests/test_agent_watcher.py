@@ -9,6 +9,8 @@ Abgedeckt (T5/T6 der Review-Liste):
     BrokenPipeError im Fortschritts-Callback
   * projekt_workdir (Ausbruch, fehlendes Verzeichnis), fehlerserie,
     inbox_tasks (FIFO nach created_at, N1), instanz_lock (H2)
+  * baue_claude_cmd: instruction immer hinter "--" (Issue #20 — das
+    variadische --allowed-tools verschluckt sie sonst)
 """
 from __future__ import annotations
 
@@ -227,6 +229,28 @@ class TestReineFunktionen(unittest.TestCase):
     def tearDown(self) -> None:
         aw._schnelle_fehler = 0
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # --- baue_claude_cmd (Issue #20) ---------------------------------------
+
+    def test_instruction_steht_hinter_dem_trenner(self):
+        """Ohne "--" verschluckt das variadische --allowed-tools die instruction."""
+        cmd = aw.baue_claude_cmd("claude", "sag nur OK",
+                                 permission_mode="acceptEdits",
+                                 allowed_tools="Bash,mcp__dashboard")
+        self.assertEqual(cmd[-2:], ["--", "sag nur OK"])
+        # Der Wert der Option darf nicht mit der instruction verschmelzen.
+        self.assertEqual(cmd[cmd.index("--allowed-tools") + 1], "Bash,mcp__dashboard")
+
+    def test_trenner_auch_ohne_optionen(self):
+        cmd = aw.baue_claude_cmd("claude", "sag nur OK")
+        self.assertEqual(cmd[-2:], ["--", "sag nur OK"])
+        self.assertNotIn("--allowed-tools", cmd)
+        self.assertNotIn("--permission-mode", cmd)
+
+    def test_instruction_mit_bindestrich_bleibt_prompt(self):
+        """Auch ohne allowed_tools nötig: sonst wäre '--help' eine Option."""
+        cmd = aw.baue_claude_cmd("claude", "--help ist hier Text")
+        self.assertEqual(cmd[-2:], ["--", "--help ist hier Text"])
 
     # --- projekt_workdir (Issue #19) ---------------------------------------
 

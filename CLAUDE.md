@@ -136,6 +136,12 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
     verwaist und gehen zurück in die Inbox; `MAILBOX_ARCHIV_TAGE` rotiert
     Archiv/Fehlschläge/Outbox. Der Wert MUSS über dem `CLAUDE_TIMEOUT` des
     Watchers (1800 s) bleiben, sonst wird ein laufender Task doppelt gestartet.
+    `MAILBOX_INBOX_TAGE` (Default 14, 0 = aus) nimmt zusätzlich alte
+    `response`/`answer` aus der **Inbox** ins Archiv (Issue #21) — sonst wächst
+    sie bei jedem, der nie `mark_read` ruft, unbegrenzt. Tasks und Fragen sind
+    dabei tabu (Arbeitsvorrat, kein Protokoll); von Hand räumt der Knopf
+    „✓ alles gelesen" im Agenten-Panel (`POST /api/agents/{name}/inbox/read-all`
+    → `Mailbox.alle_gelesen`, lässt offene Tasks und Rückfragen liegen).
 - **Multi-Provider (`app/llm.py`):** `ORCH_PROVIDER=anthropic|ollama`. Neutrale
   History (`user`/`assistant`+`tool_calls`/`tool`), erst beim Aufruf ins Provider-
   Format übersetzt. Ollama über Standardlib-HTTP (kein pip), Anthropic lazy via SDK
@@ -208,8 +214,10 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   (`projekt_workdir` — Ausbruch/fehlendes Verzeichnis → Task scheitert mit
   Klartext); `permission_mode`/`allowed_tools` je Agent in agents.yaml werden
   an `claude --permission-mode`/`--allowed-tools` durchgereicht (allowed_tools
-  als EIN Komma-Argument, sonst schluckt die variadische Option die
-  instruction); verweigerte Werkzeuge landen als „Berechtigung verweigert: …"
+  als EIN Komma-Argument, **und die instruction steht hinter `--`**: die Option
+  ist variadisch und verschluckt sonst den Prompt — „Input must be provided…",
+  Issue #20; die Kommandozeile baut `baue_claude_cmd`, dafür gibt es Tests);
+  verweigerte Werkzeuge landen als „Berechtigung verweigert: …"
   im log der Antwort (permission_denials aus dem result-Event + tool_result-
   Heuristik). Headless beantwortet niemand Freigabe-Fragen — was die Automatik
   dürfen soll, MUSS als Flag mitkommen.

@@ -43,6 +43,8 @@ export const closeTask = (agent, taskId, status = "done", result = "") =>
     "POST",
     { status, result },
   );
+export const markInboxRead = (name) =>
+  jsend(`/api/agents/${encodeURIComponent(name)}/inbox/read-all`, "POST");
 export const getFiles = (path = "") =>
   jget(`/api/files?path=${encodeURIComponent(path)}`);
 export const getFileContent = (path) =>

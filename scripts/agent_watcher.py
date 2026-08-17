@@ -325,6 +325,29 @@ def tool_result_text(block: dict) -> str:
     return " ".join(t for t in teile if t)
 
 
+def baue_claude_cmd(claude_bin: str, instruction: str,
+                    permission_mode: str | None = None,
+                    allowed_tools: str | None = None) -> list[str]:
+    """Kommandozeile für einen headless-Lauf — die instruction IMMER hinter "--".
+
+    Issue #20: `--allowed-tools` ist variadisch (`--allowed-tools <tools...>`)
+    und verschluckt jedes folgende Positional. Ohne Trenner landet die
+    instruction als weiterer Tool-Name in der Option, danach ist kein Prompt
+    mehr übrig und claude bricht ab mit "Input must be provided either through
+    stdin or as a prompt argument when using --print". Eine Komma-Liste hilft
+    dagegen NICHT — sie verhindert nur, dass mehrere Tool-Namen als getrennte
+    Argumente aufgefasst werden. "--" beendet die Optionsauswertung und ist
+    auch für sich genommen richtig: eine instruction, die mit "-" beginnt,
+    wäre sonst ebenfalls eine Option.
+    """
+    cmd = [claude_bin, "--print", "--output-format", "stream-json", "--verbose"]
+    if permission_mode:
+        cmd += ["--permission-mode", permission_mode]
+    if allowed_tools:
+        cmd += ["--allowed-tools", allowed_tools]
+    return cmd + ["--", instruction]
+
+
 def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                fortschritt=None, permission_mode: str | None = None,
                allowed_tools: str | None = None) -> tuple[str, str, int]:
@@ -344,7 +367,8 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     permission_mode/allowed_tools (Issue #19): headless kann niemand eine
     Berechtigungs-Rückfrage beantworten — was der Lauf dürfen soll, muss als
     Flag mitkommen. Verweigerte Werkzeuge landen ausdrücklich im log, statt
-    nur im Fließtext des Ergebnisses unterzugehen.
+    nur im Fließtext des Ergebnisses unterzugehen. Die Kommandozeile baut
+    `baue_claude_cmd` — das "--" vor der instruction ist Pflicht (Issue #20).
 
     Abbruch (Not-Aus, H3): der Prozess ist global registriert, "kill" auf
     stdin schießt ihn samt Kindern ab. Die Lese-Schleife läuft unter
@@ -354,14 +378,7 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     """
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
-    cmd = [claude_bin, "--print", "--output-format", "stream-json", "--verbose"]
-    if permission_mode:
-        cmd += ["--permission-mode", permission_mode]
-    if allowed_tools:
-        # EIN Argument (Komma-Liste): die variadische Option würde sonst die
-        # nachfolgende instruction als Tool-Namen schlucken.
-        cmd += ["--allowed-tools", allowed_tools]
-    cmd.append(instruction)
+    cmd = baue_claude_cmd(claude_bin, instruction, permission_mode, allowed_tools)
     try:
         proc = subprocess.Popen(
             cmd,

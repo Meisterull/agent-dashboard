@@ -9,6 +9,7 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
        alles Weitere unter /api    nur mit gültigem Session-Cookie (auth.py)
   GET  /api/agents                 Agenten = Mailbox-Ordner
   GET  /api/agents/{name}/tasks    Inbox (+ .processing als running) + Outbox
+  POST /api/agents/{name}/inbox/read-all  alles Erledigte ins Archiv (#21)
   POST /api/tasks/{agent}/{id}/close  hängengebliebenen Task manuell abschließen
   POST /api/chat                   Eine Chat-Runde (Orchestrator + Tool-Calls)
   GET  /api/chat/sessions          gespeicherte Sessions (SQLite, chat_store)
@@ -99,6 +100,11 @@ async def _automatik_start() -> None:
 PFLEGE_INTERVALL = float(os.environ.get("MAILBOX_PFLEGE_INTERVALL", "900"))
 STALE_TASK_ALTER = float(os.environ.get("MAILBOX_STALE_ALTER", "10800"))  # 3 h
 ARCHIV_TAGE = float(os.environ.get("MAILBOX_ARCHIV_TAGE", "30"))
+# Issue #21: alte response/answer wandern auch aus der INBOX ins Archiv — sonst
+# wächst sie bei einem Agenten, der nie mark_read ruft, unbegrenzt weiter (und
+# das Agenten-Panel zieht den ganzen Stapel alle 8 s mit). Tasks/Fragen bleiben
+# unangetastet. 0 schaltet die Inbox-Rotation ab.
+INBOX_TAGE = float(os.environ.get("MAILBOX_INBOX_TAGE", "14"))
 
 _pflege_task: asyncio.Task | None = None
 
@@ -114,7 +120,8 @@ async def _mailbox_pflege_schleife() -> None:
         await asyncio.sleep(PFLEGE_INTERVALL)
         try:
             bericht = await asyncio.to_thread(
-                mailbox_pflege, MAILBOXES, STALE_TASK_ALTER, ARCHIV_TAGE
+                mailbox_pflege, MAILBOXES, STALE_TASK_ALTER, ARCHIV_TAGE,
+                INBOX_TAGE
             )
         except Exception as exc:  # noqa: BLE001 — Pflege darf die API nie killen
             print(f"[pflege] Fehler: {exc}", flush=True)
@@ -331,6 +338,19 @@ async def agent_inbox(name: str, kind: str | None = None) -> dict:
     if kind:
         items = [i for i in items if i["kind"] == kind]
     return {"agent": name, "inbox": items}
+
+
+@app.post("/api/agents/{name}/inbox/read-all")
+async def agent_inbox_read_all(name: str) -> dict:
+    """Alles Erledigte auf einmal aus der Inbox ins Archiv (Issue #21).
+
+    Gegenstück zum `mark_read` je Envelope: wer nur beauftragt und die
+    Ergebnisse hier im Dashboard liest, müsste sonst jede einzelne Response
+    von Hand quittieren. Offene Tasks und offene Rückfragen bleiben liegen.
+    """
+    _agent_base(name)
+    archiviert = Mailbox(MAILBOXES, name).alle_gelesen()
+    return {"agent": name, "archiviert": archiviert}
 
 
 @app.get("/api/questions")

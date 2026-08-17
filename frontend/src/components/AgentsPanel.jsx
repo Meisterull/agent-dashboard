@@ -4,6 +4,7 @@ import {
   getAgents,
   getAutomatik,
   getTasks,
+  markInboxRead,
   setAutomatik,
   setNotaus,
 } from "../api";
@@ -53,6 +54,7 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
   const [localKey, setLocalKey] = useState(0); // ↻-Button
   const [offline, setOffline] = useState(false); // letzter Poll fehlgeschlagen
   const [logOffen, setLogOffen] = useState(false); // Automatik-Log aufgeklappt
+  const [raeumt, setRaeumt] = useState(false); // "alles gelesen" läuft gerade
   const prevRef = useRef(null); // "agent/box/task_id" -> status
   const tasksRef = useRef({}); // letzter bekannter Stand je Agent
   const onAttentionRef = useRef(onAttention);
@@ -147,6 +149,28 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
       setLocalKey((k) => k + 1);
     } catch (e) {
       alert(`Schließen fehlgeschlagen: ${e.message}`);
+    }
+  };
+
+  // Inbox aufräumen (Issue #21): Antworten stapeln sich, wenn hier jemand nur
+  // beauftragt und mitliest — mark_read ruft dann nie einer. Ein Klick statt
+  // 70. Offene Tasks und Rückfragen fasst der Server dabei nicht an.
+  const inboxLeeren = async () => {
+    if (
+      !window.confirm(
+        `Alle erledigten Eingänge von '${selected}' ins Archiv legen?\nOffene Tasks und Rückfragen bleiben liegen.`,
+      )
+    )
+      return;
+    setRaeumt(true);
+    try {
+      const { archiviert } = await markInboxRead(selected);
+      setLocalKey((k) => k + 1);
+      if (!archiviert) alert("Nichts zu archivieren — die Inbox ist schon sauber.");
+    } catch (e) {
+      alert(`Aufräumen fehlgeschlagen: ${e.message}`);
+    } finally {
+      setRaeumt(false);
     }
   };
 
@@ -303,8 +327,16 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
         {tasks && (
           <>
             <div>
-              <div className="mb-1 font-semibold text-slate-500 dark:text-slate-400">
-                Inbox ({tasks.inbox.length})
+              <div className="mb-1 flex items-center gap-1 font-semibold text-slate-500 dark:text-slate-400">
+                <span className="flex-1">Inbox ({tasks.inbox.length})</span>
+                <button
+                  onClick={inboxLeeren}
+                  disabled={raeumt}
+                  title="Alle erledigten Eingänge (Antworten, Nachrichten) ins Archiv legen. Offene Tasks und Rückfragen bleiben liegen."
+                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+                >
+                  {raeumt ? "…" : "✓ alles gelesen"}
+                </button>
               </div>
               {tasks.inbox.length === 0 ? (
                 <p className="text-slate-400">leer</p>
