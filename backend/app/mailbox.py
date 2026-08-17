@@ -45,6 +45,11 @@ except ImportError:  # pragma: no cover — Windows
 
 VALID_STATUS = {"pending", "running", "done", "error", "needs_confirm"}
 
+# Der Orchestrator ist die Instanz am Dashboard — also der MENSCH davor.
+# Default-Absender für Aufträge und Empfänger der Rückfragen, die wirklich
+# eine menschliche Entscheidung brauchen (Issue #22).
+ORCHESTRATOR = "orchestrator"
+
 # Agent-Namen werden roh in Pfade gejoint (root/<agent>/inbox) — ohne diese
 # Allowlist wäre `to="../.."` ein Path-Traversal aus dem Workspace heraus.
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -122,7 +127,7 @@ class Task:
     project: Optional[str] = None
     files: list[str] = field(default_factory=list)
     status: str = "pending"
-    sender: str = "orchestrator"  # wer die Aufgabe stellt (z.B. ein Koordinator)
+    sender: str = ORCHESTRATOR  # wer die Aufgabe stellt (z.B. ein Koordinator)
     kind: str = "task"
     created_at: str = field(default_factory=_now)
 
@@ -156,7 +161,7 @@ def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": env.get("id") or env.get("task_id"),
         "kind": kind,
-        "sender": env.get("sender") or env.get("from") or "orchestrator",
+        "sender": env.get("sender") or env.get("from") or ORCHESTRATOR,
         "to": env.get("to") or env.get("agent"),
         "text": env.get("text") or env.get("instruction") or env.get("result") or "",
         "status": env.get("status", "pending"),
@@ -510,6 +515,40 @@ class Mailbox:
             atomic_write_json(p, env)
             return offen
 
+    def verwerfe_frage(self, question_id: str, grund: str = "") -> list[str]:
+        """Eine ohne Antwort geschlossene Rückfrage aus den eigenen Tasks lösen (Issue #23).
+
+        Gegenstück zu resolve_question, auf der Mailbox des FRAGESTELLERS: es
+        kommt keine Antwort mehr. Die Frage fliegt aus `open_questions`, der
+        Klartext bleibt als Nachtrag stehen — und ein Task, der NUR auf sie
+        gewartet hat (needs_confirm, keine weitere Frage offen), scheitert mit
+        ebendiesem Klartext. Über Issue #15 landet er mitsamt instruction in
+        inbox/.failed/ und ist von dort wiederanlauffähig; ohne das bliebe er
+        für immer in .processing/ liegen (requeue_stale fasst needs_confirm
+        bewusst nicht an). Hängen weitere Fragen an ihm, bleibt er geparkt.
+        Gibt die IDs der gescheiterten Tasks zurück."""
+        hinweis = grund.strip() or "kein Grund angegeben"
+        text = f"Rückfrage wurde ohne Antwort geschlossen: {hinweis}"
+        gescheitert: list[str] = []
+        with self._lock():
+            for p, env in _lese_ordner(self.processing):
+                fragen = env.get("open_questions") or []
+                passend = [f for f in fragen if f.get("id") == question_id]
+                if not passend:
+                    continue
+                env["open_questions"] = [f for f in fragen if f.get("id") != question_id]
+                env.setdefault("nachtraege", []).append(
+                    {"frage": passend[0].get("frage", ""), "antwort": f"[{text}]"}
+                )
+                # Erst den Envelope aktualisieren, dann ggf. scheitern lassen —
+                # so trägt auch die Kopie in .failed/ den Nachtrag.
+                atomic_write_json(p, env)
+                if env.get("status") == "needs_confirm" and not env["open_questions"]:
+                    task_id = env.get("task_id") or p.stem
+                    self._write_response(task_id, text, "error", log="question closed")
+                    gescheitert.append(task_id)
+        return gescheitert
+
     def resolve_question(self, question_id: str, antwort: str) -> list[str]:
         """Antwort auf eine Rückfrage in geparkte/laufende Tasks einarbeiten.
 
@@ -634,7 +673,11 @@ class Mailbox:
     # --- Aufräumen / Wiederanlauf -------------------------------------------
 
     def beantworte_frage(
-        self, question_id: str, text: str, an: str | None = None
+        self,
+        question_id: str,
+        text: str,
+        an: str | None = None,
+        answered_by: str | None = None,
     ) -> dict[str, Any]:
         """Eine Rückfrage aus DIESER Inbox beantworten — eine Wahrheit für alle Wege.
 
@@ -643,6 +686,10 @@ class Mailbox:
         fasste sie gar nicht an (Banner zeigte sie weiter als offen). Hier
         passiert beides zusammen: Antwort in die Inbox des Fragestellers, Frage
         ins Archiv, geparkte Tasks des Fragestellers wieder anstoßen.
+
+        `answered_by` vermerkt, WER statt des Empfängers geantwortet hat
+        (Dashboard-Mensch statt Agent, Issue #22) — für den Fragesteller wäre
+        das sonst ununterscheidbar.
         """
         qpath = self.inbox / f"{question_id}.json"
         frage: dict[str, Any] | None = None
@@ -665,21 +712,61 @@ class Mailbox:
         # Lock ist hier bewusst wieder frei: die nächsten Schritte laufen auf
         # der Mailbox des FRAGESTELLERS, die ihren eigenen Lock nimmt.
         fragesteller = Mailbox(self.root, ziel)
-        antwort = fragesteller.post(
-            {
-                "kind": "answer",
-                "sender": self.agent,
-                "to": ziel,
-                "text": text,
-                "reply_to": question_id,
-            }
-        )
+        envelope = {
+            "kind": "answer",
+            "sender": self.agent,
+            "to": ziel,
+            "text": text,
+            "reply_to": question_id,
+        }
+        if answered_by:
+            envelope["answered_by"] = answered_by
+        antwort = fragesteller.post(envelope)
         wieder = fragesteller.resolve_question(question_id, text)
         return {
             "answer": antwort,
             "to": ziel,
             "frage_archiviert": frage is not None,
             "wieder_angestossen": wieder,
+        }
+
+    def schliesse_frage(self, question_id: str, grund: str = "") -> dict[str, Any]:
+        """Eine Rückfrage aus DIESER Inbox OHNE Antwort schließen (Issue #23).
+
+        Das Gegenstück zu `beantworte_frage`, für Fragen, die sich erledigt
+        haben, ins Leere zielen oder falsch adressiert sind. Bisher gab es aus
+        einer Rückfrage genau einen Ausgang — antworten. Seit Issue #17 hängt
+        an ihr aber ein geparkter Task, also war das auch der einzige Ausgang
+        aus dem Task.
+
+        Frage ins Archiv (mit `closed_at`/`closed_reason`, damit dort nicht wie
+        bei einer echten Antwort "done" ohne Kontext steht), dann beim
+        Fragesteller aufräumen: `verwerfe_frage` lässt den geparkten Task mit
+        Klartext scheitern statt ihn stillschweigend weiterlaufen zu lassen.
+        """
+        qpath = self.inbox / f"{question_id}.json"
+        frage: dict[str, Any] | None = None
+        with self._lock():
+            try:
+                frage = json.loads(qpath.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                frage = None
+            if frage is not None:
+                frage["status"] = "done"  # VALID_STATUS kennt kein "closed"
+                frage["closed_at"] = _now()
+                frage["closed_reason"] = grund
+                atomic_write_json(qpath, frage)
+                try:
+                    os.replace(qpath, self.archive / qpath.name)
+                except FileNotFoundError:
+                    pass
+        ziel = (frage or {}).get("sender")
+        # Lock wieder frei — der Fragesteller nimmt seinen eigenen (s.o.).
+        gescheitert = Mailbox(self.root, ziel).verwerfe_frage(question_id, grund) if ziel else []
+        return {
+            "to": ziel,
+            "frage_archiviert": frage is not None,
+            "gescheiterte_tasks": gescheitert,
         }
 
     def requeue_stale(

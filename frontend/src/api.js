@@ -157,7 +157,10 @@ export const deleteSshSession = (name, sid) =>
   );
 export const getSettings = () => jget("/api/settings");
 export const getModels = () => jget("/api/models");
-export const getQuestions = () => jget("/api/questions");
+// Ohne `to` alle offenen Rückfragen (jede trägt `fuer_mensch`), mit `to` nur
+// die aus einer Mailbox — z.B. `getQuestions("orchestrator")` (Issue #22).
+export const getQuestions = (to) =>
+  jget(to ? `/api/questions?to=${encodeURIComponent(to)}` : "/api/questions");
 export const getChatSessions = () => jget("/api/chat/sessions");
 export const getChatHistory = (id) =>
   jget(`/api/chat/${encodeURIComponent(id)}`);
@@ -179,6 +182,15 @@ export async function answerQuestion(agent, qid, text) {
   }
   return res.json();
 }
+
+// Rückfrage ohne Antwort schließen (Issue #23) — der wartende Task scheitert
+// dabei mit Klartext und landet wiederanlauffähig in .failed/.
+export const closeQuestion = (agent, qid, grund = "") =>
+  jsend(
+    `/api/questions/${encodeURIComponent(agent)}/${encodeURIComponent(qid)}/close`,
+    "POST",
+    { grund },
+  );
 
 export async function putSettings(patch) {
   const res = await fetch("/api/settings", {

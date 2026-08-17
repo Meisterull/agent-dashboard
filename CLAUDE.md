@@ -43,7 +43,10 @@ backend/
                            inkl. Antworten/Zwischenstand für den Folgelauf);
                            beantworte_frage = die EINE Antwort-Primitive
                            (Dashboard + MCP-`answer`: zustellen, Frage
-                           archivieren, geparkte Tasks anstoßen);
+                           archivieren, geparkte Tasks anstoßen; `answered_by`
+                           vermerkt den Menschen, der für einen Agenten
+                           antwortet, #22); schliesse_frage/verwerfe_frage =
+                           der Ausgang OHNE Antwort (#23, s.u.);
                            requeue_stale/aufraeumen/pflege (Wartung, s.u.)
     files.py               pfad-sichere Datei-Ops (Dateibaum, Editor, Up-/Download)
     remote_files.py        SFTP-Datei-Ops auf den Agenten-PCs (/api/remote/…)
@@ -235,6 +238,21 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   (Issue #11). Der Watcher führt **nur** `kind=task` aus. `needs_confirm`-Rückfragen erscheinen im
   Dashboard (`/api/questions`, Banner) und werden dort beantwortet; hängengebliebene
   Tasks schließt `POST /api/tasks/{agent}/{task_id}/close` (✕ im Agenten-Panel).
+- **Rückfragen im Banner: wer ist gemeint, und wie kommt man wieder raus.**
+  `/api/questions` sammelt über ALLE Mailboxen — darunter Fragen, die zwei
+  Agenten einander stellen. Am Dashboard sitzt aber ein Mensch, und der ist
+  der `orchestrator` (`mailbox.ORCHESTRATOR`): nur Fragen an ihn sind seine
+  Entscheidung. Jede Frage trägt darum `fuer_mensch`, `?to=<agent>` filtert
+  hart, und das Banner zeigt fremde Fragen nur eingeklappt als Zähler
+  (Issue #22); antwortet der Mensch doch für einen Agenten, steht
+  `answered_by: "dashboard"` im Antwort-Envelope. Und seit #17 hängt an einer
+  offenen Frage ein geparkter Task — ohne Ausgang aus der Frage gäbe es also
+  auch keinen aus dem Task (`requeue_stale` fasst `needs_confirm` bewusst
+  nicht an). `POST /api/questions/{agent}/{qid}/close` (✕ im Banner) ist er:
+  Frage ins Archiv (`closed_at`/`closed_reason`), und der nur auf sie
+  wartende Task **scheitert mit Klartext** statt still weiterzulaufen — über
+  #15 landet er samt instruction in `inbox/.failed/` (Issue #23). Hängen noch
+  weitere Fragen an ihm, bleibt er geparkt.
 - **Generisch, nicht workflow-spezifisch:** Integrationen kommen aus `integrations.yaml`
   (`call_integration`-Tool); jedes Zielsystem ist nur eine Konfig-Zeile. Beim Erweitern
   nichts Workflow-Spezifisches im Code hartverdrahten.

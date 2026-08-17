@@ -74,7 +74,7 @@ from app.files import (
 )
 from app.remote_files import RemoteFilesError
 from app.integrations import list_integrations
-from app.mailbox import AGENT_NAME_RE, Mailbox, normalize_envelope
+from app.mailbox import AGENT_NAME_RE, ORCHESTRATOR, Mailbox, normalize_envelope
 from app.mailbox import pflege as mailbox_pflege
 from app.orchestrator_core import mcp_session, run_turn
 from app.ssh_bridge import bridge as ssh_bridge, get_buffer, kill_session, list_sessions
@@ -354,19 +354,29 @@ async def agent_inbox_read_all(name: str) -> dict:
 
 
 @app.get("/api/questions")
-async def open_questions() -> dict:
-    """Offene Rückfragen (needs_confirm) über ALLE Agenten — fürs Dashboard-Banner."""
+async def open_questions(to: str | None = None) -> dict:
+    """Offene Rückfragen (needs_confirm) über ALLE Agenten — fürs Dashboard-Banner.
+
+    Am Dashboard sitzt ein MENSCH, und der ist der Orchestrator. Fragen, die
+    zwei Agenten untereinander stellen, landen hier zwar auch (sie liegen in
+    einer Mailbox und niemand sonst sieht sie), dürfen aber nicht wie eine
+    Entscheidung aussehen, die er zu treffen hat — daher `fuer_mensch` je
+    Frage und optional `?to=<agent>` als harter Filter (Issue #22).
+    """
     out = []
     if MAILBOXES.exists():
         for agent_dir in sorted(MAILBOXES.iterdir()):
             if not agent_dir.is_dir():
                 continue
+            if to and agent_dir.name != to:
+                continue
             for env in _read_jsons(agent_dir / "inbox"):
                 if env.get("kind") == "question" and env.get("status") == "needs_confirm":
                     item = normalize_envelope(env)
                     item["agent"] = agent_dir.name  # in wessen Inbox die Frage liegt
+                    item["fuer_mensch"] = agent_dir.name == ORCHESTRATOR
                     out.append(item)
-    return {"questions": out}
+    return {"questions": out, "orchestrator": ORCHESTRATOR}
 
 
 class AnswerIn(BaseModel):
@@ -380,19 +390,51 @@ async def answer_question(agent: str, qid: str, body: AnswerIn) -> dict:
     Dieselbe Primitive wie das MCP-Tool `answer` (mailbox.beantworte_frage) —
     sonst driften die beiden Wege auseinander (Frage bleibt offen bzw. liegt
     für immer in der Inbox).
+
+    `answered_by="dashboard"` geht in den Antwort-Envelope: hier antwortet ein
+    Mensch, unter Umständen anstelle des eigentlich gefragten Agenten — für
+    den Fragesteller wäre das sonst nicht zu erkennen (Issue #22).
     """
     base = _agent_base(agent)
     _geprüfte_id(qid, "Rückfrage-ID")
     if not (base / "inbox" / f"{qid}.json").exists():
         raise HTTPException(404, "Rückfrage nicht gefunden.")
     try:
-        ergebnis = Mailbox(MAILBOXES, agent).beantworte_frage(qid, body.text)
+        ergebnis = Mailbox(MAILBOXES, agent).beantworte_frage(
+            qid, body.text, answered_by="dashboard"
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {
         "answered": qid,
         "to": ergebnis["to"],
         "wieder_angestossen": ergebnis["wieder_angestossen"],
+    }
+
+
+class CloseQuestionIn(BaseModel):
+    grund: str = ""
+
+
+@app.post("/api/questions/{agent}/{qid}/close")
+async def close_question(agent: str, qid: str, body: CloseQuestionIn) -> dict:
+    """Rückfrage ohne Antwort schließen — Gegenstück zum ✕ am Task (Issue #23).
+
+    Eine Frage, die sich erledigt hat oder falsch adressiert war, hatte bisher
+    keinen Ausgang außer einer Antwort — und mit ihr blieb der seit Issue #17
+    geparkte Task für immer in .processing/ liegen. Hier wird die Frage
+    archiviert und der wartende Task scheitert mit Klartext: über Issue #15
+    landet er samt instruction in inbox/.failed/ und ist wiederanlauffähig.
+    """
+    base = _agent_base(agent)
+    _geprüfte_id(qid, "Rückfrage-ID")
+    if not (base / "inbox" / f"{qid}.json").exists():
+        raise HTTPException(404, "Rückfrage nicht gefunden.")
+    ergebnis = Mailbox(MAILBOXES, agent).schliesse_frage(qid, body.grund)
+    return {
+        "closed": qid,
+        "to": ergebnis["to"],
+        "gescheiterte_tasks": ergebnis["gescheiterte_tasks"],
     }
 
 

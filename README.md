@@ -135,7 +135,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `orchestrator.py` | CLI-Variante des Orchestrators (Chat im Terminal) |
 | `app/orchestrator_core.py` | Gemeinsamer Kern: `mcp_session()` + `run_turn()`. CLI **und** API nutzen ihn |
 | `app/llm.py` | Provider-neutrale LLM-Schicht (ein Loop, Backends **ollama** + **anthropic**) |
-| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox` (FIFO nach `created_at`), `claim_tasks`/`claim_task` (nur Tasks, **exklusiv**: ein laufender Task wirft `AlreadyClaimed`), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `beantworte_frage` (die eine Antwort-Primitive für Dashboard und MCP), `requeue_stale`/`aufraeumen`/`pflege` (verwaiste Tasks zurück in die Warteschlange, alte Ablagen rotieren), `normalize_envelope`. Read-Modify-Write läuft unter einem Datei-Lock je Mailbox |
+| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox` (FIFO nach `created_at`), `claim_tasks`/`claim_task` (nur Tasks, **exklusiv**: ein laufender Task wirft `AlreadyClaimed`), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `beantworte_frage` (die eine Antwort-Primitive für Dashboard und MCP), `schliesse_frage`/`verwerfe_frage` (Rückfrage ohne Antwort beenden — der nur auf sie wartende Task scheitert mit Klartext), `requeue_stale`/`aufraeumen`/`pflege` (verwaiste Tasks zurück in die Warteschlange, alte Ablagen rotieren), `normalize_envelope`. Read-Modify-Write läuft unter einem Datei-Lock je Mailbox |
 | `app/files.py` | Pfad-sichere Datei-Ops (`list_dir`, `read_file`) für den Dateibaum |
 | `app/config.py` | Settings (`settings.json`) + Verbindungen (`agents.yaml`, ohne Credentials) |
 | `app/integrations.py` | Config-getriebene HTTP-Integrationen (`integrations.yaml`, generisch) |
@@ -236,8 +236,9 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `GET` | `/api/agents/{name}/tasks` | Tasks: `{inbox, outbox}` eines Agenten (beanspruchte als `running`) |
 | `GET` | `/api/agents/{name}/inbox?kind=` | Alle Eingänge (Tasks + Nachrichten + Rückfragen), normalisiert |
 | `POST` | `/api/tasks/{agent}/{task_id}/close` | Hängengebliebenen Task von Hand abschließen (`{status?, result?}`) |
-| `GET` | `/api/questions` | Offene Rückfragen (`needs_confirm`) über alle Agenten |
-| `POST` | `/api/questions/{agent}/{qid}/answer` | Rückfrage beantworten → Antwort an Fragesteller |
+| `GET` | `/api/questions?to=` | Offene Rückfragen (`needs_confirm`) über alle Agenten; je Frage `fuer_mensch` (an den `orchestrator` gerichtet), `?to=` filtert auf eine Mailbox |
+| `POST` | `/api/questions/{agent}/{qid}/answer` | Rückfrage beantworten → Antwort an Fragesteller (`answered_by: "dashboard"`) |
+| `POST` | `/api/questions/{agent}/{qid}/close` | Rückfrage ohne Antwort schließen (`{grund?}`) → Frage ins Archiv, der wartende Task scheitert mit Klartext nach `.failed/` |
 | `GET` | `/api/integrations` | Konfigurierte Integrationen (Name + Methoden, ohne Secrets) |
 | `POST` | `/api/chat` | Body `{message, session_id?}` → `{session_id, reply, tool_calls}` |
 | `GET` | `/api/files?path=` | Verzeichnis auflisten (path-traversal-sicher) |
