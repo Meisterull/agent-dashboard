@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
+import { bestaetigen } from "./Dialog";
 import {
   getConnections,
   createConnection,
@@ -79,6 +80,9 @@ export default function ConnectionsModal({ onClose }) {
       setResult(res);
       setForm({ name: "", host: "", port: "22", user: "" });
       setPrivateKey("");
+      // Inputs sind uncontrolled (defaultValue, GBoard-Regel s. u.) —
+      // der State-Reset leert das DOM nicht mehr, das macht reset():
+      e.target.reset();
       load();
       notifyChanged();
     } catch (err) {
@@ -89,7 +93,15 @@ export default function ConnectionsModal({ onClose }) {
   }
 
   async function onDelete(c) {
-    if (!confirm(`Verbindung „${c.name}“ löschen (samt Schlüssel)?`)) return;
+    if (
+      !(await bestaetigen({
+        title: "Verbindung löschen",
+        text: `Verbindung „${c.name}“ löschen (samt Schlüssel)?`,
+        ok: "Löschen",
+        danger: true,
+      }))
+    )
+      return;
     setError(null);
     try {
       await deleteConnection(c.name);
@@ -171,11 +183,15 @@ export default function ConnectionsModal({ onClose }) {
           <div className="text-xs font-semibold text-slate-500 dark:text-slate-400">
             Neue Verbindung
           </div>
+          {/* defaultValue statt value: kontrollierte Inputs lassen angetippte
+              Wortvorschläge der Handy-Tastatur den Text doppelt einfügen
+              (bekanntes GBoard-Muster, siehe Chat.jsx) — der State bleibt
+              über onChange nur als Spiegel für submit gepflegt. */}
           <div className="grid grid-cols-2 gap-2">
-            <input value={form.name} onChange={set("name")} placeholder="Name (z.B. buero-pc)" className={inputCls} required />
-            <input value={form.user} onChange={set("user")} placeholder="SSH-Benutzer" className={inputCls} required />
-            <input value={form.host} onChange={set("host")} placeholder="Host / IP" className={inputCls} required />
-            <input value={form.port} onChange={set("port")} placeholder="Port" inputMode="numeric" className={inputCls} />
+            <input defaultValue={form.name} onChange={set("name")} placeholder="Name (z.B. buero-pc)" className={inputCls} required />
+            <input defaultValue={form.user} onChange={set("user")} placeholder="SSH-Benutzer" className={inputCls} required />
+            <input defaultValue={form.host} onChange={set("host")} placeholder="Host / IP" className={inputCls} required />
+            <input defaultValue={form.port} onChange={set("port")} placeholder="Port" inputMode="numeric" className={inputCls} />
           </div>
           <label className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
             <input
@@ -188,7 +204,7 @@ export default function ConnectionsModal({ onClose }) {
           </label>
           {showKeyInput && (
             <textarea
-              value={privateKey}
+              defaultValue={privateKey}
               onChange={(e) => setPrivateKey(e.target.value)}
               rows={4}
               placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"

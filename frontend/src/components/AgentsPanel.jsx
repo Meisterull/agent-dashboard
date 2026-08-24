@@ -8,6 +8,7 @@ import {
   setAutomatik,
   setNotaus,
 } from "../api";
+import { bestaetigen, melden } from "./Dialog";
 
 const STATUS_COLORS = {
   pending: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
@@ -55,6 +56,17 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
   const [offline, setOffline] = useState(false); // letzter Poll fehlgeschlagen
   const [logOffen, setLogOffen] = useState(false); // Automatik-Log aufgeklappt
   const [raeumt, setRaeumt] = useState(false); // "alles gelesen" läuft gerade
+  // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
+  // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
+  // nicht erreichbar — auf dem Handy gibt es auch keine Tooltips.
+  const [offen, setOffen] = useState(() => new Set()); // "box/task_id"
+  const toggleOffen = (key) =>
+    setOffen((s) => {
+      const n = new Set(s);
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
+      return n;
+    });
   const prevRef = useRef(null); // "agent/box/task_id" -> status
   const tasksRef = useRef({}); // letzter bekannter Stand je Agent
   const onAttentionRef = useRef(onAttention);
@@ -120,10 +132,17 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
       if (!document.hidden) load();
     };
     document.addEventListener("visibilitychange", onVisible);
+    // Live-Events (F4): Mailbox-Änderung → sofort nachladen statt bis zum
+    // nächsten 8-s-Poll zu warten; das Polling bleibt Fallback.
+    const onLive = () => {
+      if (!document.hidden) load();
+    };
+    window.addEventListener("live:mailbox", onLive);
     return () => {
       stale = true;
       clearInterval(t);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("live:mailbox", onLive);
     };
   }, [refreshKey, localKey]);
 
@@ -143,12 +162,20 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
 
   // Hängengebliebenen Task von Hand abschließen (Agent antwortet nicht mehr).
   const forceClose = async (taskId) => {
-    if (!window.confirm(`Task ${taskId} ohne Ergebnis schließen?`)) return;
+    if (
+      !(await bestaetigen({
+        title: "Task schließen",
+        text: `Task ${taskId} ohne Ergebnis schließen?`,
+        ok: "Schließen",
+        danger: true,
+      }))
+    )
+      return;
     try {
       await closeTask(selected, taskId);
       setLocalKey((k) => k + 1);
     } catch (e) {
-      alert(`Schließen fehlgeschlagen: ${e.message}`);
+      melden({ title: "Fehler", text: `Schließen fehlgeschlagen: ${e.message}` });
     }
   };
 
@@ -157,18 +184,21 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
   // 70. Offene Tasks und Rückfragen fasst der Server dabei nicht an.
   const inboxLeeren = async () => {
     if (
-      !window.confirm(
-        `Alle erledigten Eingänge von '${selected}' ins Archiv legen?\nOffene Tasks und Rückfragen bleiben liegen.`,
-      )
+      !(await bestaetigen({
+        title: "Inbox aufräumen",
+        text: `Alle erledigten Eingänge von '${selected}' ins Archiv legen?\nOffene Tasks und Rückfragen bleiben liegen.`,
+        ok: "Archivieren",
+      }))
     )
       return;
     setRaeumt(true);
     try {
       const { archiviert } = await markInboxRead(selected);
       setLocalKey((k) => k + 1);
-      if (!archiviert) alert("Nichts zu archivieren — die Inbox ist schon sauber.");
+      if (!archiviert)
+        melden({ title: "Inbox", text: "Nichts zu archivieren — die Inbox ist schon sauber." });
     } catch (e) {
-      alert(`Aufräumen fehlgeschlagen: ${e.message}`);
+      melden({ title: "Fehler", text: `Aufräumen fehlgeschlagen: ${e.message}` });
     } finally {
       setRaeumt(false);
     }
@@ -179,28 +209,35 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
     const ziel = !autoInfo.gewuenscht;
     if (
       ziel &&
-      !window.confirm(
-        `Automatik für '${selected}' einschalten?\nClaude Code arbeitet dann UNBEAUFSICHTIGT Tasks aus der Inbox ab.`,
-      )
+      !(await bestaetigen({
+        title: "Automatik einschalten",
+        text: `Automatik für '${selected}' einschalten?\nClaude Code arbeitet dann UNBEAUFSICHTIGT Tasks aus der Inbox ab.`,
+        ok: "Einschalten",
+      }))
     )
       return;
     try {
       setAuto(await setAutomatik(selected, ziel));
     } catch (e) {
-      alert(`Umschalten fehlgeschlagen: ${e.message}`);
+      melden({ title: "Fehler", text: `Umschalten fehlgeschlagen: ${e.message}` });
     }
   };
 
   const toggleNotaus = async () => {
     if (
       !auto.notaus &&
-      !window.confirm("Not-Aus: ALLE Automatiken sofort hart stoppen?")
+      !(await bestaetigen({
+        title: "Not-Aus",
+        text: "Not-Aus: ALLE Automatiken sofort hart stoppen?",
+        ok: "Stoppen",
+        danger: true,
+      }))
     )
       return;
     try {
       setAuto(await setNotaus(!auto.notaus));
     } catch (e) {
-      alert(`Not-Aus fehlgeschlagen: ${e.message}`);
+      melden({ title: "Fehler", text: `Not-Aus fehlgeschlagen: ${e.message}` });
     }
   };
 
@@ -342,19 +379,34 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
                 <p className="text-slate-400">leer</p>
               ) : (
                 tasks.inbox.map((t) => (
-                  <div key={t.task_id} className="mb-1 rounded bg-slate-50 p-1.5 dark:bg-slate-800">
+                  <div
+                    key={t.task_id}
+                    onClick={() => toggleOffen(`inbox/${t.task_id}`)}
+                    className="mb-1 cursor-pointer rounded bg-slate-50 p-1.5 dark:bg-slate-800"
+                  >
                     <div className="flex items-center justify-between gap-1">
                       <span className="flex-1 truncate font-mono">{t.task_id}</span>
                       <StatusBadge status={t.status} />
                       <button
-                        onClick={() => forceClose(t.task_id)}
+                        onClick={(e) => {
+                          e.stopPropagation(); // Karte nicht zusätzlich auf-/zuklappen
+                          forceClose(t.task_id);
+                        }}
                         title="Task manuell schließen (ohne Ergebnis)"
                         className="rounded px-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
                       >
                         ✕
                       </button>
                     </div>
-                    <div className="truncate text-slate-500 dark:text-slate-400">{t.instruction}</div>
+                    <div
+                      className={`${
+                        offen.has(`inbox/${t.task_id}`)
+                          ? "whitespace-pre-wrap break-words"
+                          : "truncate"
+                      } text-slate-500 dark:text-slate-400`}
+                    >
+                      {t.instruction}
+                    </div>
                   </div>
                 ))
               )}
@@ -367,12 +419,24 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
                 <p className="text-slate-400">leer</p>
               ) : (
                 tasks.outbox.map((t) => (
-                  <div key={t.task_id} className="mb-1 rounded bg-slate-50 p-1.5 dark:bg-slate-800">
+                  <div
+                    key={t.task_id}
+                    onClick={() => toggleOffen(`outbox/${t.task_id}`)}
+                    className="mb-1 cursor-pointer rounded bg-slate-50 p-1.5 dark:bg-slate-800"
+                  >
                     <div className="flex items-center justify-between">
                       <span className="font-mono">{t.task_id}</span>
                       <StatusBadge status={t.status} />
                     </div>
-                    <div className="truncate text-slate-500 dark:text-slate-400">{t.result}</div>
+                    <div
+                      className={`${
+                        offen.has(`outbox/${t.task_id}`)
+                          ? "whitespace-pre-wrap break-words"
+                          : "truncate"
+                      } text-slate-500 dark:text-slate-400`}
+                    >
+                      {t.result}
+                    </div>
                   </div>
                 ))
               )}

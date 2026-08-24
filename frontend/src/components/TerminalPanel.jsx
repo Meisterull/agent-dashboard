@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getConnections, getSshSessions, deleteSshSession } from "../api";
+import { bestaetigen, melden } from "./Dialog";
 import Terminal, { DEFAULT_SID } from "./Terminal";
 import ConnectionsModal from "./ConnectionsModal";
 
@@ -100,16 +101,19 @@ export default function TerminalPanel() {
   const endSession = async (tab) => {
     const label = tab.sid === DEFAULT_SID ? tab.name : `${tab.name} ·${tab.sid}`;
     if (
-      !window.confirm(
-        `Session „${label}“ wirklich beenden?\nDie Shell auf dem Agenten-PC wird gekillt — Laufendes geht verloren.`,
-      )
+      !(await bestaetigen({
+        title: "Session beenden",
+        text: `Session „${label}“ wirklich beenden?\nDie Shell auf dem Agenten-PC wird gekillt — Laufendes geht verloren.`,
+        ok: "Beenden",
+        danger: true,
+      }))
     )
       return;
     try {
       await deleteSshSession(tab.name, tab.sid);
       close(tab);
     } catch (e) {
-      alert(`Beenden fehlgeschlagen: ${e.message}`);
+      melden({ title: "Fehler", text: `Beenden fehlgeschlagen: ${e.message}` });
     } finally {
       loadSessions();
     }

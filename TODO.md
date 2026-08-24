@@ -302,3 +302,104 @@ halb fertig (F2, F5, F6 — dort steht jeweils, was noch fehlt).
 ## Vom Review geprüft und in Ordnung (nicht erneut untersuchen)
 
 Cookie-Handling (HttpOnly/SameSite=Lax/Secure, WS prüft Cookie) · CSRF-Lage (state-changing nur POST/PUT/DELETE, kein CORS) · Path-Traversal in `files._safe`/MCP-`_safe` (resolve-basiert, symlink-sicher; MCP auf `/workspace/projects` begrenzt) · Git-Hygiene (`.env`, `ssl/`, `secrets/`, `workspace/` nicht getrackt) · Compose-Härtung (keine gemappten 5000/9000, kein docker.sock, cap_drop ALL, no-new-privileges, Limits) · `/api/health` ohne MCP/LLM-Abhängigkeit · `ALLOWED_KEYS` konsistent · `mcp_scope.KNOWN_TOOLS` vollständig (15/15) · Mailbox-Atomik im Kern (tmp+fsync+replace, exklusiver Claim per `os.replace` auf dem Datei-Transport) · Lebenszyklen #15/#17 auf Datei-Ebene getestet.
+
+## Mobil-Durchgang 24.08.2026 (committet 24.08., Deploy steht aus)
+
+Anlass: „Smartphone-Bedienung noch nicht wirklich gut". Nur Frontend-Quellcode
+geändert, `npm run build` grün; Container läuft unverändert weiter, bis von
+Hand neu gebaut wird (`docker compose up -d --build`).
+
+- **`window.confirm/prompt/alert` überall ersetzt** durch `components/Dialog.jsx`
+  (bestaetigen/nachfragen/melden + DialogHost in App.jsx, Promise-basiert mit
+  Warteschlange). Grund: installierte PWAs unterdrücken die Browser-Dialoge
+  teils komplett — damit fielen „Session beenden", Not-Aus, Automatik-Rückfrage,
+  Verlauf/Verbindung löschen, Rückfrage-Schließen und der Editor-Schutz vor
+  ungespeichertem Schließen auf dem Handy ERSATZLOS aus (dasselbe Muster hatte
+  FilesPanel für sich schon; der bleibt unangetastet). Betroffen: Chat,
+  QuestionsBanner, AgentsPanel (4 Stellen + alerts), TerminalPanel,
+  ConnectionsModal, EditorModal.
+- **safe-area-Insets**: untere Tab-Leiste `pb-[env(safe-area-inset-bottom)]`
+  (lag in der Gesten-Zone), TopBar `pt-[max(0.625rem,env(safe-area-inset-top))]`
+  — `viewport-fit=cover` war gesetzt, aber nirgends abgefedert.
+- **TopBar mobil kompakt**: Session-Kennung `hidden sm:inline`,
+  Einstellungen/Abmelden unter sm als Icon (⚙️/🚪) mit title.
+- **Touch-Ziele**: `@media (pointer: coarse)` → alle Buttons min 1.75rem
+  (die ✎/🗑/×/⏻-Knöpfe waren ~20 px); `touch-action: manipulation` global;
+  `overscroll-behavior-y: none` gegen versehentliches Pull-to-Refresh
+  (Body scrollt nie — ein kleiner Wisch hat sonst die Terminal-Sitzung
+  mitten im Lauf neu geladen).
+- **AgentsPanel „F1 light"**: Task-Karten (Inbox+Outbox) per Antippen
+  aufklappbar — Instruction/Ergebnis waren auf eine truncate-Zeile gestutzt,
+  der Volltext war (nicht nur mobil) gar nicht erreichbar. Volles F1
+  (Detail-Modal + Response-Archiv) bleibt offen.
+
+Live-Test auf dem Handy nach dem nächsten Deploy: PWA-Dialoge (Session beenden,
+Rückfrage ✕), Tab-Leiste über der Gesten-Zone, Task-Karten aufklappen.
+
+### Nachtrag 24.08.: Android-Wortvorschläge verdoppeln Text (IME)
+
+Symptom (Sebastian, live passiert): angetippter GBoard-Vorschlag fügt bereits
+getippten Text nochmal ein. Zwei Baustellen, beide gefixt (committet 24.08.,
+`npm run build` grün, Deploy steht aus):
+
+- **Terminal = Hauptquelle**: xterm.js (auch 5.5.0) verträgt die Android-
+  IME-Komposition nicht — direkt im Terminal getippter Text mit Vorschlägen
+  wird doppelt eingefügt; ein xterm-Upgrade hilft also NICHT. Lösung wie in
+  Mobile-SSH-Apps: **Textzeile** („Aa" in der KeyBar) — echter uncontrolled
+  <input> überm Terminal, Vorschläge funktionieren dort fehlerfrei, Text geht
+  am Stück ins Terminal: „→" nur einfügen, „⏎" senden (leer + ⏎ = nur Enter).
+  Knöpfe mit pointerdown-preventDefault (Tastatur darf nicht zuklappen),
+  nach Senden bleibt der Fokus in der Zeile.
+- **Restliche kontrollierte Inputs** auf `defaultValue` umgestellt (React
+  schreibt dann nie während einer Komposition ins Feld zurück): Settings
+  (orch_model-Fallback + externe Fenster; Zeilen-key enthält jetzt die
+  Listenlänge, damit Löschen/Hinzufügen die uncontrolled Inputs remountet),
+  ConnectionsModal (Formular + Key-Textarea, nach Anlegen `form.reset()`),
+  Login. Chat/QuestionsBanner/FileDialog/Dialog waren schon uncontrolled.
+
+Live-Test nach Deploy: im Terminal „Aa" → Satz mit Vorschlägen tippen → ⏎;
+Settings-Fenster-URLs mit Vorschlägen editieren.
+
+## F3 + F4 + F10 umgesetzt 24.08.2026 (committet 24.08., Deploy bewusst offen)
+
+Alle drei Features sind im Code fertig; wirksam werden sie erst mit
+`docker compose up -d --build` (F10 braucht den Rebuild zwingend — pywebpush
+ist neu in den requirements).
+
+- **F4 Live-Events**: `app/events.py` — Mailbox-Wächter (watchfiles/inotify,
+  mtime-Scan als Fallback ohne das Paket) → `GET /api/events` (SSE) →
+  `frontend/src/live.js` verteilt als window-Event `live:mailbox`; Agenten-
+  Panel + Rückfragen-Banner laden sofort nach. Polling bleibt als Fallback
+  unverändert bestehen. SSE durch die ungepufferte nginx-Location:
+  `X-Accel-Buffering: no` je Antwort + Heartbeat alle 20–25 s (bleibt unter
+  dem 60-s-Default von proxy_read_timeout — nginx-Template unangetastet).
+- **F10 Web-Push**: `app/push.py` (VAPID auto-erzeugt → /workspace/config/
+  vapid.json 0600; Subscriptions dedupliziert in push_subscriptions.json;
+  tote Endpoints fliegen bei 404/410). Auslöser ist derselbe Wächter:
+  Schnappschuss-Diff der Orchestrator-Inbox — NEUE Rückfragen an den
+  Menschen + NEUE Responses (Task fertig/fehlgeschlagen), Bestand nie
+  (sonst klingelt jeder Neustart alle Handys). Frontend: `public/sw.js`
+  (nur Push, kein Offline-Cache), Abschnitt „Benachrichtigungen" in den
+  Settings (aktivieren/deaktivieren/Test je Gerät); zeigt ehrlich an, wenn
+  das laufende Image noch kein pywebpush hat. `PUSH_VAPID_SUB` (.env,
+  optional) überschreibt den formalen mailto:-Kontakt.
+- **F3 Chat-Streaming + Abbrechen**: `POST /api/chat/stream` (SSE:
+  start → tool… → done/aborted/error) — pro Tool-Call ein Event, das
+  Frontend zeigt die Chips live unter „Orchestrator denkt…"; Abbrechen-Knopf
+  → `…/stream/{id}/cancel`, greift VOR dem nächsten Tool-Call
+  (llm.TurnAbbruch, wird bewusst nicht als Tool-Fehler geschluckt);
+  History wird via repariere_history gültig gesichert, das Frontend lädt
+  danach den gespeicherten Stand. Client-Abriss (Handy gesperrt) bricht den
+  Turn NICHT ab — er läuft serverseitig weiter und speichert wie bisher.
+  Der alte `POST /api/chat` bleibt unverändert bestehen.
+
+Tests: `tests/test_events_push.py` (Snapshot/Diff, Subscription-Store,
+TurnAbbruch-Durchreichung) — `python -m tests.run_alle`: **alle 12 Module
+grün**; `npm run build` grün. NICHT verifizierbar ohne Deploy: echter
+SSE-Fluss durch nginx, echter Push-Versand (pywebpush erst nach Rebuild im
+Image), Streaming gegen echten Ollama.
+
+Live-Test nach Deploy: (1) Settings → Benachrichtigungen → aktivieren →
+„Test senden" (Handy gesperrt lassen!); (2) Agent eine Rückfrage stellen
+lassen → Push kommt + Banner erscheint ohne Poll-Verzögerung; (3) Chat-Turn
+mit mehreren Tool-Calls → Chips erscheinen live, Abbrechen greift.

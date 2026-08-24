@@ -9,6 +9,8 @@ import Workspace from "./components/Workspace";
 import ExternalFrame from "./components/ExternalFrame";
 import Settings from "./components/Settings";
 import Login from "./components/Login";
+import { DialogHost } from "./components/Dialog";
+import { starteLiveEvents } from "./live";
 import { authCheck, getSettings, logout } from "./api";
 
 // CodeMirror (+ language-data) ist der mit Abstand größte Brocken und wird
@@ -62,6 +64,13 @@ export default function App() {
     window.addEventListener("auth:required", onRequired);
     return () => window.removeEventListener("auth:required", onRequired);
   }, []);
+
+  // Live-Events (F4): ein SSE-Strom für die ganze App — erst nach dem Login,
+  // vorher antwortet /api/events nur 401 und EventSource retryt ins Leere.
+  useEffect(() => {
+    if (!authed) return;
+    return starteLiveEvents();
+  }, [authed]);
 
   // Hell/Dunkel: gespeicherte Wahl, sonst System-Einstellung
   const [theme, setTheme] = useState(
@@ -209,9 +218,11 @@ export default function App() {
         ]}
       />
 
-      {/* Tab-Leiste unten: mobil immer, am Desktop nur im Tab-Modus */}
+      {/* Tab-Leiste unten: mobil immer, am Desktop nur im Tab-Modus.
+          pb-[env(…)] hält die Knöpfe aus der Gesten-Zone am unteren
+          Geräterand (viewport-fit=cover zeichnet bis in die Rundungen). */}
       <nav
-        className={`flex shrink-0 overflow-x-auto border-t bg-white dark:border-slate-700 dark:bg-slate-900 ${
+        className={`flex shrink-0 overflow-x-auto border-t bg-white pb-[env(safe-area-inset-bottom)] dark:border-slate-700 dark:bg-slate-900 ${
           viewMode === "windows" ? "md:hidden" : ""
         }`}
       >
@@ -246,6 +257,9 @@ export default function App() {
           />
         </Suspense>
       )}
+      {/* zentrale confirm/prompt-Dialoge (Dialog.jsx) — als LETZTES Kind,
+          damit sie über Settings/Editor (gleiches z-50) liegen */}
+      <DialogHost />
     </div>
   );
 }

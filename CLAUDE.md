@@ -51,6 +51,14 @@ backend/
     files.py               pfad-sichere Datei-Ops (Dateibaum, Editor, Up-/Download)
     remote_files.py        SFTP-Datei-Ops auf den Agenten-PCs (/api/remote/…)
     chat_store.py          SQLite-Persistenz der Chat-Sessions (/workspace/chat.db)
+    events.py              Mailbox-Wächter (F4/F10): watchfiles (mtime-Fallback) →
+                           SSE-Broadcaster für GET /api/events + Push-Auslöser
+                           (Schnappschuss-Diff: NEUE Mensch-Rückfragen und
+                           Orchestrator-Responses, Bestand nie)
+    push.py                Web-Push (F10): VAPID-Keys (vapid.json, auto-erzeugt) +
+                           Subscriptions (push_subscriptions.json) in DATA_CONFIG_DIR,
+                           Versand via pywebpush (lazy — fehlt es, wird still
+                           übersprungen); sw.js in frontend/public zeigt die Meldung
     ssh_connect.py         zentraler SSH-Connect mit Host-Key-Pinning (TOFU,
                            /workspace/config/known_hosts) — von bridge/SFTP/tunnel genutzt
     config.py              Settings (settings.json) + Verbindungen (agents.yaml)

@@ -101,15 +101,27 @@ async def run_turn(
     tools: list[dict],
     messages: list[dict],
     cfg: dict[str, Any] | None = None,
+    on_tool=None,
+    ist_abgebrochen=None,
 ) -> dict[str, Any]:
     """Eine Nutzer-Eingabe vollständig abarbeiten (inkl. aller Tool-Calls).
 
     Provider-neutral (Claude oder Ollama, je nach `cfg`/ORCH_PROVIDER). Tool-Calls
     laufen über die MCP-Session. `messages` wird in-place fortgeschrieben.
+
+    Fürs Chat-Streaming (F3): `on_tool(name)` (awaitable) wird vor jedem
+    Tool-Call gerufen — das SSE-Frontend zeigt so live, was gerade läuft.
+    `ist_abgebrochen()` wird davor geprüft; True wirft llm.TurnAbbruch und
+    hält den Turn VOR dem nächsten Tool an (ein laufender LLM-Call läuft
+    durch — bereits ausgeführte Tools sind echte Seiteneffekte und bleiben).
     """
     cfg = cfg or llm.provider_from_env()
 
     async def call_tool(name: str, inp: dict) -> str:
+        if ist_abgebrochen is not None and ist_abgebrochen():
+            raise llm.TurnAbbruch("vom Nutzer abgebrochen")
+        if on_tool is not None:
+            await on_tool(name)
         result = await session.call_tool(name, inp or {})
         text, ist_fehler = mcp_result_to_text(result)
         # Fehler markieren: sonst liest das Modell eine Fehlermeldung wie ein

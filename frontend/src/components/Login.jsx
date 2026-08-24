@@ -49,7 +49,9 @@ export default function Login({ onSuccess }) {
           id="username"
           name="username"
           autoComplete="username"
-          value={username}
+          // defaultValue statt value: GBoard-Wortvorschläge verdoppeln Text
+          // in kontrollierten Inputs (siehe Chat.jsx)
+          defaultValue={username}
           onChange={(e) => setUsername(e.target.value)}
           placeholder="Benutzer"
           className={inputCls}
@@ -60,7 +62,7 @@ export default function Login({ onSuccess }) {
           name="password"
           autoComplete="current-password"
           autoFocus
-          value={password}
+          defaultValue={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Passwort"
           className={inputCls}

@@ -12,6 +12,8 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   POST /api/agents/{name}/inbox/read-all  alles Erledigte ins Archiv (#21)
   POST /api/tasks/{agent}/{id}/close  hängengebliebenen Task manuell abschließen
   POST /api/chat                   Eine Chat-Runde (Orchestrator + Tool-Calls)
+  POST /api/chat/stream            dito als SSE-Strom: tool-Events live + Abbruch (F3)
+  POST /api/chat/stream/{id}/cancel  laufenden Stream-Turn anhalten
   GET  /api/chat/sessions          gespeicherte Sessions (SQLite, chat_store)
   GET  /api/chat/{id}              History einer Session (Anzeige-Format)
   DEL  /api/chat/{id}              Session löschen
@@ -29,6 +31,11 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/automatik              Automatikmodus: Not-Aus + Status je Agent
   POST /api/automatik/{name}       Automatik für einen Agenten an/aus
   POST /api/automatik/notaus       globaler Not-Aus (an = alle hart stoppen)
+  GET  /api/events                 Mailbox-Änderungen als SSE (F4, Polling bleibt Fallback)
+  GET  /api/push/key               Web-Push: VAPID-Key + Status (F10)
+  POST /api/push/subscribe         Gerät für Push registrieren (Browser-Subscription)
+  POST /api/push/unsubscribe       Gerät abmelden
+  POST /api/push/test              Testbenachrichtigung an alle Geräte
   GET  /api/ssh/sessions           laufende Terminal-Sessions (Badge/Auto-Reopen)
   DEL  /api/ssh/{name}/session     Terminal-Session explizit beenden (?sid=…)
   GET  /api/ssh/{name}/buffer      Klartext-Replay-Puffer einer Session (?sid=…)
@@ -52,7 +59,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSo
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app import auth, auto_watcher, chat_store, llm, remote_files
+from app import auth, auto_watcher, chat_store, events, llm, push, remote_files
 from app.config import (
     KEYS_DIR,
     add_ui_connection,
@@ -141,12 +148,19 @@ async def _pflege_start() -> None:
     _pflege_task = asyncio.create_task(_mailbox_pflege_schleife())
 
 
+@app.on_event("startup")
+async def _events_start() -> None:
+    """Mailbox-Wächter (F4/F10): SSE-Events an die Frontends + Push-Auslöser."""
+    events.start()
+
+
 @app.on_event("shutdown")
 async def _automatik_stop() -> None:
     # Container fährt herunter — hart schließen, die Reconcile-Logik startet
     # die Watcher nach dem Neustart aus settings.json neu.
     if _pflege_task is not None:
         _pflege_task.cancel()
+    events.stop()
     await auto_watcher.manager.stopp_alle_hart()
 
 # --- Auth ---------------------------------------------------------------
@@ -510,6 +524,107 @@ async def chat_delete(session_id: str) -> dict:
     return {"deleted": chat_store.delete_session(session_id)}
 
 
+# --- Chat-Streaming (F3) ----------------------------------------------------
+# Laufende Streams: stream_id -> Abbruch-Flag. Der Abbrechen-Knopf setzt es;
+# es greift VOR dem nächsten Tool-Call (ein laufender LLM-Call läuft durch).
+_stream_abbruch: dict[str, bool] = {}
+# create_task-Referenzen halten: asyncio hält laufende Tasks nur schwach —
+# ohne das Set könnte der GC einen laufenden Chat-Turn einsammeln.
+_chat_tasks: set[asyncio.Task] = set()
+
+_SSE_HEADERS = {
+    # nginx puffert /api/ (kein proxy_buffering off dort) — dieser Header
+    # schaltet das je Antwort ab, sonst käme der Strom erst am Ende an.
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(body: ChatIn) -> StreamingResponse:
+    """Wie /api/chat, aber als SSE-Strom: start → tool… → done/aborted/error.
+
+    Der Blackbox-POST zeigte bei bis zu 25 Tool-Runden minutenlang nur
+    „denkt…" — hier sieht das Frontend jeden Tool-Call live und kann
+    abbrechen. Verliert der Client die Verbindung (Handy gesperrt), läuft der
+    Turn serverseitig weiter und speichert — die Antwort steht dann wie beim
+    alten Endpunkt im gespeicherten Verlauf.
+    """
+    cfg = llm.apply_settings(llm.provider_from_env(), load_settings())
+    if llm.needs_api_key(cfg) and not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            503, "ANTHROPIC_API_KEY fehlt — oder ORCH_PROVIDER=ollama setzen."
+        )
+    session_id = body.session_id or uuid.uuid4().hex
+    stream_id = uuid.uuid4().hex
+    _stream_abbruch[stream_id] = False
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def lauf() -> None:
+        try:
+            async with _lock_for(session_id):
+                messages = chat_store.load(session_id)
+                messages.append({"role": "user", "content": body.message})
+                try:
+                    async with mcp_session() as (session, tools):
+                        result = await run_turn(
+                            session, tools, messages, cfg,
+                            on_tool=lambda name: queue.put({"type": "tool", "name": name}),
+                            ist_abgebrochen=lambda: _stream_abbruch.get(stream_id, False),
+                        )
+                except llm.TurnAbbruch:
+                    # Bis hierher ausgeführte Tools sind echte Seiteneffekte —
+                    # History reparieren und sichern statt wegwerfen.
+                    chat_store.save(session_id, llm.repariere_history(messages))
+                    await queue.put({"type": "aborted", "session_id": session_id})
+                    return
+                except Exception as exc:  # noqa: BLE001 — wie /api/chat: Stand sichern
+                    chat_store.save(session_id, llm.repariere_history(messages))
+                    await queue.put(
+                        {"type": "error", "detail": f"Orchestrator-Fehler: {exc}"}
+                    )
+                    return
+                chat_store.save(session_id, messages)
+                await queue.put(
+                    {
+                        "type": "done",
+                        "session_id": session_id,
+                        "reply": result["text"],
+                        "tool_calls": result["tool_calls"],
+                    }
+                )
+        finally:
+            _stream_abbruch.pop(stream_id, None)
+
+    task = asyncio.create_task(lauf())
+    _chat_tasks.add(task)
+    task.add_done_callback(_chat_tasks.discard)
+
+    async def gen():
+        start = {"type": "start", "stream_id": stream_id, "session_id": session_id}
+        yield f"data: {json.dumps(start)}\n\n"
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=20)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"  # hält nginx' 60-s-Read-Timeout fern
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item["type"] in ("done", "aborted", "error"):
+                return
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@app.post("/api/chat/stream/{stream_id}/cancel")
+async def chat_stream_cancel(stream_id: str) -> dict:
+    """Laufenden Stream-Turn anhalten — greift vor dem nächsten Tool-Call."""
+    bekannt = stream_id in _stream_abbruch
+    if bekannt:
+        _stream_abbruch[stream_id] = True
+    return {"ok": True, "known": bekannt}
+
+
 # --- Dateibaum -------------------------------------------------------------
 
 @app.get("/api/files")
@@ -799,6 +914,83 @@ async def get_settings() -> dict:
 async def put_settings(body: SettingsIn) -> dict:
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     return save_settings(patch)
+
+
+# --- Live-Events (F4) -------------------------------------------------------
+
+@app.get("/api/events")
+async def events_stream() -> StreamingResponse:
+    """Mailbox-Änderungen als SSE — das Frontend lädt dann sofort nach.
+
+    Das 5–8-s-Polling im Frontend bleibt als Fallback: reißt dieser Strom ab
+    (Standby, Proxy), stimmt die Anzeige spätestens einen Poll später wieder.
+    """
+    async def gen():
+        q = events.broadcaster.subscribe()
+        try:
+            yield "retry: 3000\n\n"  # Reconnect-Abstand für den Browser
+            yield f"data: {json.dumps({'type': 'hallo'})}\n\n"
+            while True:
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=25)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # hält nginx' 60-s-Read-Timeout fern
+                    continue
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+        finally:
+            events.broadcaster.unsubscribe(q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+# --- Web-Push (F10) ---------------------------------------------------------
+
+class PushSubIn(BaseModel):
+    # Exakt das JSON von PushSubscription.toJSON() im Browser.
+    endpoint: str
+    keys: dict[str, str] = {}
+    expirationTime: float | None = None
+
+
+class PushUnsubIn(BaseModel):
+    endpoint: str
+
+
+@app.get("/api/push/key")
+async def push_key() -> dict:
+    """VAPID-Public-Key (beim ersten Aufruf erzeugt) + Versand-Status."""
+    key = await asyncio.to_thread(push.public_key)
+    return {
+        "enabled": key is not None,
+        "key": key,
+        "subscriptions": push.anzahl_subscriptions(),
+        # False = pywebpush (noch) nicht im Image: Subscriptions sammeln geht,
+        # gesendet wird erst nach dem nächsten Rebuild.
+        "sender": push.versand_verfuegbar(),
+    }
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(body: PushSubIn) -> dict:
+    try:
+        n = push.add_subscription(body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "subscriptions": n}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(body: PushUnsubIn) -> dict:
+    return {"removed": push.remove_subscription(body.endpoint)}
+
+
+@app.post("/api/push/test")
+async def push_test() -> dict:
+    """Testbenachrichtigung an alle Geräte (Knopf in den Settings)."""
+    n = await push.sende_an_alle(
+        "agent-dashboard", "Push-Benachrichtigungen funktionieren.", tag="push-test"
+    )
+    return {"gesendet": n, "subscriptions": push.anzahl_subscriptions()}
 
 
 # --- Automatikmodus (Issue #12) --------------------------------------------

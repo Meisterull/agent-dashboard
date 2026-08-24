@@ -93,3 +93,26 @@
   border: 1px solid #94a3b8;
   padding: 0.2rem 0.5rem;
 }
+
+/* Touch-Bedienung: winzige Icon-Knöpfe (✎ 🗑 × ⏻ …) sind mit dem Finger kaum
+   zu treffen — auf Touch-Geräten bekommen alle Buttons eine Mindestfläche.
+   Bewusst nur unter (pointer: coarse): am Desktop bleiben die dichten
+   Toolbars unverändert. touch-action gilt überall und nimmt Mobil-Browsern
+   die 300-ms-Doppeltipp-Wartezeit auf Knöpfen. */
+button {
+  touch-action: manipulation;
+}
+@media (pointer: coarse) {
+  button {
+    min-height: 1.75rem;
+    min-width: 1.75rem;
+  }
+}
+
+/* Der Body scrollt nie (App ist h-dvh) — auf Android löst dann schon ein
+   kleiner Wisch nach unten Pull-to-Refresh aus und wirft z. B. mitten in
+   einer Terminal-Sitzung die ganze Seite neu. */
+html,
+body {
+  overscroll-behavior-y: none;
+}

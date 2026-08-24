@@ -23,6 +23,10 @@ watchfiles==0.24.*    # inotify statt Polling
 sqlalchemy==2.*
 aiosqlite==0.20.*
 
+# Web-Push (F10) — Rückfragen/fertige Tasks aufs Handy (VAPID-Keys via
+# cryptography, das asyncssh ohnehin mitbringt)
+pywebpush==2.*
+
 # Auth / Config
 bcrypt==4.*
 pyyaml==6.*

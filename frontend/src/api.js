@@ -218,3 +218,62 @@ export async function postChat(message, sessionId) {
   }
   return res.json();
 }
+
+// --- Live-Events / Web-Push / Chat-Streaming (F3/F4/F10) --------------------
+
+export const getPushKey = () => jget("/api/push/key");
+export const subscribePush = (sub) => jsend("/api/push/subscribe", "POST", sub);
+export const unsubscribePush = (endpoint) =>
+  jsend("/api/push/unsubscribe", "POST", { endpoint });
+export const pushTest = () => jsend("/api/push/test", "POST", {});
+export const cancelChatStream = (streamId) =>
+  jsend(`/api/chat/stream/${encodeURIComponent(streamId)}/cancel`, "POST", {});
+
+// Chat als SSE-Strom (F3). EventSource kann kein POST — deshalb fetch +
+// eigener Parser (Events sind durch Leerzeilen getrennt, ": ping" sind
+// Heartbeats). onStart liefert die stream_id (für den Abbrechen-Knopf),
+// onTool jeden Tool-Call live.
+export async function streamChat(message, sessionId, { onStart, onTool } = {}) {
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message, session_id: sessionId }),
+  });
+  if (!res.ok || !res.body) {
+    notifyUnauthorized(res);
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = block.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) continue; // Heartbeat/retry
+      let d;
+      try {
+        d = JSON.parse(line.slice(6));
+      } catch {
+        continue;
+      }
+      if (d.type === "start") onStart?.(d);
+      else if (d.type === "tool") onTool?.(d);
+      else if (d.type === "done")
+        return { sessionId: d.session_id, reply: d.reply, toolCalls: d.tool_calls };
+      else if (d.type === "aborted") return { sessionId: d.session_id, aborted: true };
+      else if (d.type === "error") throw new Error(d.detail || "Orchestrator-Fehler");
+    }
+  }
+  // Verbindung weg, bevor done/aborted/error kam: der Turn läuft serverseitig
+  // weiter und speichert — die Antwort steht danach im Verlauf.
+  throw new Error(
+    "Stream abgerissen — der Orchestrator arbeitet weiter; die Antwort erscheint danach im Verlauf (Session neu öffnen).",
+  );
+}

@@ -79,6 +79,14 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   const [mouseCaptured, setMouseCaptured] = useState(false);
   const [copyView, setCopyView] = useState(null); // {text} | null = Kopier-Modus
   const [copied, setCopied] = useState(false);
+  // Textzeile (primär fürs Handy): Androids Wortvorschläge laufen als
+  // IME-Komposition, und direkt im xterm wird angenommener Text dabei
+  // immer wieder doppelt eingefügt (auch mit xterm 5.5). In einem echten
+  // <input> funktionieren die Vorschläge fehlerfrei — also dort schreiben
+  // und den fertigen Text am Stück ins Terminal geben. Uncontrolled (ref),
+  // wie alle Eingaben hier (GBoard-Regel, siehe Chat.jsx).
+  const [textZeile, setTextZeile] = useState(false);
+  const zeileRef = useRef(null);
   // Sitzung wurde in einem anderen Fenster übernommen (Close-Code 4000):
   // KEIN automatischer Reconnect — sonst klauen sich zwei Tabs die Session
   // im Wechsel (der visibilitychange-Handler hat das früher getan). Zurück
@@ -105,6 +113,16 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   const handleKey = (key, fixed = {}) => {
     sendRaw(encodeKey(key, { ...modsRef.current, ...fixed }));
     clearMods();
+  };
+
+  const zeileSenden = (mitEnter) => {
+    const el = zeileRef.current;
+    if (el?.value) sendRaw(el.value);
+    if (mitEnter) sendRaw("\r"); // leer + ⏎ = nur Enter (Prompts bestätigen)
+    if (el) {
+      el.value = "";
+      el.focus(); // Tastatur offen halten für die nächste Zeile
+    }
   };
 
   useEffect(() => {
@@ -451,10 +469,49 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           </div>
         )}
       </div>
+      {textZeile && (
+        <div className="flex shrink-0 items-center gap-1 border-t border-slate-700 bg-slate-900 px-1 py-1">
+          <input
+            ref={zeileRef}
+            autoFocus
+            placeholder="Text hier tippen — Wortvorschläge funktionieren"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                zeileSenden(true);
+              }
+            }}
+            className="min-w-0 flex-1 rounded bg-slate-800 px-2 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+          />
+          {/* pointerdown abfangen: die Knöpfe dürfen dem Input nicht den
+              Fokus klauen, sonst klappt die Bildschirmtastatur zu */}
+          <button
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => zeileSenden(false)}
+            title="Text nur einfügen (ohne Enter)"
+            className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs text-slate-200"
+          >
+            →
+          </button>
+          <button
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => zeileSenden(true)}
+            title="Text senden (mit Enter)"
+            className="shrink-0 rounded bg-sky-600 px-2.5 py-1.5 text-xs font-semibold text-white"
+          >
+            ⏎
+          </button>
+        </div>
+      )}
       <KeyBar
         mods={mods}
         onToggleMod={toggleMod}
         onKey={handleKey}
+        textActive={textZeile}
+        onTextMode={() => {
+          setTextZeile((v) => !v);
+          if (textZeile) termRef.current?.focus(); // beim Schließen zurück ins Terminal
+        }}
         // ⎘ ist ein Umschalter (Issue #10): im Kopier-Modus schließt er ihn —
         // gerade auf dem Handy ist er derselbe Knopf an derselben Stelle,
         // statt des weit entfernten "Schließen" am oberen Overlay-Rand.

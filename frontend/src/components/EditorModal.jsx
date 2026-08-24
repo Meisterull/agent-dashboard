@@ -7,6 +7,7 @@ import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { getFileContent, getRemoteFile, saveFile, downloadUrl } from "../api";
+import { bestaetigen } from "./Dialog";
 
 // Vollbild-Editor (CodeMirror 6) für Workspace- und Remote-Dateien.
 // Sprache wird am Dateinamen erkannt und lazy nachgeladen (language-data).
@@ -45,12 +46,15 @@ export default function EditorModal({ source, path, onClose }) {
 
   // Ungespeichertes nicht kommentarlos wegwerfen (der ●-Punkt allein wird
   // beim Zuklappen leicht übersehen).
-  function requestClose() {
+  async function requestClose() {
     if (
       dirty &&
-      !window.confirm(
-        `„${filename}“ hat ungespeicherte Änderungen. Trotzdem schließen?`,
-      )
+      !(await bestaetigen({
+        title: "Ungespeicherte Änderungen",
+        text: `„${filename}“ hat ungespeicherte Änderungen. Trotzdem schließen?`,
+        ok: "Schließen",
+        danger: true,
+      }))
     )
       return;
     onClose();

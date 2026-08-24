@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  postChat,
+  streamChat,
+  cancelChatStream,
   getChatSessions,
   getChatHistory,
   deleteChatSession,
 } from "../api";
+import { bestaetigen } from "./Dialog";
 
 // Orchestrator-Antworten rendern Markdown (Sessions liegen serverseitig in
 // SQLite); die zuletzt aktive Session wird nach Reload/App-Neustart über
@@ -56,6 +58,8 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   const inputRef = useRef(null);
   const [canSend, setCanSend] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Streaming-Fortschritt (F3): stream_id fürs Abbrechen + bisherige Tool-Calls
+  const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
   const scrollRef = useRef(null);
   // Zähler des angezeigten Verlaufs: jeder Session-Wechsel (auch "Neu")
@@ -108,9 +112,12 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     if (!sessionId) return;
     const s = sessions.find((x) => x.id === sessionId);
     if (
-      !window.confirm(
-        `Verlauf „${s?.title || sessionId.slice(0, 8)}“ endgültig löschen?`,
-      )
+      !(await bestaetigen({
+        title: "Verlauf löschen",
+        text: `Verlauf „${s?.title || sessionId.slice(0, 8)}“ endgültig löschen?`,
+        ok: "Löschen",
+        danger: true,
+      }))
     )
       return;
     try {
@@ -132,17 +139,34 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     setLoading(true);
     const view = viewRef.current;
     try {
-      const data = await postChat(text, sessionId);
+      // Streaming (F3): Tool-Calls kommen live als Events — sichtbar, was der
+      // Orchestrator gerade tut, plus Abbrechen-Knopf statt Blackbox-POST.
+      const data = await streamChat(text, sessionId, {
+        onStart: (d) => {
+          if (viewRef.current === view)
+            setProgress({ streamId: d.stream_id, tools: [] });
+        },
+        onTool: (d) => {
+          if (viewRef.current === view)
+            setProgress((p) => (p ? { ...p, tools: [...p.tools, d.name] } : p));
+        },
+      });
       refreshSessions();
       onActivity?.(); // Mailboxes / Dateibaum können sich geändert haben
       // Der Verlauf ist serverseitig gespeichert — beim Zurückwechseln ist die
       // Antwort da; nur hineinmischen dürfen wir sie nicht.
       if (viewRef.current !== view) return;
-      setSessionId(data.session_id);
-      localStorage.setItem("chat-session", data.session_id);
+      setSessionId(data.sessionId);
+      localStorage.setItem("chat-session", data.sessionId);
+      if (data.aborted) {
+        // Abgebrochen: die reparierte Wahrheit (inkl. bereits ausgeführter
+        // Tools) liegt serverseitig — neu laden statt raten.
+        openSession(data.sessionId);
+        return;
+      }
       setMessages((m) => [
         ...m,
-        { role: "assistant", text: data.reply, toolCalls: data.tool_calls },
+        { role: "assistant", text: data.reply, toolCalls: data.toolCalls },
       ]);
       onDone?.(); // Antwort fertig → Chat-Reiter blinkt, bis reingeklickt wird
     } catch (e) {
@@ -160,6 +184,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
       }
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   }
 
@@ -215,7 +240,27 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
           <Message key={i} msg={m} />
         ))}
         {loading && (
-          <div className="text-sm italic text-slate-400">Orchestrator denkt…</div>
+          <div className="flex flex-wrap items-center gap-2 text-sm text-slate-400">
+            <span className="italic">Orchestrator denkt…</span>
+            {progress?.tools?.length > 0 &&
+              progress.tools.map((n, i) => (
+                <span
+                  key={i}
+                  className="rounded bg-slate-200 px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                >
+                  {n}
+                </span>
+              ))}
+            {progress && (
+              <button
+                onClick={() => cancelChatStream(progress.streamId).catch(() => {})}
+                title="Nach dem laufenden Schritt anhalten — bereits ausgeführte Tool-Aufrufe bleiben wirksam"
+                className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-600 dark:hover:bg-red-950 dark:hover:text-red-400"
+              >
+                Abbrechen
+              </button>
+            )}
+          </div>
         )}
         {error && (
           <div className="rounded bg-red-100 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">

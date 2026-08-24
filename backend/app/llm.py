@@ -46,6 +46,15 @@ MAX_TOOL_RESULT_CHARS = int(os.environ.get("ORCH_MAX_TOOL_RESULT", "30000"))
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "180"))
 
 
+class TurnAbbruch(Exception):
+    """Nutzer-Abbruch eines laufenden Turns (Abbrechen-Knopf im Chat, F3).
+
+    Wird vom call_tool-Wrapper geworfen, BEVOR das nächste Tool läuft. Der
+    Loop unten reicht sie bewusst durch statt sie wie einen Tool-Fehler zu
+    schlucken — der Aufrufer fängt sie, repariert die History
+    (repariere_history) und speichert den Stand."""
+
+
 def kappe_tool_ergebnis(text: str, grenze: int = MAX_TOOL_RESULT_CHARS) -> str:
     """Zu lange Tool-Ausgaben kürzen — sichtbar, nicht heimlich."""
     if len(text) <= grenze:
@@ -349,6 +358,8 @@ async def run_turn(
             else:
                 try:
                     output = await call_tool(tc["name"], tc["input"] or {})
+                except TurnAbbruch:
+                    raise  # Nutzer-Abbruch ist KEIN Tool-Fehler (siehe Klasse)
                 except Exception as exc:  # noqa: BLE001
                     # Ein gescheiterter Tool-Call beendet nicht den ganzen Turn:
                     # das Modell bekommt den Fehler als Ergebnis und kann darauf

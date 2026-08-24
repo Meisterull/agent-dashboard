@@ -36,7 +36,7 @@ const FIXED = {
   ctrlc: { key: "c", mods: { ctrl: true } },
 };
 
-export default function KeyBar({ mods, onToggleMod, onKey, onCopyMode, copyActive = false }) {
+export default function KeyBar({ mods, onToggleMod, onKey, onCopyMode, copyActive = false, onTextMode, textActive = false }) {
   const noFocusSteal = (e) => e.preventDefault();
 
   return (
@@ -54,6 +54,24 @@ export default function KeyBar({ mods, onToggleMod, onKey, onCopyMode, copyActiv
             }`}
           >
             ⎘
+          </button>
+          <span className="mx-1 h-5 w-px shrink-0 bg-slate-700" />
+        </>
+      )}
+      {/* Aa: Textzeile überm Terminal (Terminal.jsx) — Androids Wort-
+          vorschläge verdoppeln direkt im xterm getippten Text (IME-
+          Komposition), in einem echten Input funktionieren sie sauber. */}
+      {onTextMode && (
+        <>
+          <button
+            onPointerDown={noFocusSteal}
+            onClick={onTextMode}
+            title="Textzeile ein/aus: mit der Handy-Tastatur samt Wortvorschlägen schreiben und am Stück senden — Vorschläge direkt ins Terminal verdoppeln den Text"
+            className={`shrink-0 rounded px-2.5 py-1.5 text-xs font-semibold ${
+              textActive ? "bg-sky-500 text-white" : "bg-slate-700 text-sky-300"
+            }`}
+          >
+            Aa
           </button>
           <span className="mx-1 h-5 w-px shrink-0 bg-slate-700" />
         </>

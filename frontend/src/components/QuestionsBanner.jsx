@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getQuestions, answerQuestion, closeQuestion } from "../api";
+import { nachfragen } from "./Dialog";
 
 // Offene Rückfragen (needs_confirm) über alle Agenten. Hier beantwortet der
 // Mensch eine Worker-Rückfrage, ohne ins jeweilige Fenster zu wechseln.
@@ -53,9 +54,16 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
       if (!document.hidden) load();
     };
     document.addEventListener("visibilitychange", onVisible);
+    // Live-Events (F4): neue/beantwortete Rückfragen sofort zeigen statt bis
+    // zum nächsten 5-s-Poll zu warten; das Polling bleibt Fallback.
+    const onLive = () => {
+      if (!document.hidden) load();
+    };
+    window.addEventListener("live:mailbox", onLive);
     return () => {
       clearInterval(t);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("live:mailbox", onLive);
     };
   }, [refreshKey]);
 
@@ -75,12 +83,17 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
 
   async function schliessen(q) {
     // Sicherheitsabfrage: das Schließen lässt den wartenden Task scheitern.
-    const grund = window.prompt(
-      `Rückfrage von ${q.sender} ohne Antwort schließen?\n\n` +
-        `Ein Task, der nur auf sie wartet, scheitert dabei mit Klartext und ` +
-        `liegt danach wiederanlauffähig in .failed/.\n\nGrund (optional):`,
-      "",
-    );
+    const grund = await nachfragen({
+      title: "Rückfrage ohne Antwort schließen",
+      text:
+        `Rückfrage von ${q.sender} ohne Antwort schließen?\n` +
+        `Ein Task, der nur auf sie wartet, scheitert dabei mit Klartext ` +
+        `und liegt danach wiederanlauffähig in .failed/.`,
+      label: "Grund (optional)",
+      ok: "Schließen",
+      danger: true,
+      allowEmpty: true,
+    });
     if (grund === null) return; // Abbruch
     try {
       await closeQuestion(q.agent, q.id, grund);
