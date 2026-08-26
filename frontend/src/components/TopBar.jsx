@@ -29,13 +29,22 @@ export default function TopBar({
           {viewMode === "windows" ? "Tab-Modus" : "Fenster-Modus"}
         </button>
         {viewMode === "windows" && (
-          <button
-            onClick={() => window.dispatchEvent(new Event("workspace:reset"))}
-            title="Fensteranordnung auf Standard zurücksetzen"
-            className="hidden rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 md:block dark:border-slate-600 dark:hover:bg-slate-800"
-          >
-            Fenster anordnen
-          </button>
+          <>
+            <button
+              onClick={() => window.dispatchEvent(new Event("workspace:reset"))}
+              title="Fensteranordnung auf Standard zurücksetzen"
+              className="hidden rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 md:block dark:border-slate-600 dark:hover:bg-slate-800"
+            >
+              Fenster anordnen
+            </button>
+            <button
+              onClick={() => window.dispatchEvent(new Event("workspace:views"))}
+              title="Eigene Fensteranordnungen speichern und laden"
+              className="hidden rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 md:block dark:border-slate-600 dark:hover:bg-slate-800"
+            >
+              Ansichten
+            </button>
+          </>
         )}
         <button
           onClick={onToggleTheme}

@@ -1,11 +1,22 @@
 import { useEffect, useRef, useState } from "react";
+import WorkspaceViews from "./WorkspaceViews";
+import {
+  clamp,
+  defaultRect,
+  gueltigesRect,
+  normRect,
+  standardLayout,
+} from "../workspaceLayout";
 
 // Fenster-Manager für den Desktop (md+): jedes Panel ist ein frei
 // verschiebbares und größenveränderbares Fenster — Titelleiste ziehen zum
 // Verschieben, rechte/untere Kante bzw. Ecke zum Vergrößern. Positionen
 // liegen in Prozent der Arbeitsfläche (skalieren also mit dem Browser-
 // fenster) und werden in localStorage gemerkt; "workspace:reset" (Knopf in
-// der TopBar) stellt die Standard-Anordnung wieder her.
+// der TopBar) stellt die Standard-Anordnung wieder her — die rechnet
+// `workspaceLayout.standardLayout` über ALLE vorhandenen Panels aus und ist
+// darum immer überschneidungsfrei, auch mit externen Fenstern (Issue #24).
+// "workspace:views" öffnet den Dialog für eigene, benannte Anordnungen.
 //
 // Mobil (< md) bleibt die Tab-Ansicht: genau ein Panel vollflächig. Die
 // gleiche Darstellung gibt es am Desktop als wählbaren Tab-Modus
@@ -15,47 +26,41 @@ import { useEffect, useRef, useState } from "react";
 // Chat-Zustand und SSH-Sessions Wechsel überleben.
 
 const LS_KEY = "workspace-layout-v1";
-
-const DEFAULT_LAYOUT = {
-  dateien: { x: 0.4, y: 0.8, w: 18, h: 98.4 },
-  chat: { x: 19, y: 0.8, w: 52.4, h: 62 },
-  terminal: { x: 19, y: 63.6, w: 52.4, h: 35.6 },
-  agenten: { x: 72, y: 0.8, w: 27.6, h: 98.4 },
-};
+const VIEWS_KEY = "workspace-views-v1";
 
 const MIN_W_PX = 240;
 const MIN_H_PX = 150;
 
-const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-
-// Standard-Rechteck eines Panels: feste Plätze für die vier Kern-Panels,
-// dynamische (z. B. externe noVNC-Fenster) kaskadieren über der Mitte.
-function defaultRect(id, index = 0) {
-  if (DEFAULT_LAYOUT[id]) return { ...DEFAULT_LAYOUT[id] };
-  return {
-    x: clamp(14 + 4 * index, 0, 30),
-    y: clamp(4 + 5 * index, 0, 30),
-    w: 60,
-    h: 70,
-  };
-}
-
+// Nur Gespeichertes; Lücken füllt der Materialisierungs-Effekt aus der
+// Standardanordnung, sobald die Panel-Liste feststeht.
 function loadLayout() {
   try {
-    const saved = JSON.parse(localStorage.getItem(LS_KEY));
+    const saved = JSON.parse(localStorage.getItem(LS_KEY)) || {};
     const out = {};
-    // Defaults + alles Gespeicherte (auch Fenster, die es nur dynamisch gibt)
-    for (const id of new Set([...Object.keys(DEFAULT_LAYOUT), ...Object.keys(saved || {})])) {
-      const r = saved?.[id];
-      if (r && [r.x, r.y, r.w, r.h].every((n) => Number.isFinite(n))) {
-        out[id] = { x: clamp(r.x, 0, 98), y: clamp(r.y, 0, 98), w: clamp(r.w, 2, 100), h: clamp(r.h, 2, 100) };
-      } else if (DEFAULT_LAYOUT[id]) {
-        out[id] = { ...DEFAULT_LAYOUT[id] };
-      }
-    }
+    for (const [id, r] of Object.entries(saved)) if (gueltigesRect(r)) out[id] = normRect(r);
     return out;
   } catch {
-    return structuredClone(DEFAULT_LAYOUT);
+    return {};
+  }
+}
+
+// Benannte Ansichten: {name: {layout, order, gespeichert}}. Bewusst im
+// localStorage wie die laufende Anordnung auch — eine Ansicht gehört zum
+// Bildschirm, vor dem man sitzt.
+export function loadViews() {
+  try {
+    const v = JSON.parse(localStorage.getItem(VIEWS_KEY));
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveViews(views) {
+  try {
+    localStorage.setItem(VIEWS_KEY, JSON.stringify(views));
+  } catch {
+    /* voller/gesperrter Storage — Ansichten gelten dann nur für die Sitzung */
   }
 }
 
@@ -75,12 +80,19 @@ export default function Workspace({
   const [order, setOrder] = useState(() => panels.map((p) => p.id));
   const panelsRef = useRef(panels);
   panelsRef.current = panels;
+  const onFocusRef = useRef(onFocusPanel);
+  onFocusRef.current = onFocusPanel;
 
   // Ids, die in DIESER Sitzung schon einmal als Panel da waren. Nur solche
   // dürfen beim Verschwinden aus dem Layout fliegen — beim Start sind die
   // externen Fenster noch nicht geladen (kommen asynchron aus den Settings),
   // ihre gespeicherten Positionen sollen das überleben.
   const gesehenRef = useRef(new Set());
+
+  // Gespeicherte Ansichten (Dialog über den Knopf "Ansichten" in der TopBar)
+  const [viewsOffen, setViewsOffen] = useState(false);
+  const [views, setViews] = useState(loadViews);
+  const [aktiveView, setAktiveView] = useState(null);
 
   // Panels können sich zur Laufzeit ändern (externe Fenster aus den
   // Settings): neuen Fenstern ein Rechteck geben, gelöschte aus Layout und
@@ -90,13 +102,18 @@ export default function Workspace({
     setLayout((l) => {
       const out = { ...l };
       let changed = false;
-      const aktuell = new Set(panelsRef.current.map((p) => p.id));
-      panelsRef.current.forEach((p, i) => {
-        if (!out[p.id]) {
-          out[p.id] = defaultRect(p.id, i);
+      const alleIds = panelsRef.current.map((p) => p.id);
+      const aktuell = new Set(alleIds);
+      // Neue Fenster bekommen ihren Platz aus der Standardanordnung ALLER
+      // Panels — die vorhandenen bleiben aber, wo der Nutzer sie hingezogen
+      // hat. Wer eine saubere Aufteilung will, drückt "Fenster anordnen".
+      const std = standardLayout(alleIds);
+      for (const id of alleIds) {
+        if (!out[id]) {
+          out[id] = std[id];
           changed = true;
         }
-      });
+      }
       // Karteileichen: Fenster, die es gab und die der Nutzer in den
       // Einstellungen gelöscht hat — sonst wächst der localStorage-Eintrag
       // mit jedem je angelegten externen Fenster.
@@ -136,23 +153,106 @@ export default function Workspace({
   // Tab-Modus) genau ein Panel vollflächig über `tab`.
   const windowed = isDesktop && viewMode === "windows";
 
+  const nachLayoutwechsel = () =>
+    // xterm neu fitten, sobald die neuen Maße stehen
+    setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+
   useEffect(() => {
     const onReset = () => {
-      const fresh = {};
-      panelsRef.current.forEach((p, i) => {
-        fresh[p.id] = defaultRect(p.id, i);
-      });
-      setLayout(fresh);
+      setLayout(standardLayout(panelsRef.current.map((p) => p.id)));
       localStorage.removeItem(LS_KEY);
-      // xterm neu fitten, sobald die neuen Maße stehen
-      setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+      nachLayoutwechsel();
     };
+    const onViews = () => setViewsOffen(true);
     window.addEventListener("workspace:reset", onReset);
-    return () => window.removeEventListener("workspace:reset", onReset);
+    window.addEventListener("workspace:views", onViews);
+    return () => {
+      window.removeEventListener("workspace:reset", onReset);
+      window.removeEventListener("workspace:views", onViews);
+    };
   }, []);
 
   const raise = (id) =>
     setOrder((o) => (o[o.length - 1] === id ? o : [...o.filter((x) => x !== id), id]));
+
+  // Klick IN ein externes Fenster nach vorn holen (Issue #24, zweiter Befund).
+  // `raise` hängt an onPointerDownCapture der <section> — ein iframe stellt im
+  // Elterndokument aber keine Pointer-Events zu, also reagierte nur die
+  // Titelleiste. Bei noVNC ist der Bildbereich praktisch die ganze Fläche.
+  // Der übliche Ausweg: Fokus wandert in den iframe → das Fenster verliert
+  // ihn, und document.activeElement zeigt danach auf genau diesen iframe.
+  useEffect(() => {
+    if (!windowed) return undefined;
+    const onBlur = () => {
+      // activeElement steht erst nach dem Blur — deshalb ein Tick später.
+      setTimeout(() => {
+        const el = document.activeElement;
+        if (el?.tagName !== "IFRAME") return;
+        const id = el.closest("section[data-panel-id]")?.dataset.panelId;
+        if (!id) return;
+        onFocusRef.current?.(id);
+        raise(id);
+      }, 0);
+    };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+    // `raise` arbeitet nur über setOrder und ist damit stabil; der Callback
+    // hängt an einem Ref, damit der Listener nicht bei jedem Render neu bindet.
+  }, [windowed]);
+
+  // --- Ansichten ---------------------------------------------------------
+  // Gespeichert wird die ganze Anordnung inklusive z-Reihenfolge. Beim Laden
+  // zählt nur, was es JETZT an Panels gibt: fehlende Fenster werden
+  // übergangen, seither hinzugekommene bekommen ihren Standardplatz — sonst
+  // wäre jede Ansicht wertlos, sobald man ein externes Fenster anlegt.
+  const ansichtSpeichern = (name) => {
+    const sauber = name.trim().slice(0, 40);
+    if (!sauber) return;
+    const naechste = {
+      ...views,
+      [sauber]: {
+        layout: structuredClone(layoutRef.current),
+        order: [...order],
+        gespeichert: new Date().toISOString(),
+      },
+    };
+    setViews(naechste);
+    saveViews(naechste);
+    setAktiveView(sauber);
+  };
+
+  const ansichtLaden = (name) => {
+    const view = views[name];
+    if (!view) return;
+    const alleIds = panelsRef.current.map((p) => p.id);
+    const std = standardLayout(alleIds);
+    const neu = {};
+    for (const id of alleIds) {
+      const r = view.layout?.[id];
+      neu[id] = gueltigesRect(r) ? normRect(r) : std[id];
+    }
+    setLayout(neu);
+    setOrder(() => {
+      const bekannt = (view.order || []).filter((id) => alleIds.includes(id));
+      return [...bekannt, ...alleIds.filter((id) => !bekannt.includes(id))];
+    });
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(neu));
+    } catch {
+      /* voller/gesperrter Storage — Layout gilt trotzdem für die Sitzung */
+    }
+    setAktiveView(name);
+    setViewsOffen(false);
+    nachLayoutwechsel();
+  };
+
+  const ansichtLoeschen = (name) => {
+    const naechste = { ...views };
+    delete naechste[name];
+    setViews(naechste);
+    saveViews(naechste);
+    setAktiveView((a) => (a === name ? null : a));
+  };
 
   // Doppelklick auf die Titelleiste: maximieren bzw. auf die vorige
   // Größe zurück — zum schnellen Umschalten zwischen den Fenstern.
@@ -165,7 +265,7 @@ export default function Workspace({
       if (isMax) {
         next =
           prevRects.current[id] ||
-          defaultRect(id, panelsRef.current.findIndex((p) => p.id === id));
+          defaultRect(id, panelsRef.current.map((p) => p.id));
       } else {
         prevRects.current[id] = r;
         next = { x: 0, y: 0, w: 100, h: 100 };
@@ -252,15 +352,27 @@ export default function Workspace({
     window.addEventListener("pointercancel", onUp);
   }
 
+  // Fallback für den ersten Render nach einer Panel-Änderung — der
+  // Materialisierungs-Effekt läuft erst danach.
+  const standard = standardLayout(panels.map((p) => p.id));
+
   return (
     <div
       ref={containerRef}
       className="relative min-h-0 flex-1 overflow-hidden bg-slate-200/60 dark:bg-slate-950"
     >
-      {panels.map(({ id, title, body, bodyClass = "bg-white dark:bg-slate-900" }, index) => {
-        // Fallback für den ersten Render nach einer Panel-Änderung — der
-        // Materialisierungs-Effekt läuft erst danach.
-        const r = layout[id] || defaultRect(id, index);
+      {viewsOffen && (
+        <WorkspaceViews
+          views={views}
+          aktiv={aktiveView}
+          onSpeichern={ansichtSpeichern}
+          onLaden={ansichtLaden}
+          onLoeschen={ansichtLoeschen}
+          onClose={() => setViewsOffen(false)}
+        />
+      )}
+      {panels.map(({ id, title, body, bodyClass = "bg-white dark:bg-slate-900" }) => {
+        const r = layout[id] || standard[id];
         const style = windowed
           ? {
               left: `${r.x}%`,
@@ -280,6 +392,7 @@ export default function Workspace({
         return (
           <section
             key={id}
+            data-panel-id={id}
             style={style}
             className={cls}
             onPointerDownCapture={() => {

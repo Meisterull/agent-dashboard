@@ -105,6 +105,9 @@ Dockerfile · docker-compose.yml · entrypoint.sh · supervisord.conf · nginx/
 # Frontend
 cd frontend && npm install && npm run dev      # http://localhost:5173 (proxyt /api,/ws)
 cd frontend && npm run build                   # erzeugt dist/ (nginx liefert es aus)
+cd frontend && node tests/test_layout.mjs      # Fensteranordnung, rein rechnerisch (kein Browser)
+# Fensteranordnung im echten Browser (Prüfstand ohne Backend/Login) — Aufruf
+# in tests/test_workspace_browser.cjs im Kopf
 
 # Backend (braucht: pip install -r backend/requirements.txt + ANTHROPIC_API_KEY)
 cd backend && python -m mcp_server             # Tools, :9000
@@ -333,6 +336,17 @@ der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Bl�
   und cp1252 tolerant — nur echte Binärdaten (NUL-Bytes) werden abgelehnt. Das
   `encoding` aus dem Lese-Ergebnis geht beim Speichern mit zurück, die Datei bleibt
   also in ihrer Kodierung (Windows-Agenten-PCs!). Gilt für Workspace UND SFTP.
+- **Fensteranordnung** (`frontend/src/workspaceLayout.js`): `standardLayout(ids)` rechnet
+  die Standardanordnung über ALLE vorhandenen Panels — nie wieder feste Plätze für
+  eine bekannte Handvoll Ids, sonst hat das nächste dynamische Fenster keinen Platz
+  und „Fenster anordnen" liefert eine Überlappung (Issue #24). Dass das Ergebnis
+  überschneidungsfrei ist, prüft `frontend/tests/test_layout.mjs` für 0–8 externe
+  Fenster. Eigene Anordnungen speichert der Dialog „Ansichten"
+  (`WorkspaceViews.jsx`, localStorage `workspace-views-v1`).
+  **Ein iframe stellt im Elterndokument keine Pointer-Events zu** — `raise()` am
+  `onPointerDownCapture` der `<section>` greift bei externen Fenstern deshalb nur
+  auf der Titelleiste; das Nach-vorn-Holen beim Klick INS Fenster hängt an
+  `window.blur` + `document.activeElement` (Workspace.jsx).
 - **Externe Fenster** (`settings.external_windows`, Settings-Dialog): `IP:Port[/pfad]`
   wird im Frontend zu `/ext/<ip>/<port>/…` — nginx proxyt das per `auth_request`
   (Session-Cookie) NUR auf private IPv4-Ziele, WebSocket-fähig (noVNC/websockify,
