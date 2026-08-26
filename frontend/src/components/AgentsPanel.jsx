@@ -47,7 +47,12 @@ const AUTO_DOT = {
 // alte fertige Tasks sollen beim Laden der Seite nicht blinken.
 const ALERT_STATUS = ["done", "error", "needs_confirm"];
 
-export default function AgentsPanel({ refreshKey, onAttention }) {
+// Verdecktes Panel (Handy-Tab/Tab-Modus): so lange darf der letzte Stand alt
+// sein, bevor der 8-s-Takt wieder lädt — das Blinken kommt dann etwas später,
+// dafür ruckelt das sichtbare Panel beim Scrollen nicht von fremden Salven.
+const VERDECKT_MS = 30000;
+
+export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }) {
   const [agents, setAgents] = useState([]);
   const [selected, setSelected] = useState(null);
   const [tasksByAgent, setTasksByAgent] = useState({});
@@ -71,10 +76,15 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
   const tasksRef = useRef({}); // letzter bekannter Stand je Agent
   const onAttentionRef = useRef(onAttention);
   onAttentionRef.current = onAttention;
+  const sichtbarRef = useRef(sichtbar);
+  sichtbarRef.current = sichtbar;
+  const letzterLoadRef = useRef(0);
+  const loadRef = useRef(null);
 
   useEffect(() => {
     let stale = false;
     const load = async () => {
+      letzterLoadRef.current = Date.now();
       try {
         getAutomatik()
           .then((a) => !stale && setAuto(a))
@@ -122,20 +132,28 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
         if (!stale) setOffline(true);
       }
     };
+    loadRef.current = load;
     load();
     // Im Hintergrund-Tab nicht pollen (7 Requests alle 8 s); beim
     // Zurückkommen sofort einmal laden statt bis zum nächsten Takt zu warten.
+    // Verdeckt (anderer Panel-Tab offen) reicht der gestreckte Takt.
     const t = setInterval(() => {
-      if (!document.hidden) load();
+      if (document.hidden) return;
+      if (!sichtbarRef.current && Date.now() - letzterLoadRef.current < VERDECKT_MS)
+        return;
+      load();
     }, 8000);
     const onVisible = () => {
       if (!document.hidden) load();
     };
     document.addEventListener("visibilitychange", onVisible);
     // Live-Events (F4): Mailbox-Änderung → sofort nachladen statt bis zum
-    // nächsten 8-s-Poll zu warten; das Polling bleibt Fallback.
+    // nächsten 8-s-Poll zu warten; das Polling bleibt Fallback. Verdeckt
+    // NICHT sofort laden — während eines Agenten-Laufs käme sonst alle paar
+    // Sekunden eine Salve, die das sichtbare Panel beim Scrollen ruckeln
+    // lässt; der gestreckte Takt holt den Stand (und das Blinken) nach.
     const onLive = () => {
-      if (!document.hidden) load();
+      if (!document.hidden && sichtbarRef.current) load();
     };
     window.addEventListener("live:mailbox", onLive);
     return () => {
@@ -145,6 +163,14 @@ export default function AgentsPanel({ refreshKey, onAttention }) {
       window.removeEventListener("live:mailbox", onLive);
     };
   }, [refreshKey, localKey]);
+
+  // Beim Aufdecken sofort aktualisieren — der gestreckte Verdeckt-Takt darf
+  // bis zu 30 s alten Stand zeigen, der Blick aufs Panel aber nicht.
+  const warSichtbarRef = useRef(sichtbar);
+  useEffect(() => {
+    if (sichtbar && !warSichtbarRef.current) loadRef.current?.();
+    warSichtbarRef.current = sichtbar;
+  }, [sichtbar]);
 
   const tasks = selected ? tasksByAgent[selected] : null;
   const autoInfo = selected ? auto.agents?.[selected] : null;

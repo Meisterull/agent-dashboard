@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -13,7 +13,11 @@ import { bestaetigen } from "./Dialog";
 // Orchestrator-Antworten rendern Markdown (Sessions liegen serverseitig in
 // SQLite); die zuletzt aktive Session wird nach Reload/App-Neustart über
 // localStorage wiedergefunden, ältere über das Auswahlmenü im Kopf.
-function Message({ msg }) {
+// memo: ReactMarkdown parst sonst bei JEDEM Re-Render (z. B. jedem
+// Tool-Event während des Streamings) den kompletten Verlauf neu — auf dem
+// Handy ruckelt davon das Scrollen. Die msg-Objekte sind unveränderlich
+// (Verlauf wird nur angehängt), der Identitätsvergleich trägt also.
+const Message = memo(function Message({ msg }) {
   const isUser = msg.role === "user";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -46,7 +50,7 @@ function Message({ msg }) {
       </div>
     </div>
   );
-}
+});
 
 export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   const [messages, setMessages] = useState([]);
@@ -68,8 +72,30 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   // mischen (der bleibt sonst dauerhaft falsch, weil er so gespeichert wird).
   const viewRef = useRef(0);
 
-  useEffect(() => {
+  // Nur ans Ende springen, wenn der Leser eh (fast) unten steht — wer im
+  // Verlauf hochgescrollt liest, würde sonst von jeder neuen Nachricht
+  // heruntergerissen. Eigene Aktionen (Senden, Session-Wechsel) setzen das
+  // Flag explizit, damit sie immer unten landen.
+  const amBodenRef = useRef(true);
+  // Hochgescrollt? Dann schwebt unten rechts ein ↓-Knopf zum Ende des
+  // Verlaufs (auf dem Handy ist die Strecke sonst viel Gewische). Gleiche
+  // Werte lösen in React kein Re-Render aus — der Scroll-Handler ist billig.
+  const [zeigeSprung, setZeigeSprung] = useState(false);
+  const merkeScrollLage = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const unten = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    amBodenRef.current = unten;
+    setZeigeSprung(!unten);
+  };
+  const springeAnsEnde = () => {
+    amBodenRef.current = true;
+    setZeigeSprung(false);
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  };
+  useEffect(() => {
+    if (amBodenRef.current)
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages, loading]);
 
   const refreshSessions = () =>
@@ -89,6 +115,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     getChatHistory(id)
       .then((d) => {
         viewRef.current += 1;
+        amBodenRef.current = true; // frisch geöffneter Verlauf: unten anfangen
         setMessages(d.messages);
         setError(null);
         setSessionId(id);
@@ -135,6 +162,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     setError(null);
     if (inputRef.current) inputRef.current.value = "";
     setCanSend(false);
+    amBodenRef.current = true; // eigene Nachricht: immer zu ihr springen
     setMessages((m) => [...m, { role: "user", text }]);
     setLoading(true);
     const view = viewRef.current;
@@ -229,7 +257,12 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
           🗑
         </button>
       </div>
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-3">
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={merkeScrollLage}
+          className="h-full space-y-3 overflow-y-auto p-3"
+        >
         {messages.length === 0 && (
           <p className="text-sm text-slate-400 dark:text-slate-500">
             Chatte mit dem Orchestrator — z.B. „Lege dem frontend-Agent eine
@@ -266,6 +299,18 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
           <div className="rounded bg-red-100 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
             {error}
           </div>
+        )}
+        </div>
+        {/* bewusst ohne backdrop-blur: der kostet auf Handy-GPUs beim
+            Scrollen genau die Frames, um die es hier geht */}
+        {zeigeSprung && (
+          <button
+            onClick={springeAnsEnde}
+            title="zum Ende des Verlaufs springen"
+            className="absolute bottom-3 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-slate-700/90 text-lg text-white shadow-lg hover:bg-slate-600 dark:bg-slate-600/90 dark:hover:bg-slate-500"
+          >
+            ↓
+          </button>
         )}
       </div>
       <div className="border-t bg-white p-2 dark:border-slate-700 dark:bg-slate-900">

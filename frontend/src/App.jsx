@@ -123,6 +123,10 @@ export default function App() {
   }, []);
   const sichtbarRef = useRef(null); // id des allein sichtbaren Panels (sonst null)
   sichtbarRef.current = isDesktop && viewMode === "windows" ? null : tab;
+  // Das Agenten-Panel pollt am teuersten (getTasks je Agent) — verdeckt darf
+  // es seltener laden (AgentsPanel streckt dann seinen Takt).
+  const agentenSichtbar =
+    (isDesktop && viewMode === "windows") || tab === "agenten";
 
   const [attention, setAttention] = useState({});
   const flag = useCallback((id) => {
@@ -206,6 +210,7 @@ export default function App() {
             body: (
               <AgentsPanel
                 refreshKey={refreshKey}
+                sichtbar={agentenSichtbar}
                 onAttention={() => flag("agenten")}
               />
             ),
