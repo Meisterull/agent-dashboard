@@ -4,7 +4,7 @@
 # Server-Zertifikat (825 Tage — mehr mögen Mobilgeräte nicht) kann jederzeit
 # neu ausgestellt werden, ohne dass Handys die CA neu importieren müssen.
 #
-# Aufruf:  scripts/make_cert.sh [domain] [ip ...]
+# Aufruf:  scripts/make_cert.sh [domain] [ip-oder-domain ...]
 # Ergebnis in ssl/: ca.crt (aufs Handy!), fullchain.pem, privkey.pem
 # Danach: docker compose restart
 set -euo pipefail
@@ -37,7 +37,16 @@ if [ ! -f ca.key ]; then
 fi
 
 SAN="DNS:$DOMAIN,DNS:localhost,IP:127.0.0.1"
-for ip in "$@"; do SAN="$SAN,IP:$ip"; done
+# Weitere Argumente: IPv4-Adressen werden IP-, alles andere DNS-Einträge
+# (z.B. steuerung.fritz.box — die FritzBox löst den Hostnamen auch für
+# VPN-Clients auf, Pi-hole-Namen wie agent-dashboard.local dagegen nur im LAN).
+for arg in "$@"; do
+    if [[ "$arg" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        SAN="$SAN,IP:$arg"
+    else
+        SAN="$SAN,DNS:$arg"
+    fi
+done
 echo "== stelle Server-Zertifikat aus: $SAN =="
 
 openssl req -newkey rsa:2048 -nodes \
