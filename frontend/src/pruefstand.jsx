@@ -1,9 +1,12 @@
-// Prüfstand: mountet NUR den Workspace mit Platzhalter-Panels, ohne Backend,
-// Login oder Chat. Damit lässt sich die Fensteranordnung in einem echten
-// Browser prüfen (frontend/tests/test_workspace_browser.cjs).
+// Prüfstand: mountet einzelne Teile der Oberfläche OHNE Backend, Login oder
+// Chat, damit sie sich in einem echten Browser prüfen lassen.
+//
+//   ?panel=workspace  (Default)  Fensteranordnung  -> tests/test_workspace_browser.cjs
+//   ?panel=agenten               Agenten-Panel     -> tests/test_agents_browser.cjs
 //
 // Temporäre Datei — gehört nicht in den Auslieferungs-Build.
 import { createRoot } from "react-dom/client";
+import AgentsPanel from "./components/AgentsPanel";
 import Workspace from "./components/Workspace";
 import "./index.css";
 
@@ -31,8 +34,69 @@ const panels = [
   { id: "ext:vnc", title: "VNC", body: rahmen },
 ];
 
-createRoot(document.getElementById("root")).render(
-  <div className="flex h-dvh flex-col">
-    <Workspace tab="chat" viewMode="windows" panels={panels} />
-  </div>,
-);
+// --- Agenten-Panel gegen eine erfundene Mailbox (Issue #33) ----------------
+// Statt eines echten Backends antwortet ein fetch-Doppel. Es liefert genau die
+// Form, die /api/agents/{name}/tasks liefert — inklusive `messages` — und
+// merkt sich POSTs, damit der Test das Archivieren nachweisen kann.
+const nachrichten = [
+  {
+    id: "message-1",
+    kind: "message",
+    sender: "deverp",
+    text: "Bericht liegt im Projektordner.",
+    status: "pending",
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: "question-1",
+    kind: "question",
+    sender: "erp",
+    text: "Soll ich die alte Tabelle löschen?",
+    status: "needs_confirm",
+    created_at: new Date().toISOString(),
+  },
+];
+window.__posts = [];
+
+function fetchDoppel(url, opt = {}) {
+  const json = (data) =>
+    Promise.resolve({ ok: true, status: 200, json: async () => data });
+  if (opt.method === "POST") {
+    window.__posts.push(url);
+    if (url.includes("/read")) {
+      const id = url.split("/inbox/")[1].split("/")[0];
+      const weg = nachrichten.findIndex((m) => m.id === id);
+      if (weg >= 0) nachrichten.splice(weg, 1);
+      return json({ archived: id });
+    }
+    return json({});
+  }
+  if (url === "/api/agents") return json({ agents: ["PMNB029", "erp"] });
+  if (url === "/api/automatik") return json({ notaus: false, agents: {} });
+  if (url.startsWith("/api/agents/PMNB029/tasks"))
+    return json({
+      agent: "PMNB029",
+      inbox: [{ task_id: "task-1", status: "pending", instruction: "bau das" }],
+      outbox: [],
+      messages: nachrichten,
+    });
+  if (url.startsWith("/api/agents/erp/tasks"))
+    return json({ agent: "erp", inbox: [], outbox: [], messages: [] });
+  return json({});
+}
+
+const welches = new URLSearchParams(location.search).get("panel");
+if (welches === "agenten") {
+  window.fetch = fetchDoppel;
+  createRoot(document.getElementById("root")).render(
+    <div className="flex h-dvh flex-col">
+      <AgentsPanel refreshKey={0} sichtbar={true} />
+    </div>,
+  );
+} else {
+  createRoot(document.getElementById("root")).render(
+    <div className="flex h-dvh flex-col">
+      <Workspace tab="chat" viewMode="windows" panels={panels} />
+    </div>,
+  );
+}

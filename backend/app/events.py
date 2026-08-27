@@ -86,9 +86,15 @@ def lies_snapshot(root: Path) -> dict[str, dict[str, Any]]:
                `fuer_mensch` in /api/questions.
     antworten: Responses in der Orchestrator-Inbox (= ein Task ist fertig
                oder gescheitert und das Ergebnis liegt zur Abholung bereit).
+    nachrichten: Hinweise (kind=message) in der Orchestrator-Inbox — die
+               schrieb bisher niemand mit, obwohl sie an den Menschen gehen
+               (Issue #33). Nachrichten ZWISCHEN Agenten bleiben bewusst
+               draußen: die gehen den Menschen am Handy nichts an, und im
+               Dashboard zeigt sie das Agenten-Panel live an.
     """
     fragen: dict[str, Any] = {}
     antworten: dict[str, Any] = {}
+    nachrichten: dict[str, Any] = {}
     orch = root / ORCHESTRATOR
     for env in _lese_inbox(orch):
         env_id = env.get("id")
@@ -109,7 +115,12 @@ def lies_snapshot(root: Path) -> dict[str, dict[str, Any]]:
                 "status": env.get("status") or "done",
                 "text": str(env.get("text") or ""),
             }
-    return {"fragen": fragen, "antworten": antworten}
+        elif kind == "message":
+            nachrichten[env_id] = {
+                "sender": env.get("sender") or "?",
+                "text": str(env.get("text") or ""),
+            }
+    return {"fragen": fragen, "antworten": antworten, "nachrichten": nachrichten}
 
 
 def neue_meldungen(
@@ -136,6 +147,18 @@ def neue_meldungen(
                     "qid": qid,
                     "optionen": q.get("options") or [],
                     "url": f"/?tab=chat&frage={qid}",
+                    "offen": offen,
+                }
+            )
+    for mid, m in neu.get("nachrichten", {}).items():
+        if mid not in alt.get("nachrichten", {}):
+            meldungen.append(
+                {
+                    "titel": f"Nachricht von {m['sender']}",
+                    "text": m["text"][:180],
+                    "tag": mid,
+                    "art": "nachricht",
+                    "url": "/?tab=agenten",
                     "offen": offen,
                 }
             )

@@ -6,7 +6,8 @@ und den Nutzer-Abbruch llm.TurnAbbruch (F3/F4/F10) — reine Stdlib:
 Abgedeckt:
   * lies_snapshot/neue_meldungen: Rückfrage an den Menschen wird gemeldet,
     Agent-↔-Agent-Frage nicht, Response = "Task fertig/fehlgeschlagen",
-    Bestand meldet sich nie doppelt (Baseline-Prinzip)
+    Nachricht an den Menschen ebenfalls (#33), Bestand meldet sich nie
+    doppelt (Baseline-Prinzip)
   * push: add/dedupe/remove der Subscriptions, ValueError ohne endpoint,
     sende_an_alle fällt ohne pywebpush bzw. gegen eine Fake-URL leise auf 0
     (Wächter darf am Versand nie sterben)
@@ -77,6 +78,32 @@ class TestSnapshotDiff(unittest.TestCase):
         m = events.neue_meldungen(alt, events.lies_snapshot(self.root))
         self.assertEqual(len(m), 1)
         self.assertIn("fehlgeschlagen", m[0]["titel"])
+
+
+    def test_nachricht_an_den_menschen_wird_gemeldet(self) -> None:
+        """#33: send_message an den Orchestrator ist eine Push-Meldung wert."""
+        orch = Mailbox(self.root, ORCHESTRATOR)
+        alt = events.lies_snapshot(self.root)
+        orch.post({"kind": "message", "sender": "PMNB029", "text": "bin fertig"})
+        m = events.neue_meldungen(alt, events.lies_snapshot(self.root))
+        self.assertEqual(len(m), 1, m)
+        self.assertIn("PMNB029", m[0]["titel"])
+        self.assertEqual(m[0]["art"], "nachricht")
+        self.assertEqual(m[0]["text"], "bin fertig")
+        # Bestand meldet sich nicht erneut
+        self.assertEqual(
+            events.neue_meldungen(
+                events.lies_snapshot(self.root), events.lies_snapshot(self.root)
+            ),
+            [],
+        )
+
+    def test_nachricht_zwischen_agenten_ist_kein_mensch_ping(self) -> None:
+        """Agent → Agent klingelt NICHT am Handy (wie bei Rückfragen, #22)."""
+        Mailbox(self.root, "erp").post(
+            {"kind": "message", "sender": "deverp", "text": "intern"}
+        )
+        self.assertEqual(events.lies_snapshot(self.root)["nachrichten"], {})
 
 
 class TestPushStore(unittest.TestCase):

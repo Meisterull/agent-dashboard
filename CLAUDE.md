@@ -23,7 +23,10 @@ Browser ─HTTP/WS─ nginx ─ FastAPI (orchestrator) ─MCP─ mcp_server (Too
 ```
 backend/
   main.py                  FastAPI-App (alle /api-Endpunkte + /ws/ssh)
-  mcp_server.py            MCP-Server (Tools fürs Orchestrator-LLM), Streamable-HTTP :9000
+  mcp_server.py            MCP-Server (Tools fürs Orchestrator-LLM), Streamable-HTTP :9000;
+                           jedes Tool wird über `werkzeug` als async registriert und
+                           läuft im Thread (#34) — das SDK führt sync-Tools sonst im
+                           Event-Loop aus, und ALLE Kanäle teilen sich einen
   orchestrator.py          CLI-Variante des Orchestrators
   app/
     orchestrator_core.py   gemeinsamer Kern: MCP-Anbindung + run_turn (provider-neutral)
@@ -53,8 +56,9 @@ backend/
     chat_store.py          SQLite-Persistenz der Chat-Sessions (/workspace/chat.db)
     events.py              Mailbox-Wächter (F4/F10): watchfiles (mtime-Fallback) →
                            SSE-Broadcaster für GET /api/events + Push-Auslöser
-                           (Schnappschuss-Diff: NEUE Mensch-Rückfragen und
-                           Orchestrator-Responses, Bestand nie)
+                           (Schnappschuss-Diff: NEUE Mensch-Rückfragen,
+                           Orchestrator-Responses und Nachrichten an den
+                           Menschen (#33), Bestand nie)
     push.py                Web-Push (F10): VAPID-Keys (vapid.json, auto-erzeugt) +
                            Subscriptions (push_subscriptions.json) in DATA_CONFIG_DIR,
                            Versand via pywebpush (lazy — fehlt es, wird still
@@ -62,7 +66,10 @@ backend/
     ssh_connect.py         zentraler SSH-Connect mit Host-Key-Pinning (TOFU,
                            /workspace/config/known_hosts) — von bridge/SFTP/tunnel genutzt
     config.py              Settings (settings.json) + Verbindungen (agents.yaml)
-    integrations.py        config-getriebene HTTP-Tools (integrations.yaml), generisch
+    integrations.py        config-getriebene HTTP-Tools (integrations.yaml), generisch;
+                           Timeout Default 60 s (INTEGRATION_TIMEOUT, je Integration
+                           `timeout:`) — lange Vorgänge asynchron anstoßen, nicht
+                           das Timeout hochdrehen (#34)
     mcp_scope.py           Kanal-Identität + Tool-Allowlists je Agent (Issue #13):
                            Port-Vergabe (frei :9000, gebunden ab :9100), Port-Map
                            mcp_ports.json, resolve_ident; reine Stdlib, Tests in
@@ -106,8 +113,9 @@ Dockerfile · docker-compose.yml · entrypoint.sh · supervisord.conf · nginx/
 cd frontend && npm install && npm run dev      # http://localhost:5173 (proxyt /api,/ws)
 cd frontend && npm run build                   # erzeugt dist/ (nginx liefert es aus)
 cd frontend && node tests/test_layout.mjs      # Fensteranordnung, rein rechnerisch (kein Browser)
-# Fensteranordnung im echten Browser (Prüfstand ohne Backend/Login) — Aufruf
-# in tests/test_workspace_browser.cjs im Kopf
+# Im echten Browser (Prüfstand ohne Backend/Login, ?panel=… wählt den Teil) —
+# Aufruf steht im Kopf von tests/test_workspace_browser.cjs (Fensteranordnung)
+# bzw. tests/test_agents_browser.cjs (Agenten-Panel: Nachrichten, #33)
 
 # Backend (braucht: pip install -r backend/requirements.txt + ANTHROPIC_API_KEY)
 cd backend && python -m mcp_server             # Tools, :9000
@@ -249,6 +257,11 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   (Issue #11). Der Watcher führt **nur** `kind=task` aus. `needs_confirm`-Rückfragen erscheinen im
   Dashboard (`/api/questions`, Banner) und werden dort beantwortet; hängengebliebene
   Tasks schließt `POST /api/tasks/{agent}/{task_id}/close` (✕ im Agenten-Panel).
+  **Alles Nicht-Task aus der Inbox** (message/answer/response) liefert
+  `/api/agents/{name}/tasks` als `messages` mit; das Panel zeigt es als
+  Abschnitt „Nachrichten" samt Zähler am Agenten-Kopf, ✓ archiviert einzeln
+  (`POST /api/agents/{name}/inbox/{id}/read`). Bis Issue #33 war das für
+  Menschen unsichtbar — nur die MCP-Tools kamen an diese Envelopes.
 - **Rückfragen im Banner: wer ist gemeint, und wie kommt man wieder raus.**
   `/api/questions` sammelt über ALLE Mailboxen — darunter Fragen, die zwei
   Agenten einander stellen. Am Dashboard sitzt aber ein Mensch, und der ist

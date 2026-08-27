@@ -9,7 +9,9 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
        alles Weitere unter /api    nur mit gültigem Session-Cookie (auth.py)
   GET  /api/agents                 Agenten = Mailbox-Ordner
   GET  /api/agents/{name}/tasks    Inbox (+ .processing als running) + Outbox
+                                   + messages (Nachrichten/Antworten, #33)
   POST /api/agents/{name}/inbox/read-all  alles Erledigte ins Archiv (#21)
+  POST /api/agents/{name}/inbox/{id}/read  eine Nachricht ins Archiv (#33)
   POST /api/tasks/{agent}/{id}/close  hängengebliebenen Task manuell abschließen
   POST /api/chat                   Eine Chat-Runde (Orchestrator + Tool-Calls)
   POST /api/chat/stream            dito als SSE-Strom: tool-Events live + Abbruch (F3)
@@ -338,7 +340,8 @@ def _read_jsons(folder: Path) -> list[dict[str, Any]]:
 @app.get("/api/agents/{name}/tasks")
 async def agent_tasks(name: str) -> dict:
     base = _agent_base(name)
-    inbox = [e for e in _read_jsons(base / "inbox") if e.get("kind", "task") == "task"]
+    roh = _read_jsons(base / "inbox")
+    inbox = [e for e in roh if e.get("kind", "task") == "task"]
     # Beanspruchte Tasks (.processing/) sichtbar machen — als "running";
     # geparkte (Rückfrage offen, Issue #17) behalten ihr needs_confirm.
     claimed = [
@@ -346,7 +349,22 @@ async def agent_tasks(name: str) -> dict:
         for e in _read_jsons(base / "inbox" / ".processing")
         if e.get("kind", "task") == "task"
     ]
-    return {"agent": name, "inbox": inbox + claimed, "outbox": _read_jsons(base / "outbox")}
+    # Alles Nicht-Task aus derselben Lesung mitgeben (Issue #33): Nachrichten,
+    # Antworten und Task-Ergebnisse lagen zwar in der Inbox, waren am Dashboard
+    # aber unsichtbar — wer am Handy nachsah, hielt die Zustellung für kaputt.
+    # Bewusst im SELBEN Endpunkt statt als zweiter Poll: das Panel fragt alle
+    # 8 s für JEDEN Agenten, ein zweiter Aufruf verdoppelte diese Last.
+    messages = sorted(
+        (normalize_envelope(e) for e in roh if e.get("kind", "task") != "task"),
+        key=lambda m: m.get("created_at") or "",
+        reverse=True,  # neueste zuerst — anders als Tasks, die FIFO abgearbeitet werden
+    )
+    return {
+        "agent": name,
+        "inbox": inbox + claimed,
+        "outbox": _read_jsons(base / "outbox"),
+        "messages": messages,
+    }
 
 
 @app.get("/api/agents/{name}/inbox")
@@ -370,6 +388,26 @@ async def agent_inbox_read_all(name: str) -> dict:
     _agent_base(name)
     archiviert = Mailbox(MAILBOXES, name).alle_gelesen()
     return {"agent": name, "archiviert": archiviert}
+
+
+@app.post("/api/agents/{name}/inbox/{envelope_id}/read")
+async def agent_envelope_read(name: str, envelope_id: str) -> dict:
+    """Eine einzelne Nachricht ins Archiv legen (✕ an der Karte, Issue #33).
+
+    Gegenstück zum `mark_read` der MCP-Seite: wer eine Nachricht im Panel
+    gelesen hat, soll sie einzeln wegräumen können, ohne mit "alles gelesen"
+    auch alles andere zu quittieren. Offene Tasks lassen sich so NICHT
+    schließen (dafür /api/tasks/{agent}/{id}/close).
+    """
+    _agent_base(name)
+    _geprüfte_id(envelope_id, "Envelope-ID")
+    try:
+        moved = Mailbox(MAILBOXES, name).mark_read(envelope_id)
+    except ValueError as exc:  # offener Task
+        raise HTTPException(400, str(exc)) from exc
+    if not moved:
+        raise HTTPException(404, f"Envelope '{envelope_id}' liegt nicht in der Inbox von '{name}'.")
+    return {"archived": envelope_id, "agent": name}
 
 
 @app.get("/api/questions")

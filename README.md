@@ -148,7 +148,14 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 - Task-Lebenszyklus (Agent-Seite): `claim_task(task_id, agent?, erneut?)` (→ "in Arbeit"; ein bereits laufender Task wird **nicht** erneut vergeben — `erneut=True` holt dem eigenen Bearbeiter seinen Auftragstext zurück) · `complete_task(task_id, result, status?, log?, agent?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab; ein wiederholter Aufruf ist kein Fehler (`already: true`), damit eine verlorene Antwort erneut abgeliefert werden kann
 - Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` (archiviert die beantwortete Frage gleich mit) · `inbox(agent, kind?)` · `mark_read(envelope_id, agent?)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder). Empfänger müssen bekannt sein (Mailbox oder `agents.yaml`) — sonst Fehler statt Geister-Mailbox
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
-- Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)`
+- Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)` — Aufruf-Timeout `INTEGRATION_TIMEOUT` (Default 60 s, je Integration per `timeout:`); lange Vorgänge asynchron anstoßen (Job-ID zurück, Status pollen) statt das Timeout hochzudrehen
+
+**Nebenläufigkeit:** Jedes Tool wird als `async` registriert und läuft in einem
+Thread (Integrationen in einem eigenen, kleinen Pool). Das SDK würde synchrone
+Tools sonst direkt im Event-Loop ausführen — und da sich **alle** Kanäle einen
+Loop teilen, legte ein einziger langer Aufruf sämtliche Agenten still. Im Log
+steht zu jedem Tool-Aufruf eine Start- und eine Endzeile mit Dauer; eine
+Startzeile ohne Endzeile ist der Aufruf, der gerade noch läuft.
 
 **Kanal-Identität + Tool-Scoping** (`app/mcp_scope.py`): Neben dem freien Kanal
 `:9000` (Orchestrator, intern) lauscht **pro SSH-Agent ein eigener, an dessen
@@ -236,7 +243,7 @@ Ergebnisses unterzugehen.
 | `components/Chat.jsx` | Orchestrator-Chat mit Tool-Call-Chips |
 | `components/FileTree.jsx` | lazy-ladender Dateibaum über `/api/files` |
 | `components/FileViewer.jsx` | Datei-Inhalt im Modal |
-| `components/AgentsPanel.jsx` | MCP-Monitor: Inbox/Outbox je Agent mit Status-Badges |
+| `components/AgentsPanel.jsx` | MCP-Monitor: Inbox/Outbox je Agent mit Status-Badges, dazu der Abschnitt **Nachrichten** (alles Nicht-Task aus der Inbox: Hinweise, Antworten, Task-Ergebnisse) mit Zähler am Agenten-Kopf und ✓ zum Archivieren |
 | `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; pro Verbindung mehrere Terminals (⧉-Knopf, z. B. Claude Code + eigene Shell nebeneinander); Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
 | `components/Settings.jsx` | Einstellungen-Modal (Modellwahl/Sprache/externe Fenster) |
 | `components/Modal.jsx` | generischer Modal-Container |
@@ -257,8 +264,10 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 |---------|------|--------------|
 | `GET` | `/api/health` | Liveness (Docker-Healthcheck), unabhängig von MCP/Anthropic |
 | `GET` | `/api/agents` | Liste der Agenten (= Mailbox-Ordner) |
-| `GET` | `/api/agents/{name}/tasks` | Tasks: `{inbox, outbox}` eines Agenten (beanspruchte als `running`) |
+| `GET` | `/api/agents/{name}/tasks` | `{inbox, outbox, messages}` eines Agenten (beanspruchte Tasks als `running`; `messages` = alles Nicht-Task aus der Inbox, neueste zuerst) |
 | `GET` | `/api/agents/{name}/inbox?kind=` | Alle Eingänge (Tasks + Nachrichten + Rückfragen), normalisiert |
+| `POST` | `/api/agents/{name}/inbox/read-all` | Alles Erledigte ins Archiv (offene Tasks/Rückfragen bleiben) |
+| `POST` | `/api/agents/{name}/inbox/{id}/read` | Eine gelesene Nachricht ins Archiv |
 | `POST` | `/api/tasks/{agent}/{task_id}/close` | Hängengebliebenen Task von Hand abschließen (`{status?, result?}`) |
 | `GET` | `/api/questions?to=` | Offene Rückfragen (`needs_confirm`) über alle Agenten; je Frage `fuer_mensch` (an den `orchestrator` gerichtet), `?to=` filtert auf eine Mailbox |
 | `POST` | `/api/questions/{agent}/{qid}/answer` | Rückfrage beantworten → Antwort an Fragesteller (`answered_by: "dashboard"`) |

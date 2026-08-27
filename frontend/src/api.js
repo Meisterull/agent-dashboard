@@ -45,6 +45,13 @@ export const closeTask = (agent, taskId, status = "done", result = "") =>
   );
 export const markInboxRead = (name) =>
   jsend(`/api/agents/${encodeURIComponent(name)}/inbox/read-all`, "POST");
+// Eine einzelne Nachricht wegräumen (Issue #33) — "alles gelesen" quittiert
+// sonst auch Eingänge, die man noch gar nicht gesehen hat.
+export const markEnvelopeRead = (name, envelopeId) =>
+  jsend(
+    `/api/agents/${encodeURIComponent(name)}/inbox/${encodeURIComponent(envelopeId)}/read`,
+    "POST",
+  );
 export const getFiles = (path = "") =>
   jget(`/api/files?path=${encodeURIComponent(path)}`);
 export const getFileContent = (path) =>

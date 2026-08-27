@@ -2,6 +2,13 @@
 # Jeder Workflow hängt hier seine eigenen HTTP-Endpunkte an; der MCP-Server
 # stellt sie generisch über call_integration(name, method, path, body) bereit.
 # Secrets kommen aus .env (auth_env) und werden serverseitig injiziert.
+#
+# Laufzeit: Ein Aufruf wartet höchstens INTEGRATION_TIMEOUT Sekunden (Default
+# 60, je Integration per `timeout:` übersteuerbar). Lange Vorgänge NICHT über
+# ein langes Timeout abwickeln, sondern asynchron anstoßen: der Endpunkt nimmt
+# den Auftrag an, gibt sofort eine Job-ID zurück, der Agent pollt den Status.
+# Sonst hängt der aufrufende Agent minutenlang an einer offenen Verbindung
+# (blockiert seit Issue #34 zwar keine anderen Kanäle mehr, wartet aber selbst).
 
 integrations: {}
 
@@ -15,6 +22,7 @@ integrations: {}
 #     auth_header: Authorization
 #     auth_prefix: "token "
 #     allowed_methods: [GET]
+#     timeout: 120                   # Sekunden, nur wenn die 60 s nicht reichen
 #   jira:
 #     base_url: https://firma.atlassian.net
 #     auth_env: JIRA_TOKEN

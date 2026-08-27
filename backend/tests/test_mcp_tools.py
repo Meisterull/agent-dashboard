@@ -11,9 +11,12 @@ und ohne Abhängigkeiten:
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 import shutil
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -22,11 +25,16 @@ class _FastMCPDoppel:
     """Sammelt die per @mcp.tool() registrierten Funktionen ein."""
 
     def __init__(self, *args, **kwargs) -> None:
-        self.tools: dict[str, object] = {}
+        self.tools: dict[str, object] = {}   # synchroner Kern (zum Aufrufen)
+        self.roh: dict[str, object] = {}     # wie registriert (async-Hülle)
 
     def tool(self):
         def deco(fn):
-            self.tools[fn.__name__] = fn
+            # Seit Issue #34 registriert mcp_server eine async-Hülle um jedes
+            # Tool (Thread-Auslagerung). Die Fachtests rufen den synchronen
+            # Kern darunter auf — genau den, den auch die Hülle ausführt.
+            self.roh[fn.__name__] = fn
+            self.tools[fn.__name__] = getattr(fn, "__wrapped__", fn)
             return fn
         return deco
 
@@ -180,12 +188,68 @@ def test_gebundener_kanal_erzwingt_identitaet(ws: Path) -> None:
     assert isinstance(eigen, list) and not (eigen and "error" in eigen[0]), eigen
 
 
+def test_kein_tool_blockiert_den_loop(ws: Path) -> None:
+    """#34: Tools laufen im Thread — ein langer Aufruf legt nicht alles lahm.
+
+    Das mcp-SDK ruft synchrone Tools direkt im Event-Loop auf; damit fror ein
+    minutenlanges call_integration jeden anderen Kanal ein. Geprüft wird beides:
+    dass alles als Coroutine registriert ist, und dass ein blockierender Aufruf
+    den Loop tatsächlich nicht mehr anhält.
+    """
+    mcp_server = _mcp_server_laden(ws)
+    doppel = _FastMCPDoppel()
+    mcp_server.register_tools(doppel, None, None)
+    nicht_async = sorted(
+        n for n, fn in doppel.roh.items() if not inspect.iscoroutinefunction(fn)
+    )
+    assert not nicht_async, f"nicht im Thread: {nicht_async}"
+    # Signatur/Doku müssen die der Originalfunktion bleiben — daraus baut
+    # FastMCP das Tool-Schema. Ginge das verloren, hätte jedes Tool plötzlich
+    # nur noch (**kwargs) als Parameter.
+    assert inspect.signature(doppel.roh["send_task"]) == inspect.signature(
+        doppel.tools["send_task"]
+    )
+    assert doppel.roh["send_task"].__doc__ == doppel.tools["send_task"].__doc__
+
+    mcp_server.integrations.call_integration = lambda *a, **k: (
+        time.sleep(0.6),
+        {"status": 200},
+    )[1]
+    verzug: list[float] = []
+
+    async def probe() -> float:
+        async def herzschlag(stop: asyncio.Event) -> None:
+            letzt = time.monotonic()
+            while not stop.is_set():
+                await asyncio.sleep(0.02)
+                jetzt = time.monotonic()
+                verzug.append(jetzt - letzt - 0.02)
+                letzt = jetzt
+
+        stop = asyncio.Event()
+        hb = asyncio.create_task(herzschlag(stop))
+        await asyncio.sleep(0.05)
+        t0 = time.monotonic()
+        lang = asyncio.create_task(doppel.roh["call_integration"](name="x"))
+        await doppel.roh["list_agents"]()
+        dauer = time.monotonic() - t0
+        await lang
+        stop.set()
+        await hb
+        return dauer
+
+    dauer = asyncio.run(probe())
+    assert dauer < 0.3, f"list_agents wartete {dauer:.2f}s auf den langen Aufruf"
+    assert max(verzug) < 0.3, f"Loop stand {max(verzug):.2f}s still"
+
+
 def main() -> None:
     tests = [test_project_ueberlebt_den_mcp_weg,
              test_doppelter_claim_meldet_fehler,
              test_unbekannter_empfaenger_wird_abgelehnt,
              test_antwort_raeumt_die_frage_ab,
-             test_gebundener_kanal_erzwingt_identitaet]
+             test_gebundener_kanal_erzwingt_identitaet,
+             test_kein_tool_blockiert_den_loop]
     for test in tests:
         tmp = Path(tempfile.mkdtemp(prefix="mcp-tools-"))
         try:

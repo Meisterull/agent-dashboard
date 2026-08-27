@@ -4,6 +4,7 @@ import {
   getAgents,
   getAutomatik,
   getTasks,
+  markEnvelopeRead,
   markInboxRead,
   setAutomatik,
   setNotaus,
@@ -45,7 +46,28 @@ const AUTO_DOT = {
 // done/error/needs_confirm melden sich über onAttention nach oben (App lässt
 // dann den Agenten-Reiter rot blinken). Der erste Durchlauf ist nur Basis —
 // alte fertige Tasks sollen beim Laden der Seite nicht blinken.
-const ALERT_STATUS = ["done", "error", "needs_confirm"];
+const ALERT_STATUS = ["done", "error", "needs_confirm", "neu"];
+
+// Nicht-Task-Eingänge (Issue #33): die lagen zwar immer in der Inbox, waren am
+// Dashboard aber unsichtbar — nur die MCP-Tools kamen dran. Deutsche Etiketten,
+// weil die Karte sonst "message"/"response" zeigt und niemand den Unterschied
+// zwischen Antwort (auf meine Rückfrage) und Ergebnis (eines Tasks) kennt.
+const KIND_LABEL = {
+  message: "Nachricht",
+  answer: "Antwort",
+  response: "Ergebnis",
+  question: "Rückfrage",
+};
+
+function kurzZeit(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const heute = new Date().toDateString() === d.toDateString();
+  return heute
+    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString([], { day: "2-digit", month: "2-digit" });
+}
 
 // Verdecktes Panel (Handy-Tab/Tab-Modus): so lange darf der letzte Stand alt
 // sein, bevor der 8-s-Takt wieder lädt — das Blinken kommt dann etwas später,
@@ -112,10 +134,14 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         setOffline(pairs.some((p) => !p));
         setTasksByAgent(merged);
         const snap = {};
-        for (const [a, t] of Object.entries(merged))
+        for (const [a, t] of Object.entries(merged)) {
           for (const box of ["inbox", "outbox"])
             for (const task of t?.[box] || [])
               snap[`${a}/${box}/${task.task_id}`] = task.status;
+          // Eine neue Nachricht soll genauso auffallen wie ein fertiger Task
+          // (Issue #33): unbekannter Schlüssel + Status "neu" -> Reiter blinkt.
+          for (const m of t?.messages || []) snap[`${a}/msg/${m.id}`] = "neu";
+        }
         const prev = prevRef.current;
         if (
           prev &&
@@ -230,6 +256,18 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
     }
   };
 
+  // Eine gelesene Nachricht wegräumen (Issue #33). Offene Rückfragen bleiben
+  // davon ausgenommen: sie hier zu archivieren nähme sie aus dem Banner,
+  // ohne dass jemand geantwortet hätte — dafür gibt es das ✕ dort (#23).
+  const nachrichtArchivieren = async (id) => {
+    try {
+      await markEnvelopeRead(selected, id);
+      setLocalKey((k) => k + 1);
+    } catch (e) {
+      melden({ title: "Fehler", text: `Archivieren fehlgeschlagen: ${e.message}` });
+    }
+  };
+
   // Automatikmodus: Watcher auf dem Agenten-PC per Klick an/aus (Issue #12).
   const toggleAutomatik = async () => {
     const ziel = !autoInfo.gewuenscht;
@@ -310,6 +348,9 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         )}
         {agents.map((a) => {
           const st = auto.agents?.[a];
+          // Ungelesene Nachrichten am Kopf (Issue #33): am Handy sieht man so
+          // ohne Aufklappen, bei WEM etwas liegt.
+          const post = (tasksByAgent[a]?.messages || []).length;
           return (
             <button
               key={a}
@@ -321,6 +362,18 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
               }`}
             >
               {a}
+              {post > 0 && (
+                <span
+                  title={`${post} ungelesene Nachricht(en)`}
+                  className={`ml-1 rounded-full px-1 text-[10px] font-semibold ${
+                    selected === a
+                      ? "bg-white/25 text-white"
+                      : "bg-sky-600 text-white"
+                  }`}
+                >
+                  {post}
+                </span>
+              )}
               {st && (st.status !== "aus" || st.gewuenscht) && (
                 <span
                   title={`Automatik: ${st.status}`}
@@ -435,6 +488,68 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                     </div>
                   </div>
                 ))
+              )}
+            </div>
+            {/* Nachrichten (Issue #33): alles, was KEIN Task ist — Hinweise
+                anderer Agenten, Antworten auf Rückfragen, Ergebnisse
+                delegierter Tasks. Lag bisher unsichtbar in der Inbox. */}
+            <div>
+              <div className="mb-1 font-semibold text-slate-500 dark:text-slate-400">
+                Nachrichten ({(tasks.messages || []).length})
+              </div>
+              {(tasks.messages || []).length === 0 ? (
+                <p className="text-slate-400">leer</p>
+              ) : (
+                tasks.messages.map((m) => {
+                  // Eine offene Rückfrage bekommt KEIN Archivieren-Kreuz: sie
+                  // gehört ins Banner (#22/#23), und wegräumen ohne Antwort
+                  // ließe den daran geparkten Task für immer warten (#17).
+                  const offeneFrage =
+                    m.kind === "question" && m.status === "needs_confirm";
+                  const key = `msg/${m.id}`;
+                  return (
+                    <div
+                      key={m.id}
+                      onClick={() => toggleOffen(key)}
+                      className="mb-1 cursor-pointer rounded bg-slate-50 p-1.5 dark:bg-slate-800"
+                    >
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className="rounded bg-slate-200 px-1 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                          {KIND_LABEL[m.kind] || m.kind}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono">
+                          {m.sender}
+                        </span>
+                        <span className="shrink-0 text-[10px] text-slate-400">
+                          {kurzZeit(m.created_at)}
+                        </span>
+                        {offeneFrage ? (
+                          <StatusBadge status={m.status} />
+                        ) : (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation(); // Karte nicht auf-/zuklappen
+                              nachrichtArchivieren(m.id);
+                            }}
+                            title="gelesen — ins Archiv legen"
+                            className="rounded px-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+                          >
+                            ✓
+                          </button>
+                        )}
+                      </div>
+                      <div
+                        className={`${
+                          offen.has(key)
+                            ? "whitespace-pre-wrap break-words"
+                            : "truncate"
+                        } text-slate-500 dark:text-slate-400`}
+                      >
+                        {m.text}
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
             <div>

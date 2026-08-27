@@ -26,12 +26,20 @@ wird mit Kanal-Name geloggt (Nachvollziehbarkeit bei mehreren Clients).
 
 Transport: Streamable-HTTP, alle Ports nur auf 127.0.0.1 — intern hinter
 nginx, nicht veröffentlicht. Alle Pfade gegen WORKSPACE_DIR gehärtet.
+
+Nebenläufigkeit (Issue #34): Alle Kanäle laufen in EINEM Event-Loop, und das
+SDK ruft sync-Tools direkt darin auf. Jedes Tool wird darum über `werkzeug`
+registriert und in einem Thread ausgeführt — sonst friert ein langer Aufruf
+(z.B. call_integration) alle anderen Agenten mit ein.
 """
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -123,6 +131,61 @@ def _log(kanal: str, tool: str, **info: object) -> None:
     print(f"[mcp] {kanal}: {tool} {kv}".rstrip(), flush=True)
 
 
+# --- Nebenläufigkeit: kein Tool blockiert den Event-Loop (Issue #34) --------
+#
+# Das mcp-SDK ruft SYNCHRONE Tools direkt im Event-Loop auf
+# (fastmcp/utilities/func_metadata.py: `if fn_is_async: await fn(...) else:
+# fn(...)`) — es gibt keinen Threadpool darunter. Und alle Kanäle teilen sich
+# EINEN Loop (siehe _serve). Ein einziger langer Aufruf legte damit den
+# gesamten MCP-Dienst stumm: ein `call_integration` auf eine minutenlange
+# Browser-Automation fror auch `inbox` von `erp` und jedes `initialize` eines
+# anderen Kanals ein, bis der Aufruf nach dem Timeout zurückkam.
+#
+# Darum wird JEDES Tool als async registriert und läuft in einem Thread. Die
+# Mailbox ist darauf ausgelegt (flock je Mailbox + thread-lokale Buchführung
+# der gehaltenen Locks), zwei Threads auf derselben Mailbox serialisieren also
+# weiterhin sauber — nur eben ohne den Loop mitzunehmen.
+#
+# Integrationen bekommen einen EIGENEN Pool: sie sind die einzigen Aufrufe, die
+# von Natur aus minutenlang dauern. Im gemeinsamen Pool könnten sie sonst alle
+# Threads besetzen und die Mailbox-Tools ausbremsen — hier warten sie
+# untereinander und lassen den Rest in Ruhe.
+_INTEGRATION_PARALLEL = max(1, int(os.environ.get("MCP_INTEGRATION_PARALLEL", "4")))
+_INTEGRATION_POOL = ThreadPoolExecutor(
+    max_workers=_INTEGRATION_PARALLEL, thread_name_prefix="integration"
+)
+
+
+def _im_thread(fn, kanal: str, pool: ThreadPoolExecutor | None = None):
+    """Ein sync-Tool in ein async-Tool verwandeln, das in einem Thread läuft.
+
+    functools.wraps ist hier nicht Kosmetik: FastMCP baut Name, Beschreibung
+    und JSON-Schema aus `inspect.signature`/`__doc__` der übergebenen Funktion,
+    und `inspect.signature` folgt `__wrapped__` — die Tool-Beschreibung bleibt
+    dadurch exakt dieselbe wie vorher.
+    """
+
+    @functools.wraps(fn)
+    async def lauf(**kwargs):
+        start = time.monotonic()
+        ergebnis = "ok"
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                pool, functools.partial(fn, **kwargs)
+            )
+        except BaseException:
+            ergebnis = "fehler"
+            raise
+        finally:
+            # Gegenstück zum Start-Log in jedem Tool: erst mit dem Ende sieht
+            # man im Log, WELCHER Aufruf wie lange gehangen hat (Issue #34) —
+            # eine Startzeile ohne Endzeile ist der noch laufende.
+            _log(kanal, fn.__name__, fertig=f"{time.monotonic() - start:.1f}s",
+                 ergebnis=ergebnis)
+
+    return lauf
+
+
 def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None) -> None:
     """Alle Tools eines Kanals registrieren.
 
@@ -144,10 +207,24 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             return given
         return resolve_ident(identity, given, feld)
 
+    def werkzeug(fn=None, *, pool: ThreadPoolExecutor | None = None):
+        """Registriert ein Tool, dessen Aufruf im Thread läuft (Issue #34).
+
+        Ersetzt den Dekorator des SDK: registriert wird die async-Hülle,
+        zurückgegeben die unveränderte Funktion — Tests und Nachbarcode sehen
+        weiterhin ein normales `def`.
+        """
+
+        def deco(f):
+            mcp.tool()(_im_thread(f, kanal, pool))
+            return f
+
+        return deco if fn is None else deco(fn)
+
     # --- Delegation ---------------------------------------------------------
 
     if on("list_agents"):
-        @mcp.tool()
+        @werkzeug
         def list_agents() -> list[str]:
             """Listet die ansprechbaren Agenten.
 
@@ -160,7 +237,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             return _bekannte_agenten()
 
     if on("send_task"):
-        @mcp.tool()
+        @werkzeug
         def send_task(
             to: str,
             instruction: str,
@@ -196,7 +273,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             return {"id": task.task_id, "to": to, "status": "pending"}
 
     if on("create_task"):
-        @mcp.tool()
+        @werkzeug
         def create_task(agent: str, instruction: str, project: str | None = None) -> dict:
             """Alias für send_task (Rückwärtskompatibilität). Absender = du
             (gebundener Kanal) bzw. "orchestrator" (freier Kanal)."""
@@ -217,7 +294,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             return {"id": task.task_id, "to": agent, "status": "pending"}
 
     if on("read_responses"):
-        @mcp.tool()
+        @werkzeug
         def read_responses(worker: str, for_sender: str | None = None, limit: int = 20) -> list[dict]:
             """Rückmeldungen aus der Outbox eines BEARBEITERS lesen (Archiv erledigter Tasks).
 
@@ -244,7 +321,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             return out[: max(1, limit)]
 
     if on("claim_task"):
-        @mcp.tool()
+        @werkzeug
         def claim_task(task_id: str, agent: str | None = None, erneut: bool = False) -> dict:
             """Einen Task aus der eigenen Inbox annehmen, BEVOR du daran arbeitest.
 
@@ -284,7 +361,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             }
 
     if on("complete_task"):
-        @mcp.tool()
+        @werkzeug
         def complete_task(
             task_id: str,
             result: str,
@@ -338,7 +415,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
     # --- Agent-↔-Agent-Kommunikation ----------------------------------------
 
     if on("send_message"):
-        @mcp.tool()
+        @werkzeug
         def send_message(to: str, text: str, sender: str | None = None) -> dict:
             """Informativen Hinweis an einen anderen Agenten schicken (keine Aufgabe).
 
@@ -356,7 +433,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             )
 
     if on("ask"):
-        @mcp.tool()
+        @werkzeug
         def ask(
             to: str,
             question: str,
@@ -407,7 +484,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             return env
 
     if on("answer"):
-        @mcp.tool()
+        @werkzeug
         def answer(to: str, text: str, sender: str | None = None, reply_to: str | None = None) -> dict:
             """Eine Rückfrage beantworten. `reply_to` = id der beantworteten question.
 
@@ -441,7 +518,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             )
 
     if on("inbox"):
-        @mcp.tool()
+        @werkzeug
         def inbox(agent: str | None = None, kind: str | None = None) -> list[dict]:
             """Eingehende Envelopes eines Agenten lesen (Tasks, Nachrichten, Rückfragen
             und Task-Ergebnisse).
@@ -461,7 +538,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             return [normalize_envelope(e) for e in Mailbox(MAILBOX_ROOT, wer).read_inbox(kind)]
 
     if on("mark_read"):
-        @mcp.tool()
+        @werkzeug
         def mark_read(envelope_id: str, agent: str | None = None) -> dict:
             """Einen verarbeiteten Envelope (message/answer/response/erledigte question) archivieren.
 
@@ -486,7 +563,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
     # --- Projektdateien ------------------------------------------------------
 
     if on("write_project_file"):
-        @mcp.tool()
+        @werkzeug
         def write_project_file(project: str, relpath: str, content: str) -> dict:
             """Schreibt eine Datei unter /workspace/projects/<project>/<relpath>."""
             _log(kanal, "write_project_file", project=project, pfad=relpath, zeichen=len(content))
@@ -499,7 +576,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             return {"path": str(target), "bytes": len(content.encode("utf-8"))}
 
     if on("read_project_file"):
-        @mcp.tool()
+        @werkzeug
         def read_project_file(project: str, relpath: str) -> str:
             """Liest eine Datei unter /workspace/projects/<project>/<relpath>."""
             _log(kanal, "read_project_file", project=project, pfad=relpath)
@@ -509,14 +586,14 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
     # --- Integrationen (config-getrieben, generisch) -------------------------
 
     if on("list_integrations"):
-        @mcp.tool()
+        @werkzeug
         def list_integrations() -> list[dict]:
             """Verfügbare Integrationen (Name + erlaubte Methoden), ohne Secrets."""
             _log(kanal, "list_integrations")
             return integrations.list_integrations()
 
     if on("call_integration"):
-        @mcp.tool()
+        @werkzeug(pool=_INTEGRATION_POOL)
         def call_integration(name: str, method: str = "GET", path: str = "/", body: dict | None = None) -> dict:
             """Einen konfigurierten HTTP-Endpunkt aufrufen (z.B. eine interne API abfragen).
 
