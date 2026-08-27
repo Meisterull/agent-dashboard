@@ -244,6 +244,7 @@ Ergebnisses unterzugehen.
 | `components/FileTree.jsx` | lazy-ladender Dateibaum über `/api/files` |
 | `components/FileViewer.jsx` | Datei-Inhalt im Modal |
 | `components/AgentsPanel.jsx` | MCP-Monitor: Inbox/Outbox je Agent mit Status-Badges, dazu der Abschnitt **Nachrichten** (alles Nicht-Task aus der Inbox: Hinweise, Antworten, Task-Ergebnisse) mit Zähler am Agenten-Kopf und ✓ zum Archivieren |
+| `termScroll.js` | Wischen im Terminal-Verlauf und Größenwechsel: xterm verliert bei einer Wischgeste das Berührungsziel (der DOM-Renderer ersetzt die Zeilen darunter) — die Geste wird per Pointer-Capture selbst geführt; dazu bleibt die Stelle im Verlauf erhalten, wenn die Bildschirmtastatur auf- oder zugeht |
 | `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; pro Verbindung mehrere Terminals (⧉-Knopf, z. B. Claude Code + eigene Shell nebeneinander); Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
 | `components/Settings.jsx` | Einstellungen-Modal (Modellwahl/Sprache/externe Fenster) |
 | `components/Modal.jsx` | generischer Modal-Container |

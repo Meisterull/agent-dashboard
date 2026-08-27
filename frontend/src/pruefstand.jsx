@@ -3,10 +3,17 @@
 //
 //   ?panel=workspace  (Default)  Fensteranordnung  -> tests/test_workspace_browser.cjs
 //   ?panel=agenten               Agenten-Panel     -> tests/test_agents_browser.cjs
+//   ?panel=keybar                Tastenleiste      -> tests/test_keybar_browser.cjs
+//   ?panel=terminal              xterm + Leiste    -> tests/test_terminal_browser.cjs
 //
 // Temporäre Datei — gehört nicht in den Auslieferungs-Build.
 import { createRoot } from "react-dom/client";
 import AgentsPanel from "./components/AgentsPanel";
+import KeyBar from "./components/KeyBar";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
+import { fittenOhneSprung, wischScrollen } from "./termScroll";
 import Workspace from "./components/Workspace";
 import "./index.css";
 
@@ -86,7 +93,52 @@ function fetchDoppel(url, opt = {}) {
 }
 
 const welches = new URLSearchParams(location.search).get("panel");
-if (welches === "agenten") {
+if (welches === "terminal") {
+  // Echtes xterm in DERSELBEN Schachtelung wie Terminal.jsx (h-full flex-col →
+  // relative min-h-0 flex-1 → ref-div h-full), darunter die Tastenleiste.
+  // Gefüllt mit Verlauf, damit es etwas zu scrollen gibt.
+  const wurzel = document.getElementById("root");
+  createRoot(wurzel).render(
+    <div className="flex h-[var(--app-h,100dvh)] w-full flex-col">
+      <div className="relative min-h-0 w-full flex-1">
+        <div id="termhost" className="h-full w-full" />
+      </div>
+      <KeyBar mods={{}} onToggleMod={() => {}} onKey={() => {}} onCopyMode={() => {}}
+        onTextMode={() => {}} onSchrift={() => {}} onTastatur={() => {}} />
+    </div>,
+  );
+  setTimeout(() => {
+    const term = new XTerm({ fontSize: 13, theme: { background: "#1e293b" }, cursorBlink: true });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById("termhost"));
+    fit.fit();
+    for (let i = 1; i <= 300; i++) term.writeln(`Zeile ${i} — Ausgabe im Verlauf`);
+    // Dieselben zwei Handgriffe wie in Terminal.jsx — der Test prüft damit den
+    // Code, der auch produktiv läuft, nicht eine Nachbildung.
+    if (!new URLSearchParams(location.search).has("roh")) wischScrollen(term);
+    window.__term = term;
+    window.__fit = () => fittenOhneSprung(term, () => fit.fit());
+    window.__fitRoh = () => fit.fit();
+  }, 0);
+} else if (welches === "keybar") {
+  // Die Leiste allein, mit allen Knöpfen wie im Terminal — geprüft wird, ob
+  // sie sich am Handy waagerecht wischen lässt (sie ist breiter als jedes
+  // Telefon).
+  createRoot(document.getElementById("root")).render(
+    <div className="flex h-dvh flex-col justify-end bg-slate-800">
+      <KeyBar
+        mods={{}}
+        onToggleMod={() => {}}
+        onKey={() => {}}
+        onCopyMode={() => {}}
+        onTextMode={() => {}}
+        onSchrift={() => {}}
+        onTastatur={() => {}}
+      />
+    </div>,
+  );
+} else if (welches === "agenten") {
   window.fetch = fetchDoppel;
   createRoot(document.getElementById("root")).render(
     <div className="flex h-dvh flex-col">

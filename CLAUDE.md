@@ -88,6 +88,11 @@ backend/
   requirements.txt
 frontend/                  React 18 + Vite 6 + Tailwind v4 (komplettes Dashboard)
   src/App.jsx              Layout; src/api.js fetch-Helfer; src/components/*.jsx
+  src/termScroll.js        Wischen + Größenwechsel im Terminal (#35): xterm
+                           verliert bei einer Wischgeste das Berührungsziel
+                           (DOM-Renderer ersetzt die Zeilen) — Zeiger festhalten
+                           statt nativ scrollen; fittenOhneSprung hält die
+                           Stelle im Verlauf beim Tastatur-Wechsel
 scripts/agent_watcher.py   Remote-Watcher, nur Standardlib. Transporte: --root
                            (Datei-Mailbox) ODER --mcp-url (über den gebundenen
                            MCP-Kanal, kein Mount); auf stdin: "stop"/EOF = sanft
@@ -114,8 +119,11 @@ cd frontend && npm install && npm run dev      # http://localhost:5173 (proxyt /
 cd frontend && npm run build                   # erzeugt dist/ (nginx liefert es aus)
 cd frontend && node tests/test_layout.mjs      # Fensteranordnung, rein rechnerisch (kein Browser)
 # Im echten Browser (Prüfstand ohne Backend/Login, ?panel=… wählt den Teil) —
-# Aufruf steht im Kopf von tests/test_workspace_browser.cjs (Fensteranordnung)
-# bzw. tests/test_agents_browser.cjs (Agenten-Panel: Nachrichten, #33)
+# Aufruf steht im Kopf der Testdatei; Handy-Format + Touch-Emulation:
+#   tests/test_workspace_browser.cjs  Fensteranordnung (#24)
+#   tests/test_agents_browser.cjs     Agenten-Panel: Nachrichten (#33)
+#   tests/test_terminal_browser.cjs   Terminal wischen/Größenwechsel (#35)
+#   tests/test_keybar_browser.cjs     Tastenleiste bleibt wischbar
 
 # Backend (braucht: pip install -r backend/requirements.txt + ANTHROPIC_API_KEY)
 cd backend && python -m mcp_server             # Tools, :9000

@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import KeyBar from "./KeyBar";
 import { tastaturOffen, tastaturSchliessen } from "../viewport";
+import { fittenOhneSprung, wischScrollen } from "../termScroll";
 import { encodeKey, encodeChar } from "../keys";
 import { getSshBuffer } from "../api";
 
@@ -178,6 +179,10 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     fit.fit();
     termRef.current = term;
 
+    // Wischen im Verlauf: xterm rastet jede Wischgeste auf Zeilenkanten
+    // zurück, am Handy kam man damit nicht in den Verlauf (siehe termScroll.js).
+    const scrollGeste = wischScrollen(term);
+
     // Hinweis-Badge: schaltet eine TUI Maus-Reporting ein (?1000h/?1006h),
     // deaktiviert xterm.js seinen Selection-Service und setzt die Klasse
     // enable-mouse-events aufs Element — das ist unser (einziges öffentliches)
@@ -341,7 +346,11 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     document.addEventListener("visibilitychange", onVisible);
 
     const onResize = () => {
-      fit.fit();
+      // Die Tastatur auf- oder zuzuklappen ändert die Zeilenzahl, und xterm
+      // setzt den Blick dabei ans Ende. Wer gerade im Verlauf zurückgeblättert
+      // hat, verlor damit jedes Mal seine Stelle — auf dem Handy passiert das
+      // bei jedem Tippen. Abstand zum Ende merken und danach wiederherstellen.
+      fittenOhneSprung(term, () => fit.fit());
       if (wsRef.current) sendResize(wsRef.current);
     };
     window.addEventListener("resize", onResize);
@@ -359,6 +368,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       setMouseCaptured(false);
       setTakenOver(false);
       mouseObs.disconnect();
+      scrollGeste();
       termEl.removeEventListener("mousedown", onTermMouseDown);
       document.removeEventListener("mouseup", handleMouseUp);
       window.removeEventListener("resize", onResize);
