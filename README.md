@@ -166,6 +166,30 @@ Eintrag in der Map fallen auf `:9000` zurück — **außer** sie haben eine
 Allowlist, dann pausiert ihr Tunnel, bis der MCP-Dienst neu gestartet wurde
 (die Allowlist wird nie über den freien Kanal umgangen).
 
+**Agenten ohne SSH** (Issue #32): Ein Gerät, zu dem das Dashboard keinen Tunnel
+aufbauen kann — Windows-Notebook mit Claude Desktop, Rechner hinter NAT, mal im
+LAN und mal im VPN — meldet sich stattdessen selbst über denselben HTTPS-Zugang,
+den auch der Browser nimmt:
+
+```yaml
+  - name: PMNB029
+    connection:
+      type: token
+      token_file: /app/config/tokens/PMNB029.token   # nie im Klartext in der YAML
+```
+
+Token erzeugen mit `scripts/make_agent_token.sh PMNB029`, dann auf dem Gerät
+`claude mcp add --scope user --transport http dashboard https://<dashboard>/mcp/PMNB029
+--header "Authorization: Bearer …"`. Das Backend prüft den Token in konstanter
+Zeit und reicht die Anfrage an den gebundenen Loopback-Port weiter; die
+MCP-Ports selbst bleiben unveröffentlicht wie bisher. **Die Identität kommt
+weiter aus dem Kanal**: Ein Token öffnet genau den Port seines Agenten, wer
+Token X hat, kann nicht als Y auftreten. Zwei Unterschiede zu SSH-Kanälen, beide
+absichtlich: Ohne eigene `tools:`-Liste gibt es hier nur die Mailbox-Grundmenge
+(ein Token liegt auf einem Gerät, das das Dashboard nicht kennt, und ist
+leichter zu verlieren als ein Schlüssel auf einem bekannten Host), und nach
+zehn Fehlversuchen in einer Minute ist der Agent kurzzeitig gesperrt.
+
 **Automatikmodus** (`app/auto_watcher.py`, Toggle im Agenten-Panel): pro Agent
 per Klick ein-/ausschaltbar — das Dashboard hält dann per SSH einen
 `agent_watcher.py --mcp-url …` auf dem Agenten-PC, der die Inbox selbständig

@@ -172,6 +172,11 @@ def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
         # falschen Verzeichnis statt zu scheitern.
         "project": env.get("project"),
         "files": env.get("files") or [],
+        # Vorgegebene Antworten einer Rückfrage (Issue #30): Sie werden im
+        # Banner zu Knöpfen und in der Push-Benachrichtigung zu Aktionen.
+        # Ohne Durchreichen hier wären sie im Envelope zwar gespeichert, für
+        # die Oberfläche aber unsichtbar.
+        "options": env.get("options") or [],
     }
 
 

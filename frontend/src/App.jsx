@@ -39,7 +39,12 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [openFile, setOpenFile] = useState(null);
-  const [tab, setTab] = useState("chat"); // mobil aktives Panel
+  // Startpanel: `?tab=` erlaubt Sprünge von außen — Manifest-Shortcuts beim
+  // Langdruck aufs App-Icon (Issue #31) und Push-Benachrichtigungen.
+  const [tab, setTab] = useState(() => {
+    const gewuenscht = new URLSearchParams(window.location.search).get("tab");
+    return TABS.some(([id]) => id === gewuenscht) ? gewuenscht : "chat";
+  });
   const [authed, setAuthed] = useState(null); // null = prüft noch
   // Externe Fenster (z. B. noVNC) aus den Settings; Settings-Dialog feuert
   // nach dem Speichern "settings:changed".
@@ -146,22 +151,39 @@ export default function App() {
 
   // Nach dem Umschalten einmal "resize" feuern, damit xterm das Terminal
   // neu fittet, sobald es wieder sichtbar ist (Listener in Terminal.jsx).
+  // Der Service Worker meldet, wohin geklickt wurde (Issue #30) — sonst holt
+  // ein Tipp auf die Benachrichtigung die App nur nach vorn und lässt sie auf
+  // dem zuletzt benutzten Tab stehen.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const onNachricht = (e) => {
+      if (e.data?.typ !== "navigiere" || !e.data.url) return;
+      const ziel = new URL(e.data.url, window.location.origin).searchParams.get("tab");
+      if (TABS.some(([id]) => id === ziel)) switchTabRef.current(ziel);
+    };
+    navigator.serviceWorker.addEventListener("message", onNachricht);
+    return () =>
+      navigator.serviceWorker.removeEventListener("message", onNachricht);
+  }, []);
+
   const switchTab = (t) => {
     setTab(t);
     clearAttention(t);
     setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   };
+  const switchTabRef = useRef(switchTab);
+  switchTabRef.current = switchTab;
 
   if (authed === false) return <Login onSuccess={() => setAuthed(true)} />;
   if (authed === null)
     return (
-      <div className="flex h-dvh items-center justify-center bg-slate-100 text-sm text-slate-400 dark:bg-slate-950 dark:text-slate-500">
+      <div className="flex h-[var(--app-h,100dvh)] items-center justify-center bg-slate-100 text-sm text-slate-400 dark:bg-slate-950 dark:text-slate-500">
         lädt…
       </div>
     );
 
   return (
-    <div className="flex h-dvh flex-col bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+    <div className="flex h-[var(--app-h,100dvh)] flex-col bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <TopBar
         sessionId={sessionId}
         onOpenSettings={() => setShowSettings(true)}

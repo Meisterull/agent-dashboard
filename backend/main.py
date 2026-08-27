@@ -21,10 +21,12 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/files/content?path=    Dateiinhalt
   PUT  /api/files/content          Dateiinhalt speichern (Editor)
   GET  /api/files/download?path=   Datei herunterladen
+  GET  /api/files/raw?path=        Datei anzeigen/abspielen (inline, echter Typ)
   POST /api/files/upload?path=     Datei(en) hochladen (multipart)
   GET  /api/remote/{name}/files    dasselbe für Agenten-PCs via SFTP
   GET  /api/remote/{name}/file     (…/file lesen, PUT speichern,
-  GET  /api/remote/{name}/download  …/download, …/upload)
+  GET  /api/remote/{name}/download  …/download, …/raw, …/upload)
+  POST /mcp/{agent}                MCP-Kanal über HTTPS (Bearer-Token je Agent)
   GET  /api/connections            SSH-Verbindungen (ohne Credentials)
   GET  /api/settings               Editierbare UI-Settings
   PUT  /api/settings               Settings speichern
@@ -53,6 +55,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
+import mimetypes
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket
@@ -60,6 +64,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import auth, auto_watcher, chat_store, events, llm, push, remote_files
+from app import mcp_scope, mcp_token
 from app.config import (
     KEYS_DIR,
     add_ui_connection,
@@ -657,6 +662,40 @@ def _attachment(filename: str) -> dict[str, str]:
     }
 
 
+# Inline-Auslieferung für Vorschau und Wiedergabe im Dashboard (Issues #25/#26).
+# Ohne sie führt jeder Blick auf ein Screenshot, PDF oder eine Sprachnotiz über
+# den Download-Ordner und eine fremde App — auf dem Handy so umständlich, dass
+# man es lässt.
+#
+# Skriptfähige Formate werden dabei eingesperrt: Eine SVG- oder HTML-Datei darf
+# ein Agent jederzeit ins Projekt legen, und inline im Origin des Dashboards
+# ausgeliefert liefe ihr Skript mit den Rechten der angemeldeten Sitzung. Die
+# CSP `sandbox` (ohne allow-scripts) unterbindet das. Bilder, PDF und Audio
+# bekommen sie NICHT: Chromes PDF-Betrachter braucht Skripte und bliebe sonst
+# leer.
+SKRIPTFAEHIG = {
+    "image/svg+xml",
+    "text/html",
+    "application/xhtml+xml",
+    "text/xml",
+    "application/xml",
+}
+
+
+def _medientyp(filename: str) -> str:
+    typ, _ = mimetypes.guess_type(filename)
+    return typ or "application/octet-stream"
+
+
+def _inline(filename: str, medientyp: str) -> dict[str, str]:
+    kopf = {
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}"
+    }
+    if medientyp in SKRIPTFAEHIG:
+        kopf["Content-Security-Policy"] = "sandbox"
+    return kopf
+
+
 @app.put("/api/files/content")
 async def file_write(body: FileWriteIn) -> dict:
     try:
@@ -672,6 +711,23 @@ async def file_download(path: str) -> FileResponse:
     except FilesError as exc:
         raise HTTPException(404, str(exc)) from exc
     return FileResponse(p, filename=p.name, headers=_attachment(p.name))
+
+
+@app.get("/api/files/raw")
+async def file_raw(path: str) -> FileResponse:
+    """Wie /download, aber zum Anzeigen im Dashboard statt zum Speichern.
+
+    Der Medientyp MUSS stimmen: nginx setzt `X-Content-Type-Options: nosniff`,
+    ein `application/octet-stream` ergäbe also eine leere Fläche bzw. einen
+    stummen Player. FileResponse bringt Range-Requests mit — ohne die kann
+    Safari Audio weder abspielen noch spulen.
+    """
+    try:
+        p = file_path(path)
+    except FilesError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    typ = _medientyp(p.name)
+    return FileResponse(p, media_type=typ, headers=_inline(p.name, typ))
 
 
 @app.post("/api/files/upload")
@@ -755,6 +811,26 @@ async def remote_download(name: str, path: str) -> StreamingResponse:
         remote_files.stream_file(name, path),
         media_type="application/octet-stream",
         headers=_attachment(filename),
+    )
+
+
+@app.get("/api/remote/{name}/raw")
+async def remote_raw(name: str, path: str) -> StreamingResponse:
+    """Inline-Fassung für entfernte Quellen.
+
+    Einschränkung gegenüber dem lokalen Weg: Ein Stream kann keine
+    Range-Requests beantworten. Bilder und PDFs sind davon unberührt, Audio
+    spielt von vorn, lässt sich aber nicht spulen — und Safari verweigert die
+    Wiedergabe womöglich ganz.
+    """
+    import posixpath
+
+    filename = posixpath.basename(path) or "download"
+    typ = _medientyp(filename)
+    return StreamingResponse(
+        remote_files.stream_file(name, path),
+        media_type=typ,
+        headers=_inline(filename, typ),
     )
 
 
@@ -1064,3 +1140,94 @@ async def ws_ssh(websocket: WebSocket, name: str) -> None:
         await websocket.close(code=4401)
         return
     await ssh_bridge(websocket, name)
+
+
+# --- MCP über HTTPS (Issue #32) --------------------------------------------
+# Agenten ohne SSH — ein Notebook mit Claude Desktop, ein Gerät hinter NAT —
+# erreichen ihren gebundenen MCP-Kanal über denselben HTTPS-Zugang wie der
+# Browser. Das Dashboard reicht die Anfrage an den Loopback-Port des Kanals
+# weiter; die MCP-Ports selbst bleiben unveröffentlicht wie bisher.
+#
+# Die Identität kommt weiter aus dem Kanal, nicht aus einem Parameter: Ein
+# Token öffnet genau den Port SEINES Agenten. Wer Token X hat, kann nicht als
+# Y auftreten, weil er Y's Port nicht erreicht (Issue #13).
+
+_MCP_WEITERGELEITETE_KOPFZEILEN = {
+    "content-type",
+    "accept",
+    "mcp-session-id",
+    "mcp-protocol-version",
+    "last-event-id",
+}
+
+
+async def _mcp_weiterleiten(request: Request, agent: str, rest: str = "") -> Response:
+    try:
+        mcp_token.pruefe(agent, request.headers.get("authorization"))
+    except mcp_token.TokenFehler as exc:
+        print(f"[mcp-http] abgelehnt: {exc}", flush=True)
+        # Nach außen bewusst ohne Grund: Ob ein Agent existiert, ob sein Token
+        # fehlt oder falsch ist, geht einen nicht angemeldeten Client nichts an.
+        return JSONResponse({"detail": "nicht berechtigt"}, status_code=401)
+
+    scopes = mcp_scope.read_port_map()
+    port = scopes.get(agent)
+    if not port:
+        return JSONResponse(
+            {"detail": "für diesen Agenten gibt es keinen gebundenen Kanal"},
+            status_code=404,
+        )
+
+    ziel = f"http://127.0.0.1:{port}/mcp{rest}"
+    kopf = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() in _MCP_WEITERGELEITETE_KOPFZEILEN
+    }
+    rumpf = await request.body()
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None))
+    try:
+        anfrage = client.build_request(
+            request.method, ziel, headers=kopf, content=rumpf
+        )
+        # `stream=True`: Streamable HTTP antwortet je nach Aufruf mit einer
+        # einzelnen JSON-Antwort ODER einem offenen SSE-Strom. Würde hier auf
+        # den vollständigen Rumpf gewartet, bliebe jede Server-Meldung liegen,
+        # bis die Verbindung endet.
+        antwort = await client.send(anfrage, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        return JSONResponse(
+            {"detail": f"MCP-Kanal nicht erreichbar: {exc}"}, status_code=502
+        )
+
+    async def strom():
+        try:
+            async for stueck in antwort.aiter_raw():
+                yield stueck
+        finally:
+            await antwort.aclose()
+            await client.aclose()
+
+    durchreichen = {
+        k: v
+        for k, v in antwort.headers.items()
+        if k.lower() in {"content-type", "mcp-session-id", "cache-control"}
+    }
+    return StreamingResponse(
+        strom(), status_code=antwort.status_code, headers=durchreichen
+    )
+
+
+@app.post("/mcp/{agent}")
+@app.get("/mcp/{agent}")
+@app.delete("/mcp/{agent}")
+async def mcp_kanal(agent: str, request: Request) -> Response:
+    return await _mcp_weiterleiten(request, agent)
+
+
+@app.post("/mcp/{agent}/{rest:path}")
+@app.get("/mcp/{agent}/{rest:path}")
+async def mcp_kanal_unterpfad(agent: str, rest: str, request: Request) -> Response:
+    return await _mcp_weiterleiten(request, agent, f"/{rest}" if rest else "")

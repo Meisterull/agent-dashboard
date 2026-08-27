@@ -17,6 +17,11 @@ map $http_upgrade $ext_connection {
 # EFFECTIVE_SSL_DIR und EXTERNAL_HTTPS_PORT), alle anderen $-Namen bleiben
 # unangetastet. Neue nginx-Variablen hier brauchen also kein Escaping.
 limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+# Token-Anmeldung der Agenten (Issue #32). Großzügiger als das Login: Ein
+# arbeitender Agent stellt viele Anfragen hintereinander, ein Token-Rater
+# kommt damit trotzdem nicht weit. Das Backend sperrt zusätzlich nach zehn
+# Fehlversuchen je Agent.
+limit_req_zone $binary_remote_addr zone=mcp:10m rate=120r/m;
 
 # HTTP -> HTTPS. Browser muss auf den extern veröffentlichten HTTPS-Port
 # (${EXTERNAL_HTTPS_PORT}) — der ist NICHT 443, sondern das Host-Mapping.
@@ -118,6 +123,27 @@ server {
     # REST-API
     location /api/ {
         proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # MCP über HTTPS für Agenten ohne SSH (Issue #32). Bewusst OHNE
+    # auth_request: Hier zählt der Bearer-Token des Agenten, nicht die
+    # Browser-Session — die Prüfung macht das Backend.
+    #
+    # Streamable HTTP kann mit einem offenen SSE-Strom antworten; deshalb
+    # Puffer aus und langer Lesetimeout, sonst hält nginx die Server-Meldungen
+    # zurück oder kappt die Verbindung nach 60 Sekunden.
+    location /mcp/ {
+        limit_req zone=mcp burst=60 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400s;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

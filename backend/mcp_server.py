@@ -357,12 +357,25 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
 
     if on("ask"):
         @mcp.tool()
-        def ask(to: str, question: str, sender: str | None = None, reply_to: str | None = None) -> dict:
+        def ask(
+            to: str,
+            question: str,
+            sender: str | None = None,
+            reply_to: str | None = None,
+            options: list[str] | None = None,
+        ) -> dict:
             """Eine Rückfrage stellen, die eine Antwort braucht (Status needs_confirm).
 
             Damit fragt ein Worker z.B. den Koordinator nach Klärung — oder der
             Koordinator den Nutzer. Im Dashboard erscheint das als offene Rückfrage.
             `sender` = dein Name (auf einem gebundenen Kanal weglassen).
+
+            `options` sind vorgegebene Antworten, z.B. ["ja", "nein"]. Sie
+            erscheinen als Knöpfe im Rückfragen-Banner UND direkt in der
+            Push-Benachrichtigung auf dem Handy — beantwortbar, ohne die App zu
+            öffnen (Issue #30). Für Fragen mit schwerwiegenden Folgen bewusst
+            WEGLASSEN: Ohne Optionen führt der Weg über die App, wo die volle
+            Frage sichtbar ist, statt über einen Knopf am Sperrbildschirm.
             """
             try:
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
@@ -380,6 +393,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                     "text": question,
                     "status": "needs_confirm",
                     "reply_to": reply_to,
+                    # Höchstens zwei: mehr Knöpfe zeigt keine Benachrichtigung
+                    # an, und im Banner wird es unübersichtlich.
+                    "options": [str(o) for o in options[:2]] if options else None,
                 }
             )
             # Frage an die laufenden Tasks des Fragestellers heften (Issue #17):

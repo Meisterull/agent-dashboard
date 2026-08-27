@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
+import MediaModal, { medienArt } from "./MediaModal";
 import {
   getConnections,
   getFiles,
@@ -79,6 +80,10 @@ function FileDialog({ dlg, onClose }) {
   );
 }
 
+// Am Symbol sieht man schon in der Liste, was beim Antippen passiert —
+// auf dem kleinen Bildschirm hilft das mehr als jede Erklärung.
+const DATEI_ICON = { bild: "🖼️", pdf: "📕", ton: "🎵" };
+
 export default function FilesPanel({ refreshKey, onOpenFile }) {
   const [connections, setConnections] = useState([]);
   const [source, setSource] = useState("ws");
@@ -88,6 +93,7 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   const [busy, setBusy] = useState(false);
   const [localKey, setLocalKey] = useState(0); // ↻-Button: Listing neu laden
   const [dlg, setDlg] = useState(null); // Anlegen/Umbenennen/Löschen-Dialog
+  const [medien, setMedien] = useState(null); // Bild-/PDF-/Audio-Vorschau
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -211,6 +217,16 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {dlg && <FileDialog dlg={dlg} onClose={() => setDlg(null)} />}
+      {medien && (
+        <MediaModal
+          art={medien.art}
+          source={source}
+          path={medien.path}
+          name={medien.name}
+          size={medien.size}
+          onClose={() => setMedien(null)}
+        />
+      )}
       <div className="flex items-center gap-1 overflow-x-auto border-b bg-slate-50 px-2 py-1 dark:border-slate-700 dark:bg-slate-900">
         <button
           onClick={() => switchSource("ws")}
@@ -304,14 +320,21 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
               className="group flex items-center gap-1 pr-1 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <button
-                onClick={() =>
-                  e.type === "dir" ? setPath(e.path) : onOpenFile({ source, path: e.path })
-                }
+                onClick={() => {
+                  if (e.type === "dir") return setPath(e.path);
+                  // Bilder, PDFs und Audio öffnen sich in der Vorschau statt
+                  // im Texteditor, der bei Binärdaten ohnehin nur
+                  // "Binärdatei — nutze Download" meldet (Issues #25/#26).
+                  const art = medienArt(e.name);
+                  if (art)
+                    return setMedien({ art, path: e.path, name: e.name, size: e.size });
+                  onOpenFile({ source, path: e.path });
+                }}
                 title={e.path}
                 className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs"
               >
                 <span className="w-4 shrink-0 text-center">
-                  {e.type === "dir" ? "📁" : "📄"}
+                  {e.type === "dir" ? "📁" : DATEI_ICON[medienArt(e.name)] || "📄"}
                 </span>
                 <span className="truncate">{e.name}</span>
                 <span className="ml-auto shrink-0 pl-2 text-[10px] text-slate-400 dark:text-slate-500">

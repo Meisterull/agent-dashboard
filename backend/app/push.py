@@ -171,8 +171,19 @@ def _sende_sync(sub: dict[str, Any], payload: str, priv_pem: str) -> bool:
         return False
 
 
-async def sende_an_alle(titel: str, text: str, tag: str = "", url: str = "/") -> int:
-    """Benachrichtigung an alle Geräte. Liefert die Zahl erfolgreicher Sends."""
+async def sende_an_alle(
+    titel: str,
+    text: str,
+    tag: str = "",
+    url: str = "/",
+    extra: dict | None = None,
+) -> int:
+    """Benachrichtigung an alle Geräte. Liefert die Zahl erfolgreicher Sends.
+
+    `extra` landet unverändert im Payload — darüber bekommt der Service Worker
+    alles, was er zum Beantworten direkt aus der Meldung braucht (Issue #30):
+    Agent, Frage-ID und die angebotenen Antworten.
+    """
     subs = lade_subscriptions()
     if not subs:
         return 0
@@ -180,7 +191,8 @@ async def sende_an_alle(titel: str, text: str, tag: str = "", url: str = "/") ->
     if daten is None:
         return 0
     payload = json.dumps(
-        {"title": titel, "body": text, "tag": tag, "url": url}, ensure_ascii=False
+        {"title": titel, "body": text, "tag": tag, "url": url, **(extra or {})},
+        ensure_ascii=False,
     )
     ergebnisse = await asyncio.gather(
         *[asyncio.to_thread(_sende_sync, s, payload, daten["private_pem"]) for s in subs]

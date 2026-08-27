@@ -36,7 +36,17 @@ const FIXED = {
   ctrlc: { key: "c", mods: { ctrl: true } },
 };
 
-export default function KeyBar({ mods, onToggleMod, onKey, onCopyMode, copyActive = false, onTextMode, textActive = false }) {
+export default function KeyBar({
+  mods,
+  onToggleMod,
+  onKey,
+  onCopyMode,
+  copyActive = false,
+  onTextMode,
+  textActive = false,
+  onSchrift,
+  onTastatur,
+}) {
   const noFocusSteal = (e) => e.preventDefault();
 
   return (
@@ -72,6 +82,45 @@ export default function KeyBar({ mods, onToggleMod, onKey, onCopyMode, copyActiv
             }`}
           >
             Aa
+          </button>
+          <span className="mx-1 h-5 w-px shrink-0 bg-slate-700" />
+        </>
+      )}
+      {/* ⌨ holt die Bildschirmtastatur gezielt oder schickt sie weg. Ohne
+          diesen Knopf bleibt nur die Systemgeste — und danach weiß niemand,
+          ob das Terminal noch fokussiert ist (Issue #27). */}
+      {onTastatur && (
+        <>
+          <button
+            onPointerDown={noFocusSteal}
+            onClick={onTastatur}
+            title="Bildschirmtastatur ein- oder ausblenden"
+            className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs text-sky-300"
+          >
+            ⌨
+          </button>
+          <span className="mx-1 h-5 w-px shrink-0 bg-slate-700" />
+        </>
+      )}
+      {/* A− / A+ : Schriftgröße des Terminals, gemerkt pro Gerät (Issue #31).
+          Hochkant am Handy sind 13 px zu groß, am 4K-Desktop zu klein. */}
+      {onSchrift && (
+        <>
+          <button
+            onPointerDown={noFocusSteal}
+            onClick={() => onSchrift(-1)}
+            title="Schrift kleiner"
+            className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs text-slate-200"
+          >
+            A−
+          </button>
+          <button
+            onPointerDown={noFocusSteal}
+            onClick={() => onSchrift(1)}
+            title="Schrift größer"
+            className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-200"
+          >
+            A+
           </button>
           <span className="mx-1 h-5 w-px shrink-0 bg-slate-700" />
         </>

@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  uploadFiles,
   streamChat,
   cancelChatStream,
   getChatSessions,
@@ -52,6 +53,12 @@ const Message = memo(function Message({ msg }) {
   );
 });
 
+// Grobzeiger = Finger statt Maus. Trifft Handys und Tablets, nicht den
+// Desktop — dort bleibt Enter zum Senden.
+const grobZeiger =
+  typeof window !== "undefined" &&
+  window.matchMedia("(pointer: coarse)").matches;
+
 export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
@@ -61,6 +68,9 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   // doppelt ein. canSend spiegelt nur den Leer-Zustand für den Button.
   const inputRef = useRef(null);
   const [canSend, setCanSend] = useState(false);
+  const [zeilen, setZeilen] = useState(2);
+  // Anhänge, die mit der nächsten Nachricht hochgeladen werden (Issue #29).
+  const [anhaenge, setAnhaenge] = useState([]);
   const [loading, setLoading] = useState(false);
   // Streaming-Fortschritt (F3): stream_id fürs Abbrechen + bisherige Tool-Calls
   const [progress, setProgress] = useState(null);
@@ -156,20 +166,89 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     }
   }
 
+  // Vom Teilen-Menü des Handys übergebener Entwurf (Issue #29): Der Service
+  // Worker hat die Dateien bereits abgelegt und schickt Text plus Pfade als
+  // Parameter mit. Er landet im Eingabefeld, nicht direkt im Versand — der
+  // Nutzer will ja noch schreiben, worum es geht.
+  useEffect(() => {
+    const parameter = new URLSearchParams(window.location.search);
+    const entwurf = parameter.get("entwurf");
+    if (!entwurf) return;
+    if (inputRef.current) {
+      inputRef.current.value = entwurf;
+      setCanSend(true);
+      setZeilen(Math.min(6, Math.max(2, entwurf.split("\n").length + 1)));
+      inputRef.current.focus();
+    }
+    // Parameter wieder aus der Adresse nehmen, sonst steht der Entwurf beim
+    // nächsten Neuladen erneut da.
+    parameter.delete("entwurf");
+    const rest = parameter.toString();
+    window.history.replaceState(
+      {},
+      "",
+      window.location.pathname + (rest ? `?${rest}` : ""),
+    );
+  }, []);
+
+  function anhaengen(liste) {
+    const dateien = Array.from(liste || []).filter(Boolean);
+    if (dateien.length) setAnhaenge((a) => [...a, ...dateien]);
+  }
+
+  // Strg+V mit einem Screenshot in der Zwischenablage: am Desktop der
+  // schnellste Weg, am Handy der einzige neben dem Teilen-Menü.
+  function onPaste(e) {
+    const dateien = Array.from(e.clipboardData?.files || []);
+    if (dateien.length) {
+      e.preventDefault();
+      anhaengen(dateien);
+    }
+  }
+
+  /** Lädt die Anhänge hoch und liefert ihre Pfade im Workspace. */
+  async function anhaengeHochladen() {
+    if (!anhaenge.length) return [];
+    // Nach Tag sortiert ablegen, sonst wird der Ordner mit der Zeit unlesbar.
+    const tag = new Date().toISOString().slice(0, 10);
+    const ziel = `uploads/chat/${tag}`;
+    const antwort = await uploadFiles("ws", ziel, anhaenge);
+    const gespeichert = antwort?.saved || [];
+    return gespeichert.map((s) => (typeof s === "string" ? s : s.path));
+  }
+
   async function send() {
     const text = (inputRef.current?.value || "").trim();
-    if (!text || loading) return;
+    if ((!text && !anhaenge.length) || loading) return;
     setError(null);
-    if (inputRef.current) inputRef.current.value = "";
-    setCanSend(false);
-    amBodenRef.current = true; // eigene Nachricht: immer zu ihr springen
-    setMessages((m) => [...m, { role: "user", text }]);
     setLoading(true);
+
+    // Erst hochladen, dann senden: Der Orchestrator bekommt die Pfade als
+    // Textzeile mit — Claude-Code-Agenten können Bilder unter diesem Pfad
+    // selbst ansehen, ohne dass der Chat ein neues Datenformat braucht.
+    let pfade = [];
+    try {
+      pfade = await anhaengeHochladen();
+    } catch (e) {
+      setError(`Anhang fehlgeschlagen: ${e.message || e}`);
+      setLoading(false);
+      return;
+    }
+    const volltext = pfade.length
+      ? `${text}${text ? "\n\n" : ""}Anhänge: ${pfade.join(", ")}`
+      : text;
+
+    if (inputRef.current) inputRef.current.value = "";
+    setZeilen(2);
+    setCanSend(false);
+    setAnhaenge([]);
+    amBodenRef.current = true; // eigene Nachricht: immer zu ihr springen
+    setMessages((m) => [...m, { role: "user", text: volltext }]);
     const view = viewRef.current;
     try {
       // Streaming (F3): Tool-Calls kommen live als Events — sichtbar, was der
       // Orchestrator gerade tut, plus Abbrechen-Knopf statt Blackbox-POST.
-      const data = await streamChat(text, sessionId, {
+      const data = await streamChat(volltext, sessionId, {
         onStart: (d) => {
           if (viewRef.current === view)
             setProgress({ streamId: d.stream_id, tools: [] });
@@ -216,11 +295,23 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     }
   }
 
+  // Enter sendet — außer auf Touch-Geräten (Issue #28). Bildschirmtastaturen
+  // haben kein Shift+Enter, der Umbruch wäre dort also unerreichbar und jeder
+  // Absatz schickte den halben Text ab. Gesendet wird mobil über den Knopf,
+  // den es ohnehin gibt.
   function onKeyDown(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !grobZeiger) {
       e.preventDefault();
       send();
     }
+  }
+
+  // Das Feld wächst mit dem Text, sonst sieht man mobil nur die letzten zwei
+  // Zeilen dessen, was man geschrieben oder diktiert hat.
+  function onEingabe(e) {
+    const wert = e.target.value;
+    setCanSend(wert.trim().length > 0);
+    setZeilen(Math.min(6, Math.max(2, wert.split("\n").length)));
   }
 
   return (
@@ -314,18 +405,62 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
         )}
       </div>
       <div className="border-t bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
+        {anhaenge.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1">
+            {anhaenge.map((f, i) => (
+              <span
+                key={`${f.name}-${i}`}
+                className="flex max-w-[14rem] items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-xs dark:bg-slate-800"
+              >
+                <span className="truncate" title={f.name}>
+                  {f.type.startsWith("image/") ? "🖼️" : "📄"} {f.name}
+                </span>
+                <button
+                  onClick={() => setAnhaenge((a) => a.filter((_, k) => k !== i))}
+                  title="Anhang entfernen"
+                  className="shrink-0 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2">
           <textarea
             ref={inputRef}
-            onChange={(e) => setCanSend(e.target.value.trim().length > 0)}
+            onPaste={onPaste}
+            onChange={onEingabe}
             onKeyDown={onKeyDown}
-            rows={2}
+            rows={zeilen}
+            // Die Handy-Tastatur zeigt sonst "Senden" und verspricht damit
+            // ein Verhalten, das es hier nicht mehr gibt.
+            enterKeyHint={grobZeiger ? "enter" : "send"}
             placeholder="Nachricht an den Orchestrator…"
             className="flex-1 resize-none rounded border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
           />
+          {/* Büroklammer: am Handy bietet der Browser darüber direkt Kamera,
+              Fotos und Dateien an — der Weg über Datei-App und Dateibaum
+              entfällt (Issue #29). */}
+          <label
+            title="Datei anhängen"
+            className="self-end cursor-pointer rounded border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            📎
+            <input
+              type="file"
+              multiple
+              accept="image/*,.pdf,.txt,.md,.log,.json,.csv"
+              onChange={(e) => {
+                anhaengen(e.target.files);
+                e.target.value = ""; // dieselbe Datei soll erneut wählbar sein
+              }}
+              className="hidden"
+            />
+          </label>
           <button
             onClick={send}
-            disabled={loading || !canSend}
+            disabled={loading || (!canSend && anhaenge.length === 0)}
             className="self-end rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
           >
             Senden

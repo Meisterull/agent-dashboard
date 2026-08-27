@@ -99,6 +99,9 @@ def lies_snapshot(root: Path) -> dict[str, dict[str, Any]]:
             fragen[env_id] = {
                 "sender": env.get("sender") or "?",
                 "text": str(env.get("text") or ""),
+                # Vorgegebene Antworten (Issue #30) — werden zu Knöpfen in der
+                # Push-Benachrichtigung. Fehlen sie, bleibt nur "Öffnen".
+                "options": env.get("options") or [],
             }
         elif kind == "response":
             antworten[env_id] = {
@@ -117,7 +120,8 @@ def neue_meldungen(
     tag = Envelope-ID: erreicht dieselbe Meldung ein Gerät doppelt (Wächter
     neu gestartet), ersetzt die Notification sich selbst statt sich zu stapeln.
     """
-    meldungen: list[dict[str, str]] = []
+    meldungen: list[dict[str, Any]] = []
+    offen = len(neu["fragen"])
     for qid, q in neu["fragen"].items():
         if qid not in alt["fragen"]:
             meldungen.append(
@@ -125,6 +129,14 @@ def neue_meldungen(
                     "titel": f"Rückfrage von {q['sender']}",
                     "text": q["text"][:180],
                     "tag": qid,
+                    # Alles, was der Service Worker zum Beantworten direkt aus
+                    # der Meldung heraus braucht (Issue #30).
+                    "art": "frage",
+                    "agent": ORCHESTRATOR,
+                    "qid": qid,
+                    "optionen": q.get("options") or [],
+                    "url": f"/?tab=chat&frage={qid}",
+                    "offen": offen,
                 }
             )
     for rid, r in neu["antworten"].items():
@@ -135,6 +147,9 @@ def neue_meldungen(
                     "titel": f"Task {wie}: {r['sender']}",
                     "text": r["text"][:180],
                     "tag": rid,
+                    "art": "antwort",
+                    "url": "/?tab=agenten",
+                    "offen": offen,
                 }
             )
     return meldungen
@@ -200,7 +215,17 @@ async def _watch_schleife() -> None:
         try:
             neu = await asyncio.to_thread(lies_snapshot, MAILBOXES)
             for m in neue_meldungen(alt, neu):
-                await push.sende_an_alle(m["titel"], m["text"], tag=m["tag"])
+                await push.sende_an_alle(
+                    m["titel"],
+                    m["text"],
+                    tag=m["tag"],
+                    url=m.get("url", "/"),
+                    extra={
+                        k: m[k]
+                        for k in ("art", "agent", "qid", "optionen", "offen")
+                        if k in m
+                    },
+                )
             alt = neu
         except Exception as exc:  # noqa: BLE001 — Push darf den Wächter nie killen
             print(f"[events] Push-Auslöser fehlgeschlagen: {exc}", flush=True)

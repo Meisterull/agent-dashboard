@@ -3,6 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import KeyBar from "./KeyBar";
+import { tastaturOffen, tastaturSchliessen } from "../viewport";
 import { encodeKey, encodeChar } from "../keys";
 import { getSshBuffer } from "../api";
 
@@ -68,6 +69,18 @@ function copyText(text, term) {
   }
 }
 
+// Schriftgröße des Terminals (Issue #31). Sie gilt geräteweit, nicht pro
+// Sitzung: Hochkant am Handy sind 13 px rund 45 Spalten — Claude Code bricht
+// damit jede Zeile mehrfach um. Pinch-Zoom hilft nicht, weil dabei der ganze
+// Viewport skaliert und xterm die Spalten nicht neu rechnet.
+const SCHRIFT_MIN = 9;
+const SCHRIFT_MAX = 20;
+
+function leseSchrift() {
+  const gemerkt = Number(localStorage.getItem("term.fontSize"));
+  return gemerkt >= SCHRIFT_MIN && gemerkt <= SCHRIFT_MAX ? gemerkt : 13;
+}
+
 export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEnded }) {
   const ref = useRef(null);
   const fitRef = useRef(null);
@@ -115,6 +128,26 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     clearMods();
   };
 
+  // Zurück ins Terminal — aber auf Touch-Geräten nur, wenn die Tastatur
+  // ohnehin offen ist. Sonst holt jeder Knopfdruck die weggedrückte Tastatur
+  // wieder hoch, und man kommt aus dem Ping-Pong nicht heraus (Issue #27).
+  const zurueckFokus = () => {
+    const grob = window.matchMedia("(pointer: coarse)").matches;
+    if (!grob || tastaturOffen()) termRef.current?.focus();
+  };
+
+  const schriftAendern = (schritt) => {
+    const term = termRef.current;
+    if (!term) return;
+    const neue = Math.min(
+      SCHRIFT_MAX,
+      Math.max(SCHRIFT_MIN, (term.options.fontSize || 13) + schritt),
+    );
+    term.options.fontSize = neue;
+    localStorage.setItem("term.fontSize", String(neue));
+    fitRef.current?.(); // fittet und meldet die neue Größe an die Gegenseite
+  };
+
   const zeileSenden = (mitEnter) => {
     const el = zeileRef.current;
     if (el?.value) sendRaw(el.value);
@@ -131,7 +164,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
 
   useEffect(() => {
     const term = new XTerm({
-      fontSize: 13,
+      fontSize: leseSchrift(),
       theme: { background: "#1e293b" },
       cursorBlink: true,
       // Auf dem Mac erzwingt ⌥+Ziehen die Auswahl, wenn eine TUI die Maus
@@ -312,6 +345,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       if (wsRef.current) sendResize(wsRef.current);
     };
     window.addEventListener("resize", onResize);
+    // Bei geöffneter Bildschirmtastatur feuert `resize` je nach Browser gar
+    // nicht (Issue #27) — dann läge die Prompt-Zeile unter der Tastatur.
+    window.visualViewport?.addEventListener("resize", onResize);
     fitRef.current = onResize;
 
     return () => {
@@ -326,6 +362,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       termEl.removeEventListener("mousedown", onTermMouseDown);
       document.removeEventListener("mouseup", handleMouseUp);
       window.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVisible);
       try {
         wsRef.current?.close();
@@ -394,7 +431,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
 
   const closeCopyMode = () => {
     setCopyView(null);
-    termRef.current?.focus();
+    zurueckFokus();
   };
 
   const copyAll = () => {
@@ -507,10 +544,14 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         mods={mods}
         onToggleMod={toggleMod}
         onKey={handleKey}
+        onSchrift={schriftAendern}
+        onTastatur={() =>
+          tastaturOffen() ? tastaturSchliessen() : termRef.current?.focus()
+        }
         textActive={textZeile}
         onTextMode={() => {
           setTextZeile((v) => !v);
-          if (textZeile) termRef.current?.focus(); // beim Schließen zurück ins Terminal
+          if (textZeile) zurueckFokus(); // beim Schließen zurück ins Terminal
         }}
         // ⎘ ist ein Umschalter (Issue #10): im Kopier-Modus schließt er ihn —
         // gerade auf dem Handy ist er derselbe Knopf an derselben Stelle,

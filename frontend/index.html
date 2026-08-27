@@ -2,8 +2,15 @@
 <html lang="de">
   <head>
     <meta charset="UTF-8" />
-    <!-- viewport-fit=cover: bis in die Rundungen/Notch moderner Handys zeichnen -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- viewport-fit=cover: bis in die Rundungen/Notch moderner Handys zeichnen.
+         interactive-widget=resizes-content: Android/Chrome verkleinert bei
+         geöffneter Bildschirmtastatur wieder den Layout-Viewport (Issue #27),
+         sonst liegen KeyBar und Tab-Leiste unerreichbar dahinter. Für iOS
+         übernimmt src/viewport.js dieselbe Aufgabe über --app-h. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <title>agent-dashboard</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon-192.png" type="image/png" />

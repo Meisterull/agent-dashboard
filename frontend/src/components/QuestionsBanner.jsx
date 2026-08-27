@@ -36,6 +36,15 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
         if (prevIdsRef.current && ids.some((id) => !prevIdsRef.current.includes(id)))
           onNewRef.current?.();
         prevIdsRef.current = ids;
+        // Zahl offener Rückfragen aufs App-Symbol (Issue #30). Der Service
+        // Worker setzt sie beim Push, hier stimmt sie auch dann, wenn die
+        // Frage über einen anderen Weg beantwortet wurde.
+        try {
+          if (ids.length) navigator.setAppBadge?.(ids.length);
+          else navigator.clearAppBadge?.();
+        } catch {
+          /* Badging nicht verfügbar — nur Kosmetik */
+        }
       })
       // Fragen STEHEN lassen: ein fehlgeschlagener Poll würde das Banner
       // sonst ausblenden — samt der halb getippten Antwort-Entwürfe in den
@@ -67,9 +76,10 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
     };
   }, [refreshKey]);
 
-  async function submit(q) {
+  async function submit(q, vorgabe) {
     const el = inputsRef.current[q.id];
-    const text = (el?.value || "").trim();
+    // Vorgabe kommt von einem Options-Knopf, sonst zählt das Eingabefeld.
+    const text = vorgabe || (el?.value || "").trim();
     if (!text) return;
     try {
       await answerQuestion(q.agent, q.id, text);
@@ -117,6 +127,22 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
           {" fragt "}
           <span className="font-mono text-xs text-slate-500 dark:text-slate-400">{q.agent}</span>: {q.text}
         </div>
+        {/* Vorgegebene Antworten (Issue #30): Wer `options` mitschickt, will
+            eine Entscheidung, keinen Aufsatz — ein Tipp genügt. Dieselben
+            Optionen erscheinen als Knöpfe in der Push-Benachrichtigung. */}
+        {Array.isArray(q.options) && q.options.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {q.options.map((o) => (
+              <button
+                key={o}
+                onClick={() => submit(q, o)}
+                className="rounded bg-amber-600 px-3 py-1 text-sm font-medium text-white hover:bg-amber-700"
+              >
+                {o.charAt(0).toUpperCase() + o.slice(1)}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="mt-1 flex gap-2">
           <input
             ref={(el) => {
@@ -124,6 +150,9 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
               else delete inputsRef.current[q.id];
             }}
             onKeyDown={(e) => e.key === "Enter" && submit(q)}
+            // Einzeiliges Feld: Enter sendet, hier ist das auch mobil richtig
+            // (ein <input> kennt keinen Umbruch, anders als der Chat, Issue #28).
+            enterKeyHint="send"
             placeholder="Antwort…"
             className="flex-1 rounded border border-amber-300 px-2 py-1 text-sm focus:outline-none dark:border-amber-800 dark:bg-slate-900 dark:text-slate-100"
           />

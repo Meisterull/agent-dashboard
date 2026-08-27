@@ -72,6 +72,14 @@ export const getRemoteFile = (name, path) =>
     `/api/remote/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}`,
   );
 
+// Inline statt Download: zum Anzeigen und Abspielen im Dashboard selbst
+// (Issues #25/#26). Der Server setzt dabei den echten Medientyp — mit
+// `nosniff` im nginx wäre die Fläche sonst leer bzw. der Player stumm.
+export const rawUrl = (source, path) =>
+  source === "ws"
+    ? `/api/files/raw?path=${encodeURIComponent(path)}`
+    : `/api/remote/${encodeURIComponent(source)}/raw?path=${encodeURIComponent(path)}`;
+
 export const downloadUrl = (source, path) =>
   source === "ws"
     ? `/api/files/download?path=${encodeURIComponent(path)}`

@@ -1,7 +1,12 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
+import { initViewport } from "./viewport.js";
 import "./index.css";
+
+// Sichtbare Fensterhöhe in --app-h schreiben, bevor React zeichnet — sonst
+// steht die Variable beim ersten Bild noch nicht und das Layout springt.
+initViewport();
 
 // Service Worker: nur für Web-Push (F10) — kein Offline-Caching. Ohne ihn
 // erreichen Rückfragen/fertige Tasks das Handy nicht, sobald die PWA im

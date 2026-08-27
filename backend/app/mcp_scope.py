@@ -43,6 +43,24 @@ KNOWN_TOOLS = frozenset({
 })
 
 
+# Verbindungsarten, die einen eigenen gebundenen Kanal bekommen.
+#   ssh   — das Dashboard baut den Tunnel auf, der Agent ist erreichbar.
+#   token — der Agent meldet sich SELBST über HTTPS an (Issue #32): ein
+#           Notebook hinter NAT, ein Gerät mal im LAN und mal im VPN. Es gibt
+#           keinen Tunnel, die Identität kommt aus dem Token statt aus dem
+#           Kanalaufbau — der Port bleibt derselbe Mechanismus.
+KANAL_TYPEN = frozenset({"ssh", "token"})
+
+# Grundmenge für Token-Agenten ohne eigene `tools:`-Liste. Anders als bei SSH
+# gibt es hier NICHT alles: Ein Token liegt in einer Datei auf einem Gerät, das
+# das Dashboard nicht kennt, und ist leichter zu verlieren als ein SSH-Schlüssel
+# auf einem bekannten Host. Wer mehr braucht, schreibt es ausdrücklich hin.
+TOKEN_GRUNDTOOLS = [
+    "inbox", "mark_read", "claim_task", "complete_task",
+    "send_message", "ask", "answer", "list_agents",
+]
+
+
 class ScopeError(ValueError):
     """Aufruf verletzt die Kanal-Bindung (falscher agent/sender)."""
 
@@ -89,7 +107,7 @@ def compute_scopes(
 
     kandidaten = [
         a for a in agents
-        if a.get("name") and (a.get("connection") or {}).get("type") == "ssh"
+        if a.get("name") and (a.get("connection") or {}).get("type") in KANAL_TYPEN
     ]
 
     # Erst explizite Ports binden, damit Auto-Vergabe ihnen nicht in die Quere kommt.
@@ -131,6 +149,8 @@ def compute_scopes(
             scopes[name] = {"port": naechster}
 
         tools = _tools_of(agent)
+        if tools is None and (agent.get("connection") or {}).get("type") == "token":
+            tools = list(TOKEN_GRUNDTOOLS)
         if tools is not None:
             unbekannt = [t for t in tools if t not in KNOWN_TOOLS]
             if unbekannt:
