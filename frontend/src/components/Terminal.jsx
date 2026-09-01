@@ -160,7 +160,12 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   };
 
   useEffect(() => {
-    if (visible && fitRef.current) fitRef.current();
+    if (visible && fitRef.current) {
+      fitRef.current();
+      // Beim Öffnen/Tab-Wechsel gehört der Blick ans Ende — da steht das
+      // Aktuelle. (Am Handy stand er sonst nach dem Replay oft ganz oben.)
+      termRef.current?.scrollToBottom();
+    }
   }, [visible]);
 
   useEffect(() => {
@@ -251,6 +256,11 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     let stolen = false; // Session in einem anderen Fenster übernommen (4000)
     let retry = 0;
     let retryTimer = null;
+    // Kurz nach jedem (Re-)Attach folgt der Blick jedem Schreiben ans Ende:
+    // Der Server spielt den Sitzungspuffer als normale Messages nach, und
+    // wenn währenddessen ein fit() dazwischenfunkt (Tastatur, --app-h,
+    // Panel-Layout), blieb der Blick am Handy sonst ganz oben hängen.
+    let replayBis = 0;
 
     const sendResize = (ws) => {
       if (ws.readyState === WebSocket.OPEN)
@@ -272,8 +282,12 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         // Netz-Blip doppelt/dreifach im Terminal.
         term.reset();
         sendResize(ws);
+        replayBis = Date.now() + 1500;
       };
-      ws.onmessage = (ev) => term.write(ev.data);
+      ws.onmessage = (ev) => {
+        if (Date.now() < replayBis) term.write(ev.data, () => term.scrollToBottom());
+        else term.write(ev.data);
+      };
       ws.onclose = (ev) => {
         if (gone || wsRef.current !== ws) return;
         if (ev.code === 4401) {
@@ -358,6 +372,13 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     // nicht (Issue #27) — dann läge die Prompt-Zeile unter der Tastatur.
     window.visualViewport?.addEventListener("resize", onResize);
     fitRef.current = onResize;
+    // Direkt nach dem Mount noch einmal fitten, sobald das Layout steht:
+    // Das fit() beim open() misst am Handy oft zu früh (Flex-Layout und
+    // --app-h stehen noch nicht) — der Replay würde dann in falscher
+    // Breite umbrochen. Der rAF-Fit kommt vor der ersten Server-Antwort.
+    requestAnimationFrame(() => {
+      if (!gone) onResize();
+    });
 
     return () => {
       gone = true;
