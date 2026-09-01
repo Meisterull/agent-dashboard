@@ -88,6 +88,14 @@ backend/
   requirements.txt
 frontend/                  React 18 + Vite 6 + Tailwind v4 (komplettes Dashboard)
   src/App.jsx              Layout; src/api.js fetch-Helfer; src/components/*.jsx
+  src/sprache.js           Oberfläche zweisprachig (de/en), ohne i18n-Paket:
+                           t("Deutscher Text") — Deutsch IST der Schlüssel,
+                           Englisch aus sprache/woerter_*.js (fehlender Eintrag
+                           → Deutsch). Platzhalter {0},{1} via t(text, werte…).
+                           Sprache = Setting `language` (global) + localStorage-
+                           Spiegel `ui.sprache` (synchron beim ersten Render);
+                           Umschalten in den Settings lädt die Seite neu.
+                           NEUE UI-STRINGS immer in t() + Wörterbuch-Eintrag.
   src/termScroll.js        Wischen + Größenwechsel im Terminal (#35): xterm
                            verliert bei einer Wischgeste das Berührungsziel
                            (DOM-Renderer ersetzt die Zeilen) — Zeiger festhalten

@@ -7,6 +7,8 @@
 // dem Terminal nicht den Fokus klauen — sonst klappt auf dem Handy die
 // Bildschirmtastatur bei jedem Tastendruck zu.
 
+import { t } from "../sprache";
+
 const MODS = [
   ["ctrl", "Strg"],
   ["alt", "Alt"],
@@ -56,7 +58,9 @@ export default function KeyBar({
           <button
             onPointerDown={noFocusSteal}
             onClick={onCopyMode}
-            title="Kopier-Modus ein/aus: Terminal-Inhalt als frei markierbarer Text — funktioniert auch, wenn eine TUI (z.B. Claude Code) die Maus abfängt"
+            title={t(
+              "Kopier-Modus ein/aus: Terminal-Inhalt als frei markierbarer Text — funktioniert auch, wenn eine TUI (z.B. Claude Code) die Maus abfängt",
+            )}
             // Aktiv-Zustand wie die Sticky-Modifikatoren: sichtbar, dass ein
             // Modus läuft — und derselbe Knopf schaltet ihn wieder aus.
             className={`shrink-0 rounded px-2.5 py-1.5 text-xs font-semibold ${
@@ -76,7 +80,9 @@ export default function KeyBar({
           <button
             onPointerDown={noFocusSteal}
             onClick={onTextMode}
-            title="Textzeile ein/aus: mit der Handy-Tastatur samt Wortvorschlägen schreiben und am Stück senden — Vorschläge direkt ins Terminal verdoppeln den Text"
+            title={t(
+              "Textzeile ein/aus: mit der Handy-Tastatur samt Wortvorschlägen schreiben und am Stück senden — Vorschläge direkt ins Terminal verdoppeln den Text",
+            )}
             className={`shrink-0 rounded px-2.5 py-1.5 text-xs font-semibold ${
               textActive ? "bg-sky-500 text-white" : "bg-slate-700 text-sky-300"
             }`}
@@ -94,7 +100,7 @@ export default function KeyBar({
           <button
             onPointerDown={noFocusSteal}
             onClick={onTastatur}
-            title="Bildschirmtastatur ein- oder ausblenden"
+            title={t("Bildschirmtastatur ein- oder ausblenden")}
             className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs text-sky-300"
           >
             ⌨
@@ -109,7 +115,7 @@ export default function KeyBar({
           <button
             onPointerDown={noFocusSteal}
             onClick={() => onSchrift(-1)}
-            title="Schrift kleiner"
+            title={t("Schrift kleiner")}
             className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs text-slate-200"
           >
             A−
@@ -117,7 +123,7 @@ export default function KeyBar({
           <button
             onPointerDown={noFocusSteal}
             onClick={() => onSchrift(1)}
-            title="Schrift größer"
+            title={t("Schrift größer")}
             className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-200"
           >
             A+
@@ -136,7 +142,7 @@ export default function KeyBar({
               : "bg-slate-700 text-slate-200"
           }`}
         >
-          {label}
+          {t(label)}
         </button>
       ))}
       <span className="mx-1 h-5 w-px shrink-0 bg-slate-700" />
@@ -151,7 +157,7 @@ export default function KeyBar({
             }
             className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs text-slate-200"
           >
-            {label}
+            {t(label)}
           </button>
         );
       })}

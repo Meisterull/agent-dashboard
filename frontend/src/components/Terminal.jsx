@@ -7,6 +7,7 @@ import { tastaturOffen, tastaturSchliessen } from "../viewport";
 import { fittenOhneSprung, wischScrollen } from "../termScroll";
 import { encodeKey, encodeChar } from "../keys";
 import { getSshBuffer } from "../api";
+import { t } from "../sprache";
 
 // Ein SSH-Terminal. Spricht /ws/ssh/<name>?sid=… — die sid identifiziert
 // eine serverseitig persistente Session: bricht der WebSocket ab (Handy
@@ -302,7 +303,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           return;
         }
         if (ev.code === 4000) {
-          term.write("\r\n[Sitzung in anderem Fenster übernommen]\r\n");
+          term.write("\r\n" + t("[Sitzung in anderem Fenster übernommen]") + "\r\n");
           stolen = true;
           setTakenOver(true);
           return; // kein Reconnect — sonst klauen sich zwei Tabs die Session
@@ -310,7 +311,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         // Netz weg / Handy gesperrt → automatisch neu verbinden
         const delay = Math.min(1000 * 2 ** retry, 10000);
         retry += 1;
-        term.write(`\r\n[getrennt — neuer Versuch in ${Math.round(delay / 1000)}s]\r\n`);
+        term.write(
+          "\r\n" + t("[getrennt — neuer Versuch in {0}s]", Math.round(delay / 1000)) + "\r\n",
+        );
         retryTimer = setTimeout(connect, delay);
       };
     };
@@ -479,50 +482,49 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         <div ref={ref} className="h-full w-full" />
         {takenOver && !copyView && (
           <div className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-2 rounded border border-amber-600 bg-slate-900/90 px-2 py-1 text-[11px] text-amber-300">
-            <span>Sitzung in einem anderen Fenster übernommen</span>
+            <span>{t("Sitzung in einem anderen Fenster übernommen")}</span>
             <button
               onClick={() => reconnectRef.current?.()}
               className="rounded border border-amber-500 px-2 py-0.5 text-amber-200 hover:bg-amber-900"
             >
-              Wieder verbinden
+              {t("Wieder verbinden")}
             </button>
           </div>
         )}
         {mouseCaptured && !copyView && (
           <div className="pointer-events-none absolute right-2 top-1 z-10 max-w-[90%] rounded border border-slate-600 bg-slate-900/85 px-2 py-0.5 text-[10px] text-slate-300">
-            App steuert die Maus — Markieren: Shift+Ziehen (Mac: ⌥) · Touch: ⎘
+            {t("App steuert die Maus — Markieren: Shift+Ziehen (Mac: ⌥) · Touch: ⎘")}
           </div>
         )}
         {copyView && (
           <div className="absolute inset-0 z-20 flex flex-col bg-slate-900/95">
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-700 px-2 py-1">
               <span className="text-xs font-semibold text-slate-300">
-                Kopier-Modus — Text frei markierbar
+                {t("Kopier-Modus — Text frei markierbar")}
               </span>
               {copyView.full ? (
                 <span className="text-[10px] text-slate-400">
-                  voller Sitzungsverlauf (Server)
+                  {t("voller Sitzungsverlauf (Server)")}
                 </span>
               ) : copyView.alt ? (
                 <span className="text-[10px] text-amber-400">
-                  TUI aktiv — nur Bildschirm + Verlauf davor; alles: „Voller
-                  Verlauf“
+                  {t("TUI aktiv — nur Bildschirm + Verlauf davor; alles: „Voller Verlauf“")}
                 </span>
               ) : null}
               <span className="flex-1" />
               {!copyView.full && (
                 <button onClick={loadFullBuffer} className={overlayBtn}>
-                  Voller Verlauf
+                  {t("Voller Verlauf")}
                 </button>
               )}
               <button onClick={refreshCopyMode} className={overlayBtn}>
-                Aktualisieren
+                {t("Aktualisieren")}
               </button>
               <button onClick={copyAll} className={overlayBtn}>
-                {copied ? "✓ kopiert" : "Alles kopieren"}
+                {copied ? t("✓ kopiert") : t("Alles kopieren")}
               </button>
               <button onClick={closeCopyMode} className={overlayBtn}>
-                Schließen
+                {t("Schließen")}
               </button>
             </div>
             <pre
@@ -542,7 +544,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           <input
             ref={zeileRef}
             autoFocus
-            placeholder="Text hier tippen — Wortvorschläge funktionieren"
+            placeholder={t("Text hier tippen — Wortvorschläge funktionieren")}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -556,7 +558,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           <button
             onPointerDown={(e) => e.preventDefault()}
             onClick={() => zeileSenden(false)}
-            title="Text nur einfügen (ohne Enter)"
+            title={t("Text nur einfügen (ohne Enter)")}
             className="shrink-0 rounded bg-slate-700 px-2.5 py-1.5 text-xs text-slate-200"
           >
             →
@@ -564,7 +566,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           <button
             onPointerDown={(e) => e.preventDefault()}
             onClick={() => zeileSenden(true)}
-            title="Text senden (mit Enter)"
+            title={t("Text senden (mit Enter)")}
             className="shrink-0 rounded bg-sky-600 px-2.5 py-1.5 text-xs font-semibold text-white"
           >
             ⏎

@@ -12,6 +12,7 @@ import Login from "./components/Login";
 import { DialogHost } from "./components/Dialog";
 import { starteLiveEvents } from "./live";
 import { authCheck, getSettings, logout } from "./api";
+import { t, sprachAngleichen } from "./sprache";
 
 // CodeMirror (+ language-data) ist der mit Abstand größte Brocken und wird
 // nur beim Öffnen einer Datei gebraucht → aus dem Hauptbundle heraushalten.
@@ -28,10 +29,10 @@ const EditorModal = lazy(() => import("./components/EditorModal"));
 // CSS versteckt), damit Chat-Zustand und SSH-Sessions Wechsel überleben.
 
 const TABS = [
-  ["chat", "Chat"],
-  ["terminal", "Terminal"],
-  ["agenten", "Agenten"],
-  ["dateien", "Dateien"],
+  ["chat", t("Chat")],
+  ["terminal", t("Terminal")],
+  ["agenten", t("Agenten")],
+  ["dateien", t("Dateien")],
 ];
 
 export default function App() {
@@ -53,7 +54,12 @@ export default function App() {
     if (!authed) return;
     const load = () =>
       getSettings()
-        .then((s) => setExtWindows((s.external_windows || []).filter((w) => w?.name && w?.url)))
+        .then((s) => {
+          // Gerätesprache an das globale Setting angleichen (lädt bei
+          // Abweichung einmal neu — Details in sprache.js).
+          sprachAngleichen(s.language);
+          setExtWindows((s.external_windows || []).filter((w) => w?.name && w?.url));
+        })
         .catch(() => {});
     load();
     window.addEventListener("settings:changed", load);
@@ -178,7 +184,7 @@ export default function App() {
   if (authed === null)
     return (
       <div className="flex h-[var(--app-h,100dvh)] items-center justify-center bg-slate-100 text-sm text-slate-400 dark:bg-slate-950 dark:text-slate-500">
-        lädt…
+        {t("lädt…")}
       </div>
     );
 
@@ -209,12 +215,12 @@ export default function App() {
         panels={[
           {
             id: "dateien",
-            title: "Dateien",
+            title: t("Dateien"),
             body: <FilesPanel refreshKey={refreshKey} onOpenFile={setOpenFile} />,
           },
           {
             id: "chat",
-            title: "Chat",
+            title: t("Chat"),
             body: (
               <Chat
                 sessionId={sessionId}
@@ -225,10 +231,10 @@ export default function App() {
             ),
             bodyClass: "bg-slate-100 dark:bg-slate-950",
           },
-          { id: "terminal", title: "Terminal", body: <TerminalPanel /> },
+          { id: "terminal", title: t("Terminal"), body: <TerminalPanel /> },
           {
             id: "agenten",
-            title: "Agenten",
+            title: t("Agenten"),
             body: (
               <AgentsPanel
                 refreshKey={refreshKey}
@@ -273,7 +279,7 @@ export default function App() {
         <Suspense
           fallback={
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-white text-sm text-slate-400 dark:bg-slate-900 dark:text-slate-500">
-              Editor lädt…
+              {t("Editor lädt…")}
             </div>
           }
         >

@@ -41,6 +41,8 @@ No SaaS, no telemetry, one hardened Docker container on your own server.
   per-agent tool allowlists limit what a channel may do.
 - **Config-driven integrations** — attach named HTTP APIs (ticketing, ERP,
   home automation, …) as callable tools via a YAML file, no code.
+- **English and German UI** — switchable in the settings, synced across your
+  devices.
 - **One hardened container** — nginx + FastAPI + MCP server under supervisord:
   non-root, `cap_drop: ALL`, no `docker.sock`, path-traversal-safe file access,
   password-protected UI.

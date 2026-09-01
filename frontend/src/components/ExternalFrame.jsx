@@ -3,6 +3,8 @@
 // "IP:Port[/pfad]" laufen über den authentifizierten nginx-Proxy /ext/ —
 // damit funktionieren http-Ziele trotz https-Dashboard (Mixed-Content) und
 // WebSockets (websockify). Volle https://-URLs werden direkt eingebettet.
+import { t } from "../sprache";
+
 export function resolveExternalUrl(raw) {
   const url = (raw || "").trim();
   if (!url) return null;
@@ -19,8 +21,10 @@ export default function ExternalFrame({ url }) {
   if (!src)
     return (
       <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-slate-400 dark:text-slate-500">
-        Ungültige Adresse „{url}“ — erwartet „IP:Port[/pfad]“ (LAN) oder eine
-        volle https://-URL.
+        {t(
+          "Ungültige Adresse „{0}“ — erwartet „IP:Port[/pfad]“ (LAN) oder eine volle https://-URL.",
+          url,
+        )}
       </div>
     );
   return (

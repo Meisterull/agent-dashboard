@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getQuestions, answerQuestion, closeQuestion } from "../api";
 import { nachfragen } from "./Dialog";
+import { t } from "../sprache";
 
 // Offene Rückfragen (needs_confirm) über alle Agenten. Hier beantwortet der
 // Mensch eine Worker-Rückfrage, ohne ins jeweilige Fenster zu wechseln.
@@ -94,13 +95,15 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
   async function schliessen(q) {
     // Sicherheitsabfrage: das Schließen lässt den wartenden Task scheitern.
     const grund = await nachfragen({
-      title: "Rückfrage ohne Antwort schließen",
-      text:
-        `Rückfrage von ${q.sender} ohne Antwort schließen?\n` +
-        `Ein Task, der nur auf sie wartet, scheitert dabei mit Klartext ` +
-        `und liegt danach wiederanlauffähig in .failed/.`,
-      label: "Grund (optional)",
-      ok: "Schließen",
+      title: t("Rückfrage ohne Antwort schließen"),
+      text: t(
+        "Rückfrage von {0} ohne Antwort schließen?\n" +
+          "Ein Task, der nur auf sie wartet, scheitert dabei mit Klartext " +
+          "und liegt danach wiederanlauffähig in .failed/.",
+        q.sender,
+      ),
+      label: t("Grund (optional)"),
+      ok: t("Schließen"),
       danger: true,
       allowEmpty: true,
     });
@@ -124,7 +127,9 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
       <div key={`${q.agent}/${q.id}`} className="text-sm">
         <div className="text-slate-700 dark:text-slate-200">
           <span className="font-mono text-xs text-slate-500 dark:text-slate-400">{q.sender}</span>
-          {" fragt "}
+          {" "}
+          {t("fragt")}
+          {" "}
           <span className="font-mono text-xs text-slate-500 dark:text-slate-400">{q.agent}</span>: {q.text}
         </div>
         {/* Vorgegebene Antworten (Issue #30): Wer `options` mitschickt, will
@@ -153,18 +158,18 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
             // Einzeiliges Feld: Enter sendet, hier ist das auch mobil richtig
             // (ein <input> kennt keinen Umbruch, anders als der Chat, Issue #28).
             enterKeyHint="send"
-            placeholder="Antwort…"
+            placeholder={t("Antwort…")}
             className="flex-1 rounded border border-amber-300 px-2 py-1 text-sm focus:outline-none dark:border-amber-800 dark:bg-slate-900 dark:text-slate-100"
           />
           <button
             onClick={() => submit(q)}
             className="rounded bg-amber-600 px-3 py-1 text-sm font-medium text-white hover:bg-amber-700"
           >
-            Antworten
+            {t("Antworten")}
           </button>
           <button
             onClick={() => schliessen(q)}
-            title="Ohne Antwort schließen — der wartende Task scheitert mit Klartext"
+            title={t("Ohne Antwort schließen — der wartende Task scheitert mit Klartext")}
             className="rounded border border-amber-300 px-2 py-1 text-sm text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-900"
           >
             ✕
@@ -181,13 +186,15 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
   return (
     <div className="border-b border-amber-300 bg-amber-50 px-4 py-2 dark:border-amber-800 dark:bg-amber-950">
       <div className="mb-1 text-xs font-semibold text-amber-700 dark:text-amber-400">
-        {meine.length > 0 ? `Offene Rückfragen (${meine.length})` : "Keine Rückfrage an dich"}
+        {meine.length > 0 ? t("Offene Rückfragen ({0})", meine.length) : t("Keine Rückfrage an dich")}
         {offline && (
           <span
-            title="Letzte Aktualisierung fehlgeschlagen — angezeigt wird der letzte bekannte Stand."
+            title={t(
+              "Letzte Aktualisierung fehlgeschlagen — angezeigt wird der letzte bekannte Stand.",
+            )}
             className="ml-2 font-normal text-amber-600 dark:text-amber-500"
           >
-            · Verbindung gestört
+            · {t("Verbindung gestört")}
           </span>
         )}
       </div>
@@ -197,11 +204,18 @@ export default function QuestionsBanner({ refreshKey, onAnswered, onNew }) {
         <div className={meine.length > 0 ? "mt-2 border-t border-amber-200 pt-2 dark:border-amber-900" : ""}>
           <button
             onClick={() => setZeigeFremde((v) => !v)}
-            title="Fragen, die Agenten untereinander stellen — beantworten kann sie auch der gefragte Agent selbst"
+            title={t(
+              "Fragen, die Agenten untereinander stellen — beantworten kann sie auch der gefragte Agent selbst",
+            )}
             className="text-xs text-amber-700/80 hover:underline dark:text-amber-400/80"
           >
-            {zeigeFremde ? "▾" : "▸"} {fremde.length} Rückfrage
-            {fremde.length === 1 ? "" : "n"} zwischen Agenten
+            {zeigeFremde ? "▾" : "▸"}{" "}
+            {t(
+              fremde.length === 1
+                ? "{0} Rückfrage zwischen Agenten"
+                : "{0} Rückfragen zwischen Agenten",
+              fremde.length,
+            )}
           </button>
           {zeigeFremde && (
             <div className="mt-2 space-y-2 opacity-80">{fremde.map(frageZeile)}</div>

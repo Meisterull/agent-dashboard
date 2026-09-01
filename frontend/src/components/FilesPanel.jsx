@@ -12,6 +12,7 @@ import {
   deletePath,
   saveFile,
 } from "../api";
+import { t } from "../sprache";
 
 // Datei-Browser mit umschaltbarer Quelle: Container-Workspace ("ws") oder
 // eine SSH-Verbindung (SFTP auf dem Agenten-PC). Workspace-Pfade sind relativ,
@@ -64,7 +65,7 @@ function FileDialog({ dlg, onClose }) {
         )}
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className={dlgBtn}>
-            Abbrechen
+            {t("Abbrechen")}
           </button>
           <button
             type="submit"
@@ -165,9 +166,9 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   function onNewFile() {
     setDlg({
       kind: "prompt",
-      title: "Neue Datei",
-      label: "Name der neuen Datei",
-      ok: "Anlegen",
+      title: t("Neue Datei"),
+      label: t("Name der neuen Datei"),
+      ok: t("Anlegen"),
       // leere Datei anlegen und direkt im Editor öffnen
       run: (name) =>
         run(async () => {
@@ -181,9 +182,9 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   function onNewDir() {
     setDlg({
       kind: "prompt",
-      title: "Neuer Ordner",
-      label: "Name des neuen Ordners",
-      ok: "Anlegen",
+      title: t("Neuer Ordner"),
+      label: t("Name des neuen Ordners"),
+      ok: t("Anlegen"),
       run: (name) => run(() => mkdir(source, joinDir(name))),
     });
   }
@@ -191,10 +192,10 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   function onRename(entry) {
     setDlg({
       kind: "prompt",
-      title: "Umbenennen",
-      label: `Neuer Name für „${entry.name}“`,
+      title: t("Umbenennen"),
+      label: t("Neuer Name für „{0}“", entry.name),
       initial: entry.name,
-      ok: "Umbenennen",
+      ok: t("Umbenennen"),
       run: (name) => {
         if (name === entry.name) return;
         run(() => renamePath(source, entry.path, joinDir(name)));
@@ -203,12 +204,12 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   }
 
   function onDelete(entry) {
-    const what = entry.type === "dir" ? "Ordner (samt Inhalt)" : "Datei";
+    const what = t(entry.type === "dir" ? "Ordner (samt Inhalt)" : "Datei");
     setDlg({
       kind: "confirm",
-      title: "Löschen",
-      text: `${what} „${entry.name}“ wirklich löschen?`,
-      ok: "Löschen",
+      title: t("Löschen"),
+      text: t("{0} „{1}“ wirklich löschen?", what, entry.name),
+      ok: t("Löschen"),
       danger: true,
       run: () => run(() => deletePath(source, entry.path)),
     });
@@ -236,7 +237,7 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
               : "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
           }`}
         >
-          Workspace
+          {t("Workspace")}
         </button>
         {connections.map((c) => (
           <button
@@ -257,7 +258,7 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
         <button
           onClick={() => canUp && setPath(parent)}
           disabled={!canUp}
-          title="eine Ebene hoch"
+          title={t("eine Ebene hoch")}
           className="rounded px-1.5 py-0.5 text-slate-500 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-400 dark:hover:bg-slate-800"
         >
           ↑
@@ -271,7 +272,7 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
         <button
           onClick={() => setLocalKey((k) => k + 1)}
           disabled={busy}
-          title="Liste aktualisieren"
+          title={t("Liste aktualisieren")}
           className="shrink-0 rounded px-1.5 py-0.5 text-slate-500 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-400 dark:hover:bg-slate-800"
         >
           ↻
@@ -279,23 +280,23 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
         <button
           onClick={onNewFile}
           disabled={busy || !data}
-          title="neue Datei anlegen"
+          title={t("neue Datei anlegen")}
           className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
         >
-          +Datei
+          +{t("Datei")}
         </button>
         <button
           onClick={onNewDir}
           disabled={busy || !data}
-          title="neuen Ordner anlegen"
+          title={t("neuen Ordner anlegen")}
           className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
         >
-          +Ordner
+          +{t("Ordner")}
         </button>
         <button
           onClick={() => inputRef.current?.click()}
           disabled={busy || !data}
-          title="Dateien in dieses Verzeichnis hochladen"
+          title={t("Dateien in dieses Verzeichnis hochladen")}
           className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
         >
           {busy ? "…" : "⇪"}
@@ -308,10 +309,10 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
           <p className="px-3 py-1 text-xs text-red-600 dark:text-red-400">{error}</p>
         )}
         {!error && !data && (
-          <p className="px-3 py-1 text-xs text-slate-400 dark:text-slate-500">lädt…</p>
+          <p className="px-3 py-1 text-xs text-slate-400 dark:text-slate-500">{t("lädt…")}</p>
         )}
         {data && data.entries.length === 0 && (
-          <p className="px-3 py-1 text-xs text-slate-400 dark:text-slate-500">leer</p>
+          <p className="px-3 py-1 text-xs text-slate-400 dark:text-slate-500">{t("leer")}</p>
         )}
         {data &&
           data.entries.map((e) => (
@@ -345,7 +346,7 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
                 <a
                   href={downloadUrl(source, e.path)}
                   download={e.name}
-                  title="herunterladen"
+                  title={t("herunterladen")}
                   className="shrink-0 rounded px-1 py-0.5 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-200"
                 >
                   ⤓
@@ -353,14 +354,14 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
               )}
               <button
                 onClick={() => onRename(e)}
-                title="umbenennen"
+                title={t("umbenennen")}
                 className="shrink-0 rounded px-1 py-0.5 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-200"
               >
                 ✎
               </button>
               <button
                 onClick={() => onDelete(e)}
-                title="löschen"
+                title={t("löschen")}
                 className="shrink-0 rounded px-1 py-0.5 text-xs text-slate-400 hover:bg-red-100 hover:text-red-600 dark:text-slate-500 dark:hover:bg-red-950 dark:hover:text-red-400"
               >
                 🗑

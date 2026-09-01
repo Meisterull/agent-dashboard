@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { login } from "../api";
+import { t } from "../sprache";
 
 // Passwort-Login (Einzelbenutzer). Erscheint, wenn /api/auth/check "required"
 // meldet oder irgendein API-Call mit 401 antwortet (Event "auth:required").
@@ -53,7 +54,7 @@ export default function Login({ onSuccess }) {
           // in kontrollierten Inputs (siehe Chat.jsx)
           defaultValue={username}
           onChange={(e) => setUsername(e.target.value)}
-          placeholder="Benutzer"
+          placeholder={t("Benutzer")}
           className={inputCls}
         />
         <input
@@ -64,7 +65,7 @@ export default function Login({ onSuccess }) {
           autoFocus
           defaultValue={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="Passwort"
+          placeholder={t("Passwort")}
           className={inputCls}
         />
         {error && (
@@ -77,7 +78,7 @@ export default function Login({ onSuccess }) {
           disabled={busy || !password}
           className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
         >
-          {busy ? "prüft…" : "Anmelden"}
+          {busy ? t("prüft…") : t("Anmelden")}
         </button>
       </form>
     </div>

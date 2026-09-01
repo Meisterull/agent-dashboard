@@ -1,3 +1,5 @@
+import { t } from "../sprache";
+
 export default function TopBar({
   sessionId,
   onOpenSettings,
@@ -16,58 +18,58 @@ export default function TopBar({
         agent-dashboard
       </h1>
       <div className="flex items-center gap-2 text-xs text-slate-500 sm:gap-3 dark:text-slate-400">
-        <span className="hidden sm:inline">{sessionId ? `Session ${sessionId.slice(0, 8)}…` : "neue Session"}</span>
+        <span className="hidden sm:inline">{sessionId ? t("Session {0}…", sessionId.slice(0, 8)) : t("neue Session")}</span>
         <button
           onClick={onToggleViewMode}
           title={
             viewMode === "windows"
-              ? "Ein Panel vollflächig, Wechsel über Tabs unten"
-              : "Frei verschiebbare Fenster"
+              ? t("Ein Panel vollflächig, Wechsel über Tabs unten")
+              : t("Frei verschiebbare Fenster")
           }
           className="hidden rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 md:block dark:border-slate-600 dark:hover:bg-slate-800"
         >
-          {viewMode === "windows" ? "Tab-Modus" : "Fenster-Modus"}
+          {viewMode === "windows" ? t("Tab-Modus") : t("Fenster-Modus")}
         </button>
         {viewMode === "windows" && (
           <>
             <button
               onClick={() => window.dispatchEvent(new Event("workspace:reset"))}
-              title="Fensteranordnung auf Standard zurücksetzen"
+              title={t("Fensteranordnung auf Standard zurücksetzen")}
               className="hidden rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 md:block dark:border-slate-600 dark:hover:bg-slate-800"
             >
-              Fenster anordnen
+              {t("Fenster anordnen")}
             </button>
             <button
               onClick={() => window.dispatchEvent(new Event("workspace:views"))}
-              title="Eigene Fensteranordnungen speichern und laden"
+              title={t("Eigene Fensteranordnungen speichern und laden")}
               className="hidden rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 md:block dark:border-slate-600 dark:hover:bg-slate-800"
             >
-              Ansichten
+              {t("Ansichten")}
             </button>
           </>
         )}
         <button
           onClick={onToggleTheme}
-          title={theme === "dark" ? "Hell-Modus" : "Dunkel-Modus"}
+          title={theme === "dark" ? t("Hell-Modus") : t("Dunkel-Modus")}
           className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-800"
         >
           {theme === "dark" ? "☀️" : "🌙"}
         </button>
         <button
           onClick={onOpenSettings}
-          title="Einstellungen"
+          title={t("Einstellungen")}
           className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-800"
         >
           <span className="sm:hidden">⚙️</span>
-          <span className="hidden sm:inline">Einstellungen</span>
+          <span className="hidden sm:inline">{t("Einstellungen")}</span>
         </button>
         <button
           onClick={onLogout}
-          title="Session-Cookie löschen und zum Login zurück"
+          title={t("Session-Cookie löschen und zum Login zurück")}
           className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-800"
         >
           <span className="sm:hidden">🚪</span>
-          <span className="hidden sm:inline">Abmelden</span>
+          <span className="hidden sm:inline">{t("Abmelden")}</span>
         </button>
       </div>
     </header>

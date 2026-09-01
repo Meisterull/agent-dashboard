@@ -9,6 +9,7 @@ import {
   unsubscribePush,
   pushTest,
 } from "../api";
+import { t, sprachMerken } from "../sprache";
 
 // Das Orchestrator-Modell (`orch_model`) wird bewusst HIER umgeschaltet und
 // nicht im Chat-Kopf: der ist mobil schon voll (Titel + Verlauf-Auswahl +
@@ -30,7 +31,7 @@ export default function Settings({ onClose }) {
     getSettings()
       .then(setSettings)
       .catch((e) => {
-        setError(`Einstellungen konnten nicht geladen werden: ${e.message || e}`);
+        setError(t("Einstellungen konnten nicht geladen werden: {0}", e.message || e));
         setSettings({ language: "de" });
       });
     getModels()
@@ -58,12 +59,18 @@ export default function Settings({ onClose }) {
       setSettings(result);
       setSaved(true);
       window.dispatchEvent(new Event("settings:changed"));
+      // Sprache gilt auch für die Oberfläche: Gerät angleichen und neu laden,
+      // wenn sie sich geändert hat (sprache.js liest sie beim Start).
+      if (sprachMerken(result.language)) {
+        window.location.reload();
+        return;
+      }
       getModels()
         .then(setModels)
         .catch(() => {});
     } catch (e) {
       setSaved(false);
-      setError(`Speichern fehlgeschlagen: ${e.message || e}`);
+      setError(t("Speichern fehlgeschlagen: {0}", e.message || e));
     }
   }
 
@@ -142,14 +149,14 @@ export default function Settings({ onClose }) {
     );
 
   return (
-    <Modal title="Einstellungen" onClose={onClose}>
+    <Modal title={t("Einstellungen")} onClose={onClose}>
       {!settings ? (
-        <p className="text-sm text-slate-400">lädt…</p>
+        <p className="text-sm text-slate-400">{t("lädt…")}</p>
       ) : (
         <div className="space-y-4 text-sm">
           <div>
             <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
-              Orchestrator-Modell
+              {t("Orchestrator-Modell")}
             </span>
             {models?.models?.length ? (
               <select
@@ -157,7 +164,10 @@ export default function Settings({ onClose }) {
                 onChange={(e) => update("orch_model", e.target.value)}
                 className="w-full rounded border border-slate-300 px-2 py-1.5 dark:border-slate-600 dark:bg-slate-800"
               >
-                <option value="">Standard aus .env{models.current ? ` (${models.current})` : ""}</option>
+                <option value="">
+                  {t("Standard aus .env")}
+                  {models.current ? ` (${models.current})` : ""}
+                </option>
                 {/* eingestelltes Modell mit aufnehmen, auch wenn es der
                     Provider (nicht mehr) auflistet — sonst zeigt das Feld
                     stillschweigend "Standard" und speichert das auch so */}
@@ -174,27 +184,29 @@ export default function Settings({ onClose }) {
                 // wird über onChange nur fürs Speichern gespiegelt.
                 defaultValue={settings.orch_model || ""}
                 onChange={(e) => update("orch_model", e.target.value)}
-                placeholder={models?.current || "leer = Standard aus .env"}
+                placeholder={models?.current || t("leer = Standard aus .env")}
                 className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
               />
             )}
             <p className="mt-1 text-xs text-slate-400">
-              Provider:{" "}
+              {t("Provider:")}{" "}
               <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">
-                {models?.provider || "unbekannt"}
+                {models?.provider || t("unbekannt")}
               </code>{" "}
-              — kommt aus <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">.env</code>{" "}
+              {t("— kommt aus")}{" "}
+              <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">.env</code>{" "}
               (<code className="rounded bg-slate-100 px-1 dark:bg-slate-800">ORCH_PROVIDER</code>)
-              und ist hier bewusst nicht umschaltbar. Wirkt sofort auf neue
-              Chat-Runden.
+              {t("und ist hier bewusst nicht umschaltbar. Wirkt sofort auf neue Chat-Runden.")}
               {models && !models.models.length
-                ? " Der Provider liefert keine Modell-Liste — Name von Hand eintragen."
+                ? " " + t("Der Provider liefert keine Modell-Liste — Name von Hand eintragen.")
                 : ""}
             </p>
           </div>
 
           <label className="block">
-            <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">Sprache</span>
+            <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+              {t("Sprache")}
+            </span>
             <select
               value={settings.language}
               onChange={(e) => update("language", e.target.value)}
@@ -207,30 +219,33 @@ export default function Settings({ onClose }) {
 
           <div>
             <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
-              Benachrichtigungen
+              {t("Benachrichtigungen")}
             </span>
             <p className="mb-2 text-xs text-slate-400">
-              Web-Push auf diesem Gerät: Rückfragen an dich und fertige Tasks
-              melden sich auch, wenn die App im Hintergrund schläft.
+              {t(
+                "Web-Push auf diesem Gerät: Rückfragen an dich und fertige Tasks melden sich auch, wenn die App im Hintergrund schläft.",
+              )}
             </p>
             {pushInfo.status === "prueft" && (
-              <p className="text-xs text-slate-400">prüft…</p>
+              <p className="text-xs text-slate-400">{t("prüft…")}</p>
             )}
             {pushInfo.status === "unsupported" && (
               <p className="text-xs text-slate-400">
-                Dieser Browser unterstützt kein Web-Push (oder der Service
-                Worker ist noch nicht registriert — Seite neu laden).
+                {t(
+                  "Dieser Browser unterstützt kein Web-Push (oder der Service Worker ist noch nicht registriert — Seite neu laden).",
+                )}
               </p>
             )}
             {pushInfo.status === "server-aus" && (
               <p className="text-xs text-amber-600 dark:text-amber-400">
-                Server kann keine VAPID-Schlüssel erzeugen — Backend-Log prüfen.
+                {t("Server kann keine VAPID-Schlüssel erzeugen — Backend-Log prüfen.")}
               </p>
             )}
             {pushInfo.status === "denied" && (
               <p className="text-xs text-amber-600 dark:text-amber-400">
-                Benachrichtigungen sind im Browser blockiert — in den
-                Website-Einstellungen wieder erlauben.
+                {t(
+                  "Benachrichtigungen sind im Browser blockiert — in den Website-Einstellungen wieder erlauben.",
+                )}
               </p>
             )}
             {pushInfo.status === "fehler" && (
@@ -250,26 +265,27 @@ export default function Settings({ onClose }) {
                   }`}
                 >
                   {pushInfo.status === "an"
-                    ? "Deaktivieren"
-                    : "Auf diesem Gerät aktivieren"}
+                    ? t("Deaktivieren")
+                    : t("Auf diesem Gerät aktivieren")}
                 </button>
                 {pushInfo.status === "an" && (
                   <button
                     onClick={() => pushTest().catch(() => {})}
                     disabled={pushBusy || pushInfo.info?.sender === false}
-                    title="Testbenachrichtigung an alle registrierten Geräte"
+                    title={t("Testbenachrichtigung an alle registrierten Geräte")}
                     className="rounded border border-slate-300 px-3 py-1 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
                   >
-                    Test senden
+                    {t("Test senden")}
                   </button>
                 )}
                 <span className="text-xs text-slate-400">
-                  {pushInfo.info?.subscriptions ?? 0} Gerät(e) registriert
+                  {t("{0} Gerät(e) registriert", pushInfo.info?.subscriptions ?? 0)}
                 </span>
                 {pushInfo.info?.sender === false && (
                   <span className="text-xs text-amber-600 dark:text-amber-400">
-                    Versand erst nach dem nächsten Image-Rebuild (pywebpush
-                    fehlt noch im Container).
+                    {t(
+                      "Versand erst nach dem nächsten Image-Rebuild (pywebpush fehlt noch im Container).",
+                    )}
                   </span>
                 )}
               </div>
@@ -278,12 +294,12 @@ export default function Settings({ onClose }) {
 
           <div>
             <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
-              Externe Fenster
+              {t("Externe Fenster")}
             </span>
             <p className="mb-2 text-xs text-slate-400">
-              Zusätzliche Fenster im Workspace, z.&nbsp;B. noVNC. Adresse als
+              {t("Zusätzliche Fenster im Workspace, z. B. noVNC. Adresse als")}
               <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">IP:Port/pfad</code>
-              (LAN, läuft über das Dashboard — auch WebSocket) oder volle https://-URL.
+              {t("(LAN, läuft über das Dashboard — auch WebSocket) oder volle https://-URL.")}
             </p>
             <div className="space-y-2">
               {/* defaultValue statt value (GBoard-Regel, s. o.). Die Länge
@@ -296,7 +312,7 @@ export default function Settings({ onClose }) {
                   <input
                     defaultValue={w.name || ""}
                     onChange={(e) => updateWindow(i, { name: e.target.value })}
-                    placeholder="Name"
+                    placeholder={t("Name")}
                     className="w-28 rounded border border-slate-300 px-2 py-1.5 dark:border-slate-600 dark:bg-slate-800"
                   />
                   <input
@@ -309,7 +325,7 @@ export default function Settings({ onClose }) {
                     onClick={() =>
                       update("external_windows", extWindows.filter((_, j) => j !== i))
                     }
-                    title="Fenster entfernen"
+                    title={t("Fenster entfernen")}
                     className="shrink-0 rounded border border-slate-300 px-2 text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-600 dark:hover:bg-red-950"
                   >
                     ✕
@@ -322,14 +338,15 @@ export default function Settings({ onClose }) {
                 }
                 className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
               >
-                + Fenster hinzufügen
+                {t("+ Fenster hinzufügen")}
               </button>
             </div>
           </div>
 
           <p className="text-xs text-slate-400">
-            API-Keys und Tokens werden hier nicht verwaltet — sie bleiben in
-            <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">.env</code>/Docker-Secrets.
+            {t("API-Keys und Tokens werden hier nicht verwaltet — sie bleiben in")}
+            <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">.env</code>
+            {t("/Docker-Secrets.")}
           </p>
 
           {error && (
@@ -343,9 +360,9 @@ export default function Settings({ onClose }) {
               onClick={save}
               className="rounded bg-blue-600 px-4 py-1.5 font-medium text-white hover:bg-blue-700"
             >
-              Speichern
+              {t("Speichern")}
             </button>
-            {saved && <span className="text-xs text-green-600">gespeichert</span>}
+            {saved && <span className="text-xs text-green-600">{t("gespeichert")}</span>}
           </div>
         </div>
       )}

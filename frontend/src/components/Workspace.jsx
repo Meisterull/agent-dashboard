@@ -7,6 +7,7 @@ import {
   normRect,
   standardLayout,
 } from "../workspaceLayout";
+import { t } from "../sprache";
 
 // Fenster-Manager für den Desktop (md+): jedes Panel ist ein frei
 // verschiebbares und größenveränderbares Fenster — Titelleiste ziehen zum
@@ -404,7 +405,7 @@ export default function Workspace({
               <header
                 onPointerDown={(e) => startGesture(e, id, "move")}
                 onDoubleClick={() => toggleMax(id)}
-                title="Ziehen: verschieben · Doppelklick: maximieren"
+                title={t("Ziehen: verschieben · Doppelklick: maximieren")}
                 className="flex shrink-0 cursor-move touch-none select-none items-center border-b bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
               >
                 <span className={attention[id] ? "attention-blink" : ""}>{title}</span>

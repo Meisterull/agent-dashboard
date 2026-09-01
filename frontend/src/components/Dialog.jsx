@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
+import { t } from "../sprache";
 
 // Zentrale Nachfrage-Dialoge als Ersatz für window.confirm/prompt/alert:
 // die blockieren den Tab, sehen auf dem Handy fremd aus und werden von
@@ -18,7 +19,7 @@ import Modal from "./Modal";
 
 let zeigeDialog = null; // vom DialogHost registriert
 
-export function bestaetigen({ title, text, ok = "OK", danger = false }) {
+export function bestaetigen({ title, text, ok = t("OK"), danger = false }) {
   if (!zeigeDialog) return Promise.resolve(window.confirm(text));
   return zeigeDialog({ kind: "confirm", title, text, ok, danger });
 }
@@ -28,7 +29,7 @@ export function nachfragen({
   text,
   label,
   initial = "",
-  ok = "OK",
+  ok = t("OK"),
   danger = false,
   allowEmpty = false,
 }) {
@@ -112,7 +113,7 @@ export function DialogHost() {
               onClick={abbrechen}
               className="rounded border border-slate-300 px-3 py-1 text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
             >
-              Abbrechen
+              {t("Abbrechen")}
             </button>
           )}
           <button
@@ -121,7 +122,7 @@ export function DialogHost() {
               dlg.danger ? "bg-red-600 hover:bg-red-700" : "bg-blue-600 hover:bg-blue-700"
             }`}
           >
-            {dlg.ok || "OK"}
+            {dlg.ok || t("OK")}
           </button>
         </div>
       </form>

@@ -8,6 +8,7 @@ import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { getFileContent, getRemoteFile, saveFile, downloadUrl } from "../api";
 import { bestaetigen } from "./Dialog";
+import { t } from "../sprache";
 
 // Vollbild-Editor (CodeMirror 6) für Workspace- und Remote-Dateien.
 // Sprache wird am Dateinamen erkannt und lazy nachgeladen (language-data).
@@ -17,7 +18,7 @@ export default function EditorModal({ source, path, onClose }) {
   const hostRef = useRef(null);
   const viewRef = useRef(null);
   const saveRef = useRef(() => {});
-  const [status, setStatus] = useState("lädt…");
+  const [status, setStatus] = useState(t("lädt…"));
   const [error, setError] = useState(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -31,12 +32,12 @@ export default function EditorModal({ source, path, onClose }) {
   async function doSave() {
     const view = viewRef.current;
     if (!view || readonly) return;
-    setStatus("speichert…");
+    setStatus(t("speichert…"));
     setError(null);
     try {
       await saveFile(source, path, view.state.doc.toString(), encoding);
       setDirty(false);
-      setStatus("gespeichert");
+      setStatus(t("gespeichert"));
     } catch (e) {
       setError(String(e.message || e));
       setStatus("");
@@ -50,9 +51,9 @@ export default function EditorModal({ source, path, onClose }) {
     if (
       dirty &&
       !(await bestaetigen({
-        title: "Ungespeicherte Änderungen",
-        text: `„${filename}“ hat ungespeicherte Änderungen. Trotzdem schließen?`,
-        ok: "Schließen",
+        title: t("Ungespeicherte Änderungen"),
+        text: t("„{0}“ hat ungespeicherte Änderungen. Trotzdem schließen?", filename),
+        ok: t("Schließen"),
         danger: true,
       }))
     )
@@ -84,7 +85,7 @@ export default function EditorModal({ source, path, onClose }) {
       const ro = !!data.truncated;
       setReadonly(ro);
       setEncoding(data.encoding || "utf-8");
-      setStatus(ro ? "read-only (Datei gekürzt geladen)" : "");
+      setStatus(ro ? t("read-only (Datei gekürzt geladen)") : "");
 
       const dark = document.documentElement.classList.contains("dark");
       const langCompartment = new Compartment();
@@ -150,7 +151,7 @@ export default function EditorModal({ source, path, onClose }) {
         </span>
         {encoding !== "utf-8" && (
           <span
-            title="Datei-Kodierung — wird beim Speichern beibehalten"
+            title={t("Datei-Kodierung — wird beim Speichern beibehalten")}
             className="shrink-0 rounded bg-slate-200 px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-700 dark:text-slate-300"
           >
             {encoding}
@@ -171,7 +172,7 @@ export default function EditorModal({ source, path, onClose }) {
           disabled={readonly || !dirty}
           className="shrink-0 rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
         >
-          Speichern
+          {t("Speichern")}
         </button>
         <button
           onClick={requestClose}
@@ -191,7 +192,7 @@ export default function EditorModal({ source, path, onClose }) {
                 download={filename}
                 className="underline"
               >
-                stattdessen herunterladen
+                {t("stattdessen herunterladen")}
               </a>
             </>
           )}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import { bestaetigen } from "./Dialog";
+import { t } from "../sprache";
 import {
   getConnections,
   createConnection,
@@ -29,8 +30,10 @@ function SetupHint({ result }) {
   return (
     <div className="rounded border border-emerald-300 bg-emerald-50 p-2 text-xs dark:border-emerald-800 dark:bg-emerald-950">
       <p className="mb-1 font-medium text-emerald-800 dark:text-emerald-300">
-        „{result.name}“ angelegt. Einmalig auf dem Zielrechner ausführen (als
-        der SSH-Benutzer):
+        {t(
+          "„{0}“ angelegt. Einmalig auf dem Zielrechner ausführen (als der SSH-Benutzer):",
+          result.name,
+        )}
       </p>
       <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-white p-1.5 font-mono text-[10px] dark:bg-slate-900">
         {result.setup_command}
@@ -39,7 +42,7 @@ function SetupHint({ result }) {
         onClick={copy}
         className="mt-1 rounded border border-emerald-400 px-2 py-0.5 text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300 dark:hover:bg-emerald-900"
       >
-        {copied ? "kopiert ✓" : "Befehl kopieren"}
+        {copied ? t("kopiert ✓") : t("Befehl kopieren")}
       </button>
     </div>
   );
@@ -95,9 +98,9 @@ export default function ConnectionsModal({ onClose }) {
   async function onDelete(c) {
     if (
       !(await bestaetigen({
-        title: "Verbindung löschen",
-        text: `Verbindung „${c.name}“ löschen (samt Schlüssel)?`,
-        ok: "Löschen",
+        title: t("Verbindung löschen"),
+        text: t("Verbindung „{0}“ löschen (samt Schlüssel)?", c.name),
+        ok: t("Löschen"),
         danger: true,
       }))
     )
@@ -125,14 +128,14 @@ export default function ConnectionsModal({ onClose }) {
     "w-full rounded border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100";
 
   return (
-    <Modal title="SSH-Verbindungen" onClose={onClose}>
+    <Modal title={t("SSH-Verbindungen")} onClose={onClose}>
       <div className="space-y-4 text-sm">
         <div>
           <div className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">
-            Vorhanden
+            {t("Vorhanden")}
           </div>
           {connections.length === 0 && (
-            <p className="text-xs text-slate-400">keine Verbindungen</p>
+            <p className="text-xs text-slate-400">{t("keine Verbindungen")}</p>
           )}
           {connections.map((c) => (
             <div
@@ -147,14 +150,14 @@ export default function ConnectionsModal({ onClose }) {
                 <>
                   <button
                     onClick={() => showKey(c)}
-                    title="Public Key / Einrichtungsbefehl anzeigen"
+                    title={t("Public Key / Einrichtungsbefehl anzeigen")}
                     className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-800"
                   >
-                    Key
+                    {t("Key")}
                   </button>
                   <button
                     onClick={() => onDelete(c)}
-                    title="Verbindung löschen"
+                    title={t("Verbindung löschen")}
                     className="shrink-0 rounded px-1 py-0.5 text-slate-400 hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
                   >
                     🗑
@@ -162,7 +165,7 @@ export default function ConnectionsModal({ onClose }) {
                 </>
               ) : (
                 <span
-                  title="in agents.yaml gepflegt — dort von Hand ändern"
+                  title={t("in agents.yaml gepflegt — dort von Hand ändern")}
                   className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-800 dark:text-slate-400"
                 >
                   agents.yaml
@@ -181,17 +184,17 @@ export default function ConnectionsModal({ onClose }) {
 
         <form onSubmit={submit} className="space-y-2">
           <div className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-            Neue Verbindung
+            {t("Neue Verbindung")}
           </div>
           {/* defaultValue statt value: kontrollierte Inputs lassen angetippte
               Wortvorschläge der Handy-Tastatur den Text doppelt einfügen
               (bekanntes GBoard-Muster, siehe Chat.jsx) — der State bleibt
               über onChange nur als Spiegel für submit gepflegt. */}
           <div className="grid grid-cols-2 gap-2">
-            <input defaultValue={form.name} onChange={set("name")} placeholder="Name (z.B. buero-pc)" className={inputCls} required />
-            <input defaultValue={form.user} onChange={set("user")} placeholder="SSH-Benutzer" className={inputCls} required />
-            <input defaultValue={form.host} onChange={set("host")} placeholder="Host / IP" className={inputCls} required />
-            <input defaultValue={form.port} onChange={set("port")} placeholder="Port" inputMode="numeric" className={inputCls} />
+            <input defaultValue={form.name} onChange={set("name")} placeholder={t("Name (z.B. buero-pc)")} className={inputCls} required />
+            <input defaultValue={form.user} onChange={set("user")} placeholder={t("SSH-Benutzer")} className={inputCls} required />
+            <input defaultValue={form.host} onChange={set("host")} placeholder={t("Host / IP")} className={inputCls} required />
+            <input defaultValue={form.port} onChange={set("port")} placeholder={t("Port")} inputMode="numeric" className={inputCls} />
           </div>
           <label className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
             <input
@@ -199,8 +202,7 @@ export default function ConnectionsModal({ onClose }) {
               checked={showKeyInput}
               onChange={(e) => setShowKeyInput(e.target.checked)}
             />
-            vorhandenen privaten Schlüssel verwenden (sonst wird ein neues
-            Schlüsselpaar erzeugt)
+            {t("vorhandenen privaten Schlüssel verwenden (sonst wird ein neues Schlüsselpaar erzeugt)")}
           </label>
           {showKeyInput && (
             <textarea
@@ -216,7 +218,7 @@ export default function ConnectionsModal({ onClose }) {
             disabled={busy}
             className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
           >
-            {busy ? "legt an…" : "Anlegen"}
+            {busy ? t("legt an…") : t("Anlegen")}
           </button>
         </form>
       </div>

@@ -45,6 +45,8 @@ Docker-Container auf deinem eigenen Server.
 - **Config-getriebene Integrationen** — benannte HTTP-APIs (Ticketsystem,
   ERP, Hausautomatisierung, …) per YAML als aufrufbare Tools anhängen, ohne
   Code.
+- **Oberfläche auf Deutsch und Englisch** — umschaltbar in den Einstellungen,
+  über alle Geräte hinweg abgeglichen.
 - **Ein gehärteter Container** — nginx + FastAPI + MCP-Server unter
   supervisord: non-root, `cap_drop: ALL`, kein `docker.sock`,
   Path-Traversal-sichere Dateizugriffe, passwortgeschützte Oberfläche.

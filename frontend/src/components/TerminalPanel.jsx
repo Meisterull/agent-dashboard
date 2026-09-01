@@ -3,6 +3,7 @@ import { getConnections, getSshSessions, deleteSshSession } from "../api";
 import { bestaetigen, melden } from "./Dialog";
 import Terminal, { DEFAULT_SID } from "./Terminal";
 import ConnectionsModal from "./ConnectionsModal";
+import { t } from "../sprache";
 
 // SSH-Verbindungen als Tabs; pro Verbindung sind MEHRERE Terminals möglich
 // (Issue #5): jedes offene Terminal ist ein Tab {name, sid} — das erste hat
@@ -102,9 +103,12 @@ export default function TerminalPanel() {
     const label = tab.sid === DEFAULT_SID ? tab.name : `${tab.name} ·${tab.sid}`;
     if (
       !(await bestaetigen({
-        title: "Session beenden",
-        text: `Session „${label}“ wirklich beenden?\nDie Shell auf dem Agenten-PC wird gekillt — Laufendes geht verloren.`,
-        ok: "Beenden",
+        title: t("Session beenden"),
+        text: t(
+          "Session „{0}“ wirklich beenden?\nDie Shell auf dem Agenten-PC wird gekillt — Laufendes geht verloren.",
+          label,
+        ),
+        ok: t("Beenden"),
         danger: true,
       }))
     )
@@ -113,7 +117,7 @@ export default function TerminalPanel() {
       await deleteSshSession(tab.name, tab.sid);
       close(tab);
     } catch (e) {
-      melden({ title: "Fehler", text: `Beenden fehlgeschlagen: ${e.message}` });
+      melden({ title: t("Fehler"), text: t("Beenden fehlgeschlagen: {0}", e.message) });
     } finally {
       loadSessions();
     }
@@ -127,7 +131,7 @@ export default function TerminalPanel() {
 
   const runningDot = (
     <span
-      title="Session läuft"
+      title={t("Session läuft")}
       className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 align-middle"
     />
   );
@@ -137,7 +141,7 @@ export default function TerminalPanel() {
       <div className="flex flex-wrap items-center gap-1 border-b bg-slate-50 px-2 py-1 dark:border-slate-700 dark:bg-slate-900">
         <span className="mr-2 text-xs font-semibold text-slate-500 dark:text-slate-400">SSH</span>
         {connections.length === 0 && (
-          <span className="text-xs text-slate-400">keine Verbindungen</span>
+          <span className="text-xs text-slate-400">{t("keine Verbindungen")}</span>
         )}
         {connections.map((c) => {
           const tabs = open.filter((t) => t.name === c.name);
@@ -155,30 +159,30 @@ export default function TerminalPanel() {
             );
           return (
             <span key={c.name} className="inline-flex items-center">
-              {tabs.map((t) => (
-                <span key={keyOf(t)} className="inline-flex items-center">
+              {tabs.map((tab) => (
+                <span key={keyOf(tab)} className="inline-flex items-center">
                   <button
-                    onClick={() => setActive(keyOf(t))}
+                    onClick={() => setActive(keyOf(tab))}
                     title={`${c.user}@${c.host}`}
                     className={`rounded px-2 py-0.5 text-xs ${
-                      active === keyOf(t)
+                      active === keyOf(tab)
                         ? "bg-slate-700 text-white dark:bg-slate-600"
                         : "bg-emerald-100 text-slate-700 dark:bg-emerald-900 dark:text-emerald-200"
                     }`}
                   >
-                    {running.some((r) => keyOf(r) === keyOf(t)) && runningDot}
-                    {t.sid === DEFAULT_SID ? c.name : `${c.name} ·${t.sid}`}
+                    {running.some((r) => keyOf(r) === keyOf(tab)) && runningDot}
+                    {tab.sid === DEFAULT_SID ? c.name : `${c.name} ·${tab.sid}`}
                   </button>
                   <button
-                    onClick={() => close(t)}
-                    title="Fenster schließen (Session läuft weiter)"
+                    onClick={() => close(tab)}
+                    title={t("Fenster schließen (Session läuft weiter)")}
                     className="ml-0.5 rounded px-1 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
                   >
                     ×
                   </button>
                   <button
-                    onClick={() => endSession(t)}
-                    title="Session beenden"
+                    onClick={() => endSession(tab)}
+                    title={t("Session beenden")}
                     className="rounded px-1 text-xs text-slate-400 hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
                   >
                     ⏻
@@ -187,7 +191,7 @@ export default function TerminalPanel() {
               ))}
               <button
                 onClick={() => openExtra(c.name)}
-                title="Weiteres Terminal auf dieser Verbindung öffnen"
+                title={t("Weiteres Terminal auf dieser Verbindung öffnen")}
                 className="rounded px-1 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
               >
                 ⧉
@@ -197,7 +201,7 @@ export default function TerminalPanel() {
         })}
         <button
           onClick={() => setShowManage(true)}
-          title="Verbindungen verwalten / neue anlegen"
+          title={t("Verbindungen verwalten / neue anlegen")}
           className="ml-1 shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-xs text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-800"
         >
           +
@@ -207,7 +211,7 @@ export default function TerminalPanel() {
       <div className="relative min-h-0 flex-1 bg-slate-800">
         {open.length === 0 && (
           <div className="flex h-full items-center justify-center text-xs text-slate-400">
-            Verbindung wählen, um ein Terminal zu öffnen
+            {t("Verbindung wählen, um ein Terminal zu öffnen")}
           </div>
         )}
         {open.map((t) => (

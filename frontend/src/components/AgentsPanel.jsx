@@ -10,6 +10,7 @@ import {
   setNotaus,
 } from "../api";
 import { bestaetigen, melden } from "./Dialog";
+import { t } from "../sprache";
 
 const STATUS_COLORS = {
   pending: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
@@ -28,7 +29,7 @@ function StatusBadge({ status }) {
         "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
       }`}
     >
-      {status}
+      {t(status)}
     </span>
   );
 }
@@ -216,9 +217,9 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const forceClose = async (taskId) => {
     if (
       !(await bestaetigen({
-        title: "Task schließen",
-        text: `Task ${taskId} ohne Ergebnis schließen?`,
-        ok: "Schließen",
+        title: t("Task schließen"),
+        text: t("Task {0} ohne Ergebnis schließen?", taskId),
+        ok: t("Schließen"),
         danger: true,
       }))
     )
@@ -227,7 +228,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
       await closeTask(selected, taskId);
       setLocalKey((k) => k + 1);
     } catch (e) {
-      melden({ title: "Fehler", text: `Schließen fehlgeschlagen: ${e.message}` });
+      melden({ title: t("Fehler"), text: t("Schließen fehlgeschlagen: {0}", e.message) });
     }
   };
 
@@ -237,9 +238,12 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const inboxLeeren = async () => {
     if (
       !(await bestaetigen({
-        title: "Inbox aufräumen",
-        text: `Alle erledigten Eingänge von '${selected}' ins Archiv legen?\nOffene Tasks und Rückfragen bleiben liegen.`,
-        ok: "Archivieren",
+        title: t("Inbox aufräumen"),
+        text: t(
+          "Alle erledigten Eingänge von '{0}' ins Archiv legen?\nOffene Tasks und Rückfragen bleiben liegen.",
+          selected,
+        ),
+        ok: t("Archivieren"),
       }))
     )
       return;
@@ -248,9 +252,9 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
       const { archiviert } = await markInboxRead(selected);
       setLocalKey((k) => k + 1);
       if (!archiviert)
-        melden({ title: "Inbox", text: "Nichts zu archivieren — die Inbox ist schon sauber." });
+        melden({ title: t("Inbox"), text: t("Nichts zu archivieren — die Inbox ist schon sauber.") });
     } catch (e) {
-      melden({ title: "Fehler", text: `Aufräumen fehlgeschlagen: ${e.message}` });
+      melden({ title: t("Fehler"), text: t("Aufräumen fehlgeschlagen: {0}", e.message) });
     } finally {
       setRaeumt(false);
     }
@@ -264,7 +268,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
       await markEnvelopeRead(selected, id);
       setLocalKey((k) => k + 1);
     } catch (e) {
-      melden({ title: "Fehler", text: `Archivieren fehlgeschlagen: ${e.message}` });
+      melden({ title: t("Fehler"), text: t("Archivieren fehlgeschlagen: {0}", e.message) });
     }
   };
 
@@ -274,16 +278,19 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
     if (
       ziel &&
       !(await bestaetigen({
-        title: "Automatik einschalten",
-        text: `Automatik für '${selected}' einschalten?\nClaude Code arbeitet dann UNBEAUFSICHTIGT Tasks aus der Inbox ab.`,
-        ok: "Einschalten",
+        title: t("Automatik einschalten"),
+        text: t(
+          "Automatik für '{0}' einschalten?\nClaude Code arbeitet dann UNBEAUFSICHTIGT Tasks aus der Inbox ab.",
+          selected,
+        ),
+        ok: t("Einschalten"),
       }))
     )
       return;
     try {
       setAuto(await setAutomatik(selected, ziel));
     } catch (e) {
-      melden({ title: "Fehler", text: `Umschalten fehlgeschlagen: ${e.message}` });
+      melden({ title: t("Fehler"), text: t("Umschalten fehlgeschlagen: {0}", e.message) });
     }
   };
 
@@ -291,9 +298,9 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
     if (
       !auto.notaus &&
       !(await bestaetigen({
-        title: "Not-Aus",
-        text: "Not-Aus: ALLE Automatiken sofort hart stoppen?",
-        ok: "Stoppen",
+        title: t("Not-Aus"),
+        text: t("Not-Aus: ALLE Automatiken sofort hart stoppen?"),
+        ok: t("Stoppen"),
         danger: true,
       }))
     )
@@ -301,20 +308,20 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
     try {
       setAuto(await setNotaus(!auto.notaus));
     } catch (e) {
-      melden({ title: "Fehler", text: `Not-Aus fehlgeschlagen: ${e.message}` });
+      melden({ title: t("Fehler"), text: t("Not-Aus fehlgeschlagen: {0}", e.message) });
     }
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-1 border-b bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
-        <span className="flex-1">MCP-Monitor · Aufgaben</span>
+        <span className="flex-1">{t("MCP-Monitor · Aufgaben")}</span>
         {offline && (
           <span
-            title="Letzte Aktualisierung fehlgeschlagen — angezeigt wird der letzte bekannte Stand."
+            title={t("Letzte Aktualisierung fehlgeschlagen — angezeigt wird der letzte bekannte Stand.")}
             className="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-950 dark:text-amber-300"
           >
-            Verbindung gestört
+            {t("Verbindung gestört")}
           </span>
         )}
         {(autoAktiv || auto.notaus) && (
@@ -322,8 +329,8 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
             onClick={toggleNotaus}
             title={
               auto.notaus
-                ? "Not-Aus lösen — eingeschaltete Automatiken starten wieder"
-                : "Not-Aus: alle Automatiken sofort hart stoppen"
+                ? t("Not-Aus lösen — eingeschaltete Automatiken starten wieder")
+                : t("Not-Aus: alle Automatiken sofort hart stoppen")
             }
             className={`rounded px-1.5 py-0.5 font-semibold ${
               auto.notaus
@@ -331,12 +338,12 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                 : "text-red-600 hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-950"
             }`}
           >
-            ⏻ {auto.notaus ? "Not-Aus aktiv" : "Not-Aus"}
+            ⏻ {auto.notaus ? t("Not-Aus aktiv") : t("Not-Aus")}
           </button>
         )}
         <button
           onClick={() => setLocalKey((k) => k + 1)}
-          title="jetzt aktualisieren"
+          title={t("jetzt aktualisieren")}
           className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
         >
           ↻
@@ -344,7 +351,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
       </div>
       <div className="flex flex-wrap gap-1 border-b p-2 dark:border-slate-700">
         {agents.length === 0 && (
-          <span className="text-xs text-slate-400">keine Agenten</span>
+          <span className="text-xs text-slate-400">{t("keine Agenten")}</span>
         )}
         {agents.map((a) => {
           const st = auto.agents?.[a];
@@ -364,7 +371,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
               {a}
               {post > 0 && (
                 <span
-                  title={`${post} ungelesene Nachricht(en)`}
+                  title={t("{0} ungelesene Nachricht(en)", post)}
                   className={`ml-1 rounded-full px-1 text-[10px] font-semibold ${
                     selected === a
                       ? "bg-white/25 text-white"
@@ -376,7 +383,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
               )}
               {st && (st.status !== "aus" || st.gewuenscht) && (
                 <span
-                  title={`Automatik: ${st.status}`}
+                  title={t("Automatik: {0}", t(st.status))}
                   className={`ml-1 inline-block h-1.5 w-1.5 rounded-full align-middle ${
                     AUTO_DOT[st.status] || "bg-slate-400"
                   }`}
@@ -395,12 +402,12 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                 disabled={auto.notaus || (!autoInfo.gewuenscht && !autoInfo.startbar)}
                 title={
                   auto.notaus
-                    ? "Not-Aus aktiv — erst lösen"
+                    ? t("Not-Aus aktiv — erst lösen")
                     : autoInfo.gewuenscht
-                      ? "Automatik ausschalten (laufender Task darf fertig werden)"
+                      ? t("Automatik ausschalten (laufender Task darf fertig werden)")
                       : autoInfo.startbar
-                        ? "Automatik einschalten: Inbox selbständig abarbeiten"
-                        : "keine nutzbare SSH-Verbindung (key_file fehlt?)"
+                        ? t("Automatik einschalten: Inbox selbständig abarbeiten")
+                        : t("keine nutzbare SSH-Verbindung (key_file fehlt?)")
                 }
                 className={`rounded px-2 py-0.5 font-semibold disabled:opacity-40 ${
                   autoInfo.gewuenscht
@@ -408,7 +415,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                     : "bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
                 }`}
               >
-                ▶ Automatik
+                ▶ {t("Automatik")}
               </button>
               <StatusBadge
                 status={
@@ -416,17 +423,17 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                 }
               />
               <span className="flex-1 truncate text-slate-500 dark:text-slate-400">
-                {auto.notaus ? "Not-Aus aktiv" : autoInfo.detail}
+                {auto.notaus ? t("Not-Aus aktiv") : autoInfo.detail}
               </span>
               {/* Fortschritts-Log aufklappbar statt nur als Hover-Tooltip —
                   auf dem Handy war der Verlauf sonst gar nicht erreichbar. */}
               {logText && (
                 <button
                   onClick={() => setLogOffen((v) => !v)}
-                  title={logOffen ? "Log einklappen" : "Fortschritts-Log anzeigen"}
+                  title={logOffen ? t("Log einklappen") : t("Fortschritts-Log anzeigen")}
                   className="shrink-0 rounded px-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
                 >
-                  {logOffen ? "▾" : "▸"} Log ({autoInfo.log.length})
+                  {logOffen ? "▾" : "▸"} {t("Log ({0})", autoInfo.log.length)}
                 </button>
               )}
             </div>
@@ -444,34 +451,34 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
           <>
             <div>
               <div className="mb-1 flex items-center gap-1 font-semibold text-slate-500 dark:text-slate-400">
-                <span className="flex-1">Inbox ({tasks.inbox.length})</span>
+                <span className="flex-1">{t("Inbox ({0})", tasks.inbox.length)}</span>
                 <button
                   onClick={inboxLeeren}
                   disabled={raeumt}
-                  title="Alle erledigten Eingänge (Antworten, Nachrichten) ins Archiv legen. Offene Tasks und Rückfragen bleiben liegen."
+                  title={t("Alle erledigten Eingänge (Antworten, Nachrichten) ins Archiv legen. Offene Tasks und Rückfragen bleiben liegen.")}
                   className="rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
                 >
-                  {raeumt ? "…" : "✓ alles gelesen"}
+                  {raeumt ? "…" : t("✓ alles gelesen")}
                 </button>
               </div>
               {tasks.inbox.length === 0 ? (
-                <p className="text-slate-400">leer</p>
+                <p className="text-slate-400">{t("leer")}</p>
               ) : (
-                tasks.inbox.map((t) => (
+                tasks.inbox.map((tk) => (
                   <div
-                    key={t.task_id}
-                    onClick={() => toggleOffen(`inbox/${t.task_id}`)}
+                    key={tk.task_id}
+                    onClick={() => toggleOffen(`inbox/${tk.task_id}`)}
                     className="mb-1 cursor-pointer rounded bg-slate-50 p-1.5 dark:bg-slate-800"
                   >
                     <div className="flex items-center justify-between gap-1">
-                      <span className="flex-1 truncate font-mono">{t.task_id}</span>
-                      <StatusBadge status={t.status} />
+                      <span className="flex-1 truncate font-mono">{tk.task_id}</span>
+                      <StatusBadge status={tk.status} />
                       <button
                         onClick={(e) => {
                           e.stopPropagation(); // Karte nicht zusätzlich auf-/zuklappen
-                          forceClose(t.task_id);
+                          forceClose(tk.task_id);
                         }}
-                        title="Task manuell schließen (ohne Ergebnis)"
+                        title={t("Task manuell schließen (ohne Ergebnis)")}
                         className="rounded px-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
                       >
                         ✕
@@ -479,12 +486,12 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                     </div>
                     <div
                       className={`${
-                        offen.has(`inbox/${t.task_id}`)
+                        offen.has(`inbox/${tk.task_id}`)
                           ? "whitespace-pre-wrap break-words"
                           : "truncate"
                       } text-slate-500 dark:text-slate-400`}
                     >
-                      {t.instruction}
+                      {tk.instruction}
                     </div>
                   </div>
                 ))
@@ -495,10 +502,10 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                 delegierter Tasks. Lag bisher unsichtbar in der Inbox. */}
             <div>
               <div className="mb-1 font-semibold text-slate-500 dark:text-slate-400">
-                Nachrichten ({(tasks.messages || []).length})
+                {t("Nachrichten ({0})", (tasks.messages || []).length)}
               </div>
               {(tasks.messages || []).length === 0 ? (
-                <p className="text-slate-400">leer</p>
+                <p className="text-slate-400">{t("leer")}</p>
               ) : (
                 tasks.messages.map((m) => {
                   // Eine offene Rückfrage bekommt KEIN Archivieren-Kreuz: sie
@@ -515,7 +522,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                     >
                       <div className="flex flex-wrap items-center gap-1">
                         <span className="rounded bg-slate-200 px-1 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">
-                          {KIND_LABEL[m.kind] || m.kind}
+                          {t(KIND_LABEL[m.kind] || m.kind)}
                         </span>
                         <span className="min-w-0 flex-1 truncate font-mono">
                           {m.sender}
@@ -531,7 +538,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                               e.stopPropagation(); // Karte nicht auf-/zuklappen
                               nachrichtArchivieren(m.id);
                             }}
-                            title="gelesen — ins Archiv legen"
+                            title={t("gelesen — ins Archiv legen")}
                             className="rounded px-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
                           >
                             ✓
@@ -554,29 +561,29 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
             </div>
             <div>
               <div className="mb-1 font-semibold text-slate-500 dark:text-slate-400">
-                Outbox ({tasks.outbox.length})
+                {t("Outbox ({0})", tasks.outbox.length)}
               </div>
               {tasks.outbox.length === 0 ? (
-                <p className="text-slate-400">leer</p>
+                <p className="text-slate-400">{t("leer")}</p>
               ) : (
-                tasks.outbox.map((t) => (
+                tasks.outbox.map((tk) => (
                   <div
-                    key={t.task_id}
-                    onClick={() => toggleOffen(`outbox/${t.task_id}`)}
+                    key={tk.task_id}
+                    onClick={() => toggleOffen(`outbox/${tk.task_id}`)}
                     className="mb-1 cursor-pointer rounded bg-slate-50 p-1.5 dark:bg-slate-800"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-mono">{t.task_id}</span>
-                      <StatusBadge status={t.status} />
+                      <span className="font-mono">{tk.task_id}</span>
+                      <StatusBadge status={tk.status} />
                     </div>
                     <div
                       className={`${
-                        offen.has(`outbox/${t.task_id}`)
+                        offen.has(`outbox/${tk.task_id}`)
                           ? "whitespace-pre-wrap break-words"
                           : "truncate"
                       } text-slate-500 dark:text-slate-400`}
                     >
-                      {t.result}
+                      {tk.result}
                     </div>
                   </div>
                 ))

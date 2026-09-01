@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { downloadUrl, rawUrl } from "../api";
+import { t } from "../sprache";
 
 // Vorschau für Dateien, die kein Text sind (Issues #25/#26): Bilder, PDFs und
 // Audio direkt im Dashboard, statt sie erst in den Download-Ordner und von
@@ -61,7 +62,7 @@ export default function MediaModal({ art, source, path, name, size, onClose }) {
         <a
           href={downloadUrl(source, path)}
           download={name}
-          title="herunterladen"
+          title={t("herunterladen")}
           className="shrink-0 rounded px-2 py-1 text-sm text-slate-300 hover:bg-white/10"
         >
           ⤓
@@ -70,14 +71,14 @@ export default function MediaModal({ art, source, path, name, size, onClose }) {
           href={quelle}
           target="_blank"
           rel="noreferrer"
-          title="in eigenem Tab öffnen"
+          title={t("in eigenem Tab öffnen")}
           className="shrink-0 rounded px-2 py-1 text-sm text-slate-300 hover:bg-white/10"
         >
           ↗
         </a>
         <button
           onClick={onClose}
-          title="schließen"
+          title={t("schließen")}
           className="shrink-0 rounded px-3 py-1 text-lg text-slate-200 hover:bg-white/10"
         >
           ✕
@@ -97,9 +98,9 @@ export default function MediaModal({ art, source, path, name, size, onClose }) {
           // oben zusätzlich der ↗-Knopf, der es in einem eigenen Tab öffnet.
           <object data={quelle} type="application/pdf" className="h-full w-full">
             <p className="p-4 text-center text-sm text-slate-300">
-              Dieses Gerät zeigt PDFs nicht eingebettet.{" "}
+              {t("Dieses Gerät zeigt PDFs nicht eingebettet.")}{" "}
               <a href={quelle} target="_blank" rel="noreferrer" className="underline">
-                In eigenem Tab öffnen
+                {t("In eigenem Tab öffnen")}
               </a>
             </p>
           </object>
@@ -115,8 +116,7 @@ export default function MediaModal({ art, source, path, name, size, onClose }) {
             />
             {source !== "ws" && (
               <p className="mt-2 text-xs text-slate-500">
-                Von einem entfernten Rechner: spielt von vorn, Spulen ist nicht
-                möglich.
+                {t("Von einem entfernten Rechner: spielt von vorn, Spulen ist nicht möglich.")}
               </p>
             )}
           </div>

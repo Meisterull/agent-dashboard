@@ -10,6 +10,7 @@ import {
   deleteChatSession,
 } from "../api";
 import { bestaetigen } from "./Dialog";
+import { t } from "../sprache";
 
 // Orchestrator-Antworten rendern Markdown (Sessions liegen serverseitig in
 // SQLite); die zuletzt aktive Session wird nach Reload/App-Neustart über
@@ -34,7 +35,7 @@ const Message = memo(function Message({ msg }) {
         ) : msg.text ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
         ) : (
-          <span className="italic opacity-60">(keine Textantwort)</span>
+          <span className="italic opacity-60">{t("(keine Textantwort)")}</span>
         )}
         {msg.toolCalls?.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">
@@ -150,9 +151,12 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     const s = sessions.find((x) => x.id === sessionId);
     if (
       !(await bestaetigen({
-        title: "Verlauf löschen",
-        text: `Verlauf „${s?.title || sessionId.slice(0, 8)}“ endgültig löschen?`,
-        ok: "Löschen",
+        title: t("Verlauf löschen"),
+        text: t(
+          "Verlauf „{0}“ endgültig löschen?",
+          s?.title || sessionId.slice(0, 8),
+        ),
+        ok: t("Löschen"),
         danger: true,
       }))
     )
@@ -162,7 +166,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
       newSession();
       refreshSessions();
     } catch (e) {
-      setError(`Löschen fehlgeschlagen: ${e.message || e}`);
+      setError(t("Löschen fehlgeschlagen: {0}", e.message || e));
     }
   }
 
@@ -230,12 +234,12 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     try {
       pfade = await anhaengeHochladen();
     } catch (e) {
-      setError(`Anhang fehlgeschlagen: ${e.message || e}`);
+      setError(t("Anhang fehlgeschlagen: {0}", e.message || e));
       setLoading(false);
       return;
     }
     const volltext = pfade.length
-      ? `${text}${text ? "\n\n" : ""}Anhänge: ${pfade.join(", ")}`
+      ? `${text}${text ? "\n\n" : ""}${t("Anhänge: {0}", pfade.join(", "))}`
       : text;
 
     if (inputRef.current) inputRef.current.value = "";
@@ -318,14 +322,14 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-2 border-b bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900">
         <span className="shrink-0 font-semibold text-slate-500 dark:text-slate-400">
-          Chat mit Orchestrator
+          {t("Chat mit Orchestrator")}
         </span>
         <select
           value={sessionId || ""}
           onChange={(e) => e.target.value && openSession(e.target.value)}
           className="min-w-0 flex-1 truncate rounded border border-slate-300 bg-white px-1 py-0.5 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
         >
-          <option value="">— Verlauf —</option>
+          <option value="">{t("— Verlauf —")}</option>
           {sessions.map((s) => (
             <option key={s.id} value={s.id}>
               {s.title || s.id.slice(0, 8)}
@@ -334,15 +338,15 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
         </select>
         <button
           onClick={newSession}
-          title="neue Session beginnen"
+          title={t("neue Session beginnen")}
           className="shrink-0 rounded border border-slate-300 px-2 py-0.5 text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
         >
-          Neu
+          {t("Neu")}
         </button>
         <button
           onClick={removeSession}
           disabled={!sessionId || loading}
-          title="diesen Verlauf löschen"
+          title={t("diesen Verlauf löschen")}
           className="shrink-0 rounded border border-slate-300 px-2 py-0.5 text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-red-950 dark:hover:text-red-400"
         >
           🗑
@@ -356,8 +360,9 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
         >
         {messages.length === 0 && (
           <p className="text-sm text-slate-400 dark:text-slate-500">
-            Chatte mit dem Orchestrator — z.B. „Lege dem frontend-Agent eine
-            Aufgabe an: erstelle login.html“.
+            {t(
+              "Chatte mit dem Orchestrator — z.B. „Lege dem frontend-Agent eine Aufgabe an: erstelle login.html“.",
+            )}
           </p>
         )}
         {messages.map((m, i) => (
@@ -365,7 +370,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
         ))}
         {loading && (
           <div className="flex flex-wrap items-center gap-2 text-sm text-slate-400">
-            <span className="italic">Orchestrator denkt…</span>
+            <span className="italic">{t("Orchestrator denkt…")}</span>
             {progress?.tools?.length > 0 &&
               progress.tools.map((n, i) => (
                 <span
@@ -378,10 +383,12 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
             {progress && (
               <button
                 onClick={() => cancelChatStream(progress.streamId).catch(() => {})}
-                title="Nach dem laufenden Schritt anhalten — bereits ausgeführte Tool-Aufrufe bleiben wirksam"
+                title={t(
+                  "Nach dem laufenden Schritt anhalten — bereits ausgeführte Tool-Aufrufe bleiben wirksam",
+                )}
                 className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-600 dark:hover:bg-red-950 dark:hover:text-red-400"
               >
-                Abbrechen
+                {t("Abbrechen")}
               </button>
             )}
           </div>
@@ -397,7 +404,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
         {zeigeSprung && (
           <button
             onClick={springeAnsEnde}
-            title="zum Ende des Verlaufs springen"
+            title={t("zum Ende des Verlaufs springen")}
             className="absolute bottom-3 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-slate-700/90 text-lg text-white shadow-lg hover:bg-slate-600 dark:bg-slate-600/90 dark:hover:bg-slate-500"
           >
             ↓
@@ -417,7 +424,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
                 </span>
                 <button
                   onClick={() => setAnhaenge((a) => a.filter((_, k) => k !== i))}
-                  title="Anhang entfernen"
+                  title={t("Anhang entfernen")}
                   className="shrink-0 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
                 >
                   ✕
@@ -436,14 +443,14 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
             // Die Handy-Tastatur zeigt sonst "Senden" und verspricht damit
             // ein Verhalten, das es hier nicht mehr gibt.
             enterKeyHint={grobZeiger ? "enter" : "send"}
-            placeholder="Nachricht an den Orchestrator…"
+            placeholder={t("Nachricht an den Orchestrator…")}
             className="flex-1 resize-none rounded border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
           />
           {/* Büroklammer: am Handy bietet der Browser darüber direkt Kamera,
               Fotos und Dateien an — der Weg über Datei-App und Dateibaum
               entfällt (Issue #29). */}
           <label
-            title="Datei anhängen"
+            title={t("Datei anhängen")}
             className="self-end cursor-pointer rounded border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
           >
             📎
@@ -463,7 +470,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
             disabled={loading || (!canSend && anhaenge.length === 0)}
             className="self-end rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
           >
-            Senden
+            {t("Senden")}
           </button>
         </div>
       </div>
