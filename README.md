@@ -1,429 +1,116 @@
-# agent-dashboard
+# Agent Dashboard
 
-Ein Single-Container-Dashboard zur zentralen Steuerung mehrerer entfernter
-**Claude-Code-Agenten**. Ein **Orchestrator-LLM** im Container plant Aufgaben,
-legt Projektdateien an und delegiert Arbeit über einen **MCP-Server** an die
-Agenten. Der Transport zu den Agenten läuft über eine **Datei-Mailbox**
-(inbox/outbox als JSON) — robust, offline-tolerant, debugbar.
+**Command your Claude Code agents from anywhere — self-hosted mission control
+in a single container, orchestrated by Claude or a fully local LLM.**
 
-> Weitere Dokumente: **`CLAUDE.md`** (Arbeitsanleitung/Konventionen),
-> **`PROJECT.md`** (ursprünglicher Plan + Designentscheidungen + Statushistorie).
+Deutsche Fassung: **[README.de.md](README.de.md)** · License: **AGPL-3.0**
 
----
+<!-- TODO: record a 30-second demo (phone view: chat → task lands on agent →
+     result comes back) and drop it in docs/demo.gif, then uncomment:
+<p align="center"><img src="docs/demo.gif" alt="Agent Dashboard demo" width="720"></p>
+-->
 
-## Inhalt
+You chat with an orchestrator LLM in your browser. It plans, then delegates
+real work to **Claude Code running on your own machines** — your desktop, your
+build box, the laptop in the other room. Results, questions and progress flow
+back into one dashboard that works just as well on a phone as on a desktop.
+No SaaS, no telemetry, one hardened Docker container on your own server.
 
-1. [Überblick](#überblick)
-2. [Architektur](#architektur)
-3. [Datenflüsse](#datenflüsse)
-4. [Komponenten](#komponenten)
-5. [API-Referenz](#api-referenz)
-6. [Konfiguration](#konfiguration)
-7. [Schnellstart](#schnellstart)
-8. [Deployment (Docker)](#deployment-docker)
-9. [Sicherheit](#sicherheit)
-10. [Status & getestet](#status--getestet)
-11. [Roadmap](#roadmap)
+## Highlights
 
----
+- **Orchestrator chat** — an LLM plans tasks and delegates them via MCP tools.
+  Works with the **Claude API** or **any tool-capable Ollama model** (fully
+  local, no API key).
+- **File-mailbox transport** — every task and reply is a plain JSON file in an
+  `inbox/`/`outbox/` pair: robust, offline-tolerant, atomic, and trivially
+  debuggable with `cat`.
+- **Agents can ask back** — a worker that needs clarification parks its task,
+  you answer in a banner, the task resumes with your answer in context.
+- **Automatic mode** — per agent, the dashboard keeps a watcher running on the
+  remote machine that works through its inbox on its own; a global emergency
+  stop halts everything at once.
+- **Real SSH terminals in the browser** — tabs per host, several terminals per
+  connection, sessions survive disconnects (reattach later, even from another
+  device), swipe-scrolling that actually works on touch screens.
+- **Workspace views** — arrange chat, files, terminals and the agent monitor
+  freely and save named layouts.
+- **Agents without SSH** — machines behind NAT (say, a Windows laptop with
+  Claude Desktop) join via token-authenticated HTTPS instead of a tunnel.
+- **Identity from the channel** — each agent gets its own MCP port or token;
+  the server derives *who is calling* from the channel itself, and optional
+  per-agent tool allowlists limit what a channel may do.
+- **Config-driven integrations** — attach named HTTP APIs (ticketing, ERP,
+  home automation, …) as callable tools via a YAML file, no code.
+- **One hardened container** — nginx + FastAPI + MCP server under supervisord:
+  non-root, `cap_drop: ALL`, no `docker.sock`, path-traversal-safe file access,
+  password-protected UI.
 
-## Überblick
-
-Das Dashboard besteht aus vier Schichten:
-
-- **Frontend** (React) — komplettes Dashboard: Chat, Dateibaum, SSH-Terminal,
-  MCP-Monitor (Aufgaben), Einstellungen.
-- **Backend** (FastAPI) — REST + WebSocket; betreibt den Orchestrator-Loop und
-  liefert Dashboard-Daten (Dateien, Tasks, Verbindungen, Settings).
-- **MCP-Server** — stellt dem Orchestrator-LLM strukturierte Tools bereit
-  (`create_task`, `read_responses`, `list_agents`, `write/read_project_file`).
-- **Datei-Mailbox** — die Brücke zu den entfernten Agenten. Jeder Agent hat
-  `inbox/` (Aufgaben) und `outbox/` (Rückmeldungen) unter `/workspace/mailboxes/`.
-
-Der Orchestrator führt **selbst keinen Code** auf den Ziel-Rechnern aus — er
-delegiert nur. Ein kleiner Watcher auf jedem Agenten-PC zieht Aufgaben aus seiner
-Inbox, startet dort Claude-Code und schreibt das Ergebnis in die Outbox.
-
-**Multi-Provider:** Der Orchestrator läuft über eine provider-neutrale Schicht
-(`app/llm.py`) — umschaltbar per `ORCH_PROVIDER`: **anthropic** (Claude, braucht
-`ANTHROPIC_API_KEY`) oder **ollama** (lokal, **kein Key**, z.B. `gpt-oss:120b`).
-Derselbe Agentic-Loop und dieselben MCP-Tools für beide.
-
----
-
-## Architektur
+## How it works
 
 ```
-                         Browser
-                            │ HTTP / WebSocket
-                            ▼
-                  ┌───────────────────┐
-                  │   nginx (80/443)  │   Reverse Proxy, SSL, liefert dist/
-                  │   / → Frontend    │
-                  │   /api → :5000    │
-                  │   /ws  → :5000    │
-                  └─────────┬─────────┘
-                            ▼
-        ┌──────────────────────────────────────────┐
-        │   FastAPI (backend/main.py, :5000)        │
-        │   ├ /api/chat → orchestrator_core.run_turn│──MCP(:9000)──┐
-        │   ├ /api/files, /api/agents/.../tasks     │              │
-        │   ├ /api/connections, /api/settings       │              ▼
-        │   └ /ws/ssh/<name> → asyncssh             │   ┌────────────────────┐
-        └──────────────────┬───────────────────────┘   │  mcp_server.py     │
-                           │                            │  (Tools)           │
-                           ▼                            │  create_task, …    │
-            /workspace/mailboxes/<agent>/               └─────────┬──────────┘
-              ├ inbox/<task>.json   ◄───────────────────── create_task
-              └ outbox/<task>-response.json ──► read_responses
-                           ▲
-                           │ SSHFS / SFTP / SSH
-              ┌────────────┴───────────────┐
-              │  Agenten-PC                │
-              │  scripts/agent_watcher.py  │  zieht inbox, startet claude-code,
-              │  → claude --print          │  schreibt outbox (atomar)
-              └────────────────────────────┘
+Browser / phone
+      │ HTTPS
+      ▼
+┌──────────────────────────────┐
+│  one container               │
+│  nginx → FastAPI → MCP tools │   orchestrator LLM (Claude or Ollama)
+└──────────────┬───────────────┘
+               ▼
+   /workspace/mailboxes/<agent>/     inbox/*.json · outbox/*.json
+               ▲
+               │ SSH tunnel or token HTTPS
+┌──────────────┴───────────────┐
+│  your machines               │
+│  agent_watcher.py            │   pulls tasks → runs Claude Code → replies
+└──────────────────────────────┘
 ```
 
-Alle Teile laufen im selben Container, beaufsichtigt von **supervisord**
-(nginx · uvicorn · mcp_server · optional mcp-tunnel).
+The orchestrator never executes code on your machines — it only writes tasks.
+A small watcher (Python **standard library only**, nothing to install) claims
+each task atomically, runs Claude Code, and writes the result back.
 
----
-
-## Datenflüsse
-
-**1. Aufgabe delegieren**
-
-```
-User schreibt im Chat
-  → POST /api/chat
-  → run_turn: Claude plant, ruft via MCP create_task("frontend", "...")
-  → mcp_server schreibt /workspace/mailboxes/frontend/inbox/task-0001.json (atomar)
-  → Antwort + Tool-Call-Chips zurück ans Frontend
-```
-
-**2. Agent arbeitet (Variante B: Pull über Mailbox)**
-
-```
-agent_watcher.py auf dem Agenten-PC pollt inbox/
-  → verschiebt task-0001.json atomar nach .processing/ (exklusiver Anspruch)
-  → startet `claude --print "<instruction>"`
-  → schreibt outbox/task-0001-response.json (tmp + fsync + os.replace)
-```
-
-**3. Ergebnis sichtbar machen**
-
-```
-write_response legt das Ergebnis als kind="response" in die Inbox des
-Auftraggebers (sender des Tasks) — der sieht es im normalen inbox()-Zyklus
-  → GET /api/agents/frontend/tasks zeigt Inbox/Outbox mit Status-Badges
-  → read_responses(worker) liest zusätzlich das Outbox-Archiv
-```
-
-Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confirm`.
-
----
-
-## Komponenten
-
-### Backend (`backend/`)
-
-| Datei | Zweck |
-|-------|-------|
-| `main.py` | FastAPI-App: alle `/api`-Endpunkte + `/ws/ssh/<name>` |
-| `mcp_server.py` | MCP-Server (Streamable-HTTP, `127.0.0.1:9000/mcp`), Tools für den Orchestrator |
-| `orchestrator.py` | CLI-Variante des Orchestrators (Chat im Terminal) |
-| `app/orchestrator_core.py` | Gemeinsamer Kern: `mcp_session()` + `run_turn()`. CLI **und** API nutzen ihn |
-| `app/llm.py` | Provider-neutrale LLM-Schicht (ein Loop, Backends **ollama** + **anthropic**) |
-| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox` (FIFO nach `created_at`), `claim_tasks`/`claim_task` (nur Tasks, **exklusiv**: ein laufender Task wirft `AlreadyClaimed`), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `beantworte_frage` (die eine Antwort-Primitive für Dashboard und MCP), `schliesse_frage`/`verwerfe_frage` (Rückfrage ohne Antwort beenden — der nur auf sie wartende Task scheitert mit Klartext), `requeue_stale`/`aufraeumen`/`pflege` (verwaiste Tasks zurück in die Warteschlange, alte Ablagen rotieren), `normalize_envelope`. Read-Modify-Write läuft unter einem Datei-Lock je Mailbox |
-| `app/files.py` | Pfad-sichere Datei-Ops (`list_dir`, `read_file`) für den Dateibaum |
-| `app/config.py` | Settings (`settings.json`) + Verbindungen (`agents.yaml`, ohne Credentials) |
-| `app/integrations.py` | Config-getriebene HTTP-Integrationen (`integrations.yaml`, generisch) |
-| `app/mcp_scope.py` | Kanal-Identität + Tool-Allowlists je Agent (Port-Vergabe, Port-Map, `resolve_ident`) |
-| `app/auto_watcher.py` | Automatikmodus: hält pro Agent einen Remote-Watcher per SSH (`/api/automatik*`) |
-| `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
-
-**MCP-Tools** (im `mcp_server.py`, pfad-gehärtet gegen `WORKSPACE_DIR`):
-- Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?)` (`create_task` als Alias) · `read_responses(worker, for_sender?)` (Outbox-Archiv des Bearbeiters)
-- Task-Lebenszyklus (Agent-Seite): `claim_task(task_id, agent?, erneut?)` (→ "in Arbeit"; ein bereits laufender Task wird **nicht** erneut vergeben — `erneut=True` holt dem eigenen Bearbeiter seinen Auftragstext zurück) · `complete_task(task_id, result, status?, log?, agent?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab; ein wiederholter Aufruf ist kein Fehler (`already: true`), damit eine verlorene Antwort erneut abgeliefert werden kann
-- Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` (archiviert die beantwortete Frage gleich mit) · `inbox(agent, kind?)` · `mark_read(envelope_id, agent?)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder). Empfänger müssen bekannt sein (Mailbox oder `agents.yaml`) — sonst Fehler statt Geister-Mailbox
-- Projektdateien: `write_project_file(...)` · `read_project_file(...)`
-- Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)` — Aufruf-Timeout `INTEGRATION_TIMEOUT` (Default 60 s, je Integration per `timeout:`); lange Vorgänge asynchron anstoßen (Job-ID zurück, Status pollen) statt das Timeout hochzudrehen
-
-**Nebenläufigkeit:** Jedes Tool wird als `async` registriert und läuft in einem
-Thread (Integrationen in einem eigenen, kleinen Pool). Das SDK würde synchrone
-Tools sonst direkt im Event-Loop ausführen — und da sich **alle** Kanäle einen
-Loop teilen, legte ein einziger langer Aufruf sämtliche Agenten still. Im Log
-steht zu jedem Tool-Aufruf eine Start- und eine Endzeile mit Dauer; eine
-Startzeile ohne Endzeile ist der Aufruf, der gerade noch läuft.
-
-**Kanal-Identität + Tool-Scoping** (`app/mcp_scope.py`): Neben dem freien Kanal
-`:9000` (Orchestrator, intern) lauscht **pro SSH-Agent ein eigener, an dessen
-Namen gebundener Port** (automatisch ab `:9100`, explizit via `mcp_local_port`).
-Der Reverse-Tunnel des Agenten forwardet auf genau diesen Port — die Identität
-kommt fälschungssicher aus dem Kanal, nicht aus einem Parameter: auf gebundenen
-Kanälen werden `agent`/`sender` aus der Bindung abgeleitet (Parameter einfach
-weglassen), abweichende Werte lehnt der Server ab. Optional begrenzt eine
-Allowlist am Agenten (`tools: [inbox, mark_read, …]` in `agents.yaml`), welche
-Tools der Kanal überhaupt in der Tool-Liste sieht — so lässt sich z. B. ein
-Claude-Desktop-Client auf reine Mailbox-Nutzung beschränken. Die aktive
-Port-Zuordnung schreibt der Server nach `/workspace/config/mcp_ports.json`
-(liest der Tunnel); jeder Tool-Aufruf wird mit Kanal-Namen geloggt. Agenten ohne
-Eintrag in der Map fallen auf `:9000` zurück — **außer** sie haben eine
-Allowlist, dann pausiert ihr Tunnel, bis der MCP-Dienst neu gestartet wurde
-(die Allowlist wird nie über den freien Kanal umgangen).
-
-**Agenten ohne SSH** (Issue #32): Ein Gerät, zu dem das Dashboard keinen Tunnel
-aufbauen kann — Windows-Notebook mit Claude Desktop, Rechner hinter NAT, mal im
-LAN und mal im VPN — meldet sich stattdessen selbst über denselben HTTPS-Zugang,
-den auch der Browser nimmt:
-
-```yaml
-  - name: PMNB029
-    connection:
-      type: token
-      token_file: /app/config/tokens/PMNB029.token   # nie im Klartext in der YAML
-```
-
-Token erzeugen mit `scripts/make_agent_token.sh PMNB029`, dann auf dem Gerät
-`claude mcp add --scope user --transport http dashboard https://<dashboard>/mcp/PMNB029
---header "Authorization: Bearer …"`. Das Backend prüft den Token in konstanter
-Zeit und reicht die Anfrage an den gebundenen Loopback-Port weiter; die
-MCP-Ports selbst bleiben unveröffentlicht wie bisher. **Die Identität kommt
-weiter aus dem Kanal**: Ein Token öffnet genau den Port seines Agenten, wer
-Token X hat, kann nicht als Y auftreten. Zwei Unterschiede zu SSH-Kanälen, beide
-absichtlich: Ohne eigene `tools:`-Liste gibt es hier nur die Mailbox-Grundmenge
-(ein Token liegt auf einem Gerät, das das Dashboard nicht kennt, und ist
-leichter zu verlieren als ein Schlüssel auf einem bekannten Host), und nach
-zehn Fehlversuchen in einer Minute ist der Agent kurzzeitig gesperrt.
-
-**Automatikmodus** (`app/auto_watcher.py`, Toggle im Agenten-Panel): pro Agent
-per Klick ein-/ausschaltbar — das Dashboard hält dann per SSH einen
-`agent_watcher.py --mcp-url …` auf dem Agenten-PC, der die Inbox selbständig
-abarbeitet (Script wird bei jedem Start per SFTP aktuell hingelegt, kein
-Installationsschritt; kein SSHFS-Mount nötig). Der gewünschte Zustand steht in
-`settings.json` und übersteht Neustarts; angezeigt wird der ECHTE
-Prozess-Zustand. „Aus" stoppt sanft (laufender Claude-Lauf darf fertig werden
-und sein Ergebnis abliefern), der globale **Not-Aus** im Panel-Kopf stoppt alle
-Automatiken sofort hart. Optional je Agent in `agents.yaml`: `workdir`
-(Basis-Arbeitsverzeichnis für Claude), `python` (Default `python3`) und
-`claude_bin` (Pfad zum Claude-Binary, falls die automatische Suche — PATH plus
-`~/.local/bin` & Co. — nicht greift). Das `project`-Feld eines Tasks wählt ein
-Unterverzeichnis unter `workdir` — so bedient ein Agent mehrere Repos; ohne
-`project` läuft Claude im `workdir` selbst, ein unbekanntes oder ausbrechendes
-`project` lässt den Task mit Klartext scheitern statt im falschen Verzeichnis
-zu laufen. Vor dem ersten Task prüft der Watcher
-die Umgebung (Binary, Arbeitsverzeichnis) und hält bei Serien sofortiger
-Fehlschläge an, statt die Warteschlange zu verbrauchen.
-
-Stellt der Agent während eines Tasks eine Rückfrage (`ask`), wird der Task
-beim Abschluss **geparkt** statt als erledigt gemeldet: er bleibt als „wartet
-auf Antwort" (needs_confirm) sichtbar und läuft nach der Antwort automatisch
-erneut — mit der Antwort im Kontext. Fehlgeschlagene Tasks wandern nach
-`inbox/.failed/` und behalten ihre Aufgabenbeschreibung in der Antwort.
-
-Achtung: im Automatikmodus arbeitet `claude --print` unbeaufsichtigt —
-Berechtigungs-Rückfragen von Claude Code selbst kann headless niemand
-beantworten. Was der Lauf dürfen soll, gehört deshalb je Agent in
-`agents.yaml`: `permission_mode` (z. B. `acceptEdits`) und `allowed_tools`
-(z. B. `[Edit, Write, "Bash(git:*)"]`) werden an `claude --permission-mode` /
-`--allowed-tools` durchgereicht — die Betriebsberechtigung steht damit im
-Dashboard-Config statt unsichtbar in der Settings-Datei des Agenten-PCs.
-Verweigert Claude ein Werkzeug trotzdem, erscheint das ausdrücklich im Log
-der Antwort („Berechtigung verweigert: …") statt nur im Fließtext des
-Ergebnisses unterzugehen.
-
-### Frontend (`frontend/src/`)
-
-| Datei | Zweck |
-|-------|-------|
-| `App.jsx` | Dashboard-Layout (Top-Bar · Dateibaum · Chat · Terminal · MCP-Monitor) |
-| `api.js` | zentrale fetch-Helfer (relative `/api`-Pfade) |
-| `components/TopBar.jsx` | Kopfzeile, Session-Anzeige, Einstellungen-Button |
-| `components/Chat.jsx` | Orchestrator-Chat mit Tool-Call-Chips |
-| `components/FileTree.jsx` | lazy-ladender Dateibaum über `/api/files` |
-| `components/FileViewer.jsx` | Datei-Inhalt im Modal |
-| `components/AgentsPanel.jsx` | MCP-Monitor: Inbox/Outbox je Agent mit Status-Badges, dazu der Abschnitt **Nachrichten** (alles Nicht-Task aus der Inbox: Hinweise, Antworten, Task-Ergebnisse) mit Zähler am Agenten-Kopf und ✓ zum Archivieren |
-| `termScroll.js` | Wischen im Terminal-Verlauf und Größenwechsel: xterm verliert bei einer Wischgeste das Berührungsziel (der DOM-Renderer ersetzt die Zeilen darunter) — die Geste wird per Pointer-Capture selbst geführt; dazu bleibt die Stelle im Verlauf erhalten, wenn die Bildschirmtastatur auf- oder zugeht |
-| `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; pro Verbindung mehrere Terminals (⧉-Knopf, z. B. Claude Code + eigene Shell nebeneinander); Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
-| `components/Settings.jsx` | Einstellungen-Modal (Modellwahl/Sprache/externe Fenster) |
-| `components/Modal.jsx` | generischer Modal-Container |
-
-### Agenten-Seite (`scripts/`)
-
-`agent_watcher.py` — läuft auf dem **entfernten** PC, nur Standardlib (kein pip
-nötig). Pollt die Inbox, startet Claude-Code, schreibt die Outbox atomar.
-`--dry-run` echoed die Aufgabe zurück (Test ohne echtes Claude-Code).
-
----
-
-## API-Referenz
-
-Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
-
-| Methode | Pfad | Beschreibung |
-|---------|------|--------------|
-| `GET` | `/api/health` | Liveness (Docker-Healthcheck), unabhängig von MCP/Anthropic |
-| `GET` | `/api/agents` | Liste der Agenten (= Mailbox-Ordner) |
-| `GET` | `/api/agents/{name}/tasks` | `{inbox, outbox, messages}` eines Agenten (beanspruchte Tasks als `running`; `messages` = alles Nicht-Task aus der Inbox, neueste zuerst) |
-| `GET` | `/api/agents/{name}/inbox?kind=` | Alle Eingänge (Tasks + Nachrichten + Rückfragen), normalisiert |
-| `POST` | `/api/agents/{name}/inbox/read-all` | Alles Erledigte ins Archiv (offene Tasks/Rückfragen bleiben) |
-| `POST` | `/api/agents/{name}/inbox/{id}/read` | Eine gelesene Nachricht ins Archiv |
-| `POST` | `/api/tasks/{agent}/{task_id}/close` | Hängengebliebenen Task von Hand abschließen (`{status?, result?}`) |
-| `GET` | `/api/questions?to=` | Offene Rückfragen (`needs_confirm`) über alle Agenten; je Frage `fuer_mensch` (an den `orchestrator` gerichtet), `?to=` filtert auf eine Mailbox |
-| `POST` | `/api/questions/{agent}/{qid}/answer` | Rückfrage beantworten → Antwort an Fragesteller (`answered_by: "dashboard"`) |
-| `POST` | `/api/questions/{agent}/{qid}/close` | Rückfrage ohne Antwort schließen (`{grund?}`) → Frage ins Archiv, der wartende Task scheitert mit Klartext nach `.failed/` |
-| `GET` | `/api/integrations` | Konfigurierte Integrationen (Name + Methoden, ohne Secrets) |
-| `POST` | `/api/chat` | Body `{message, session_id?}` → `{session_id, reply, tool_calls}` |
-| `GET` | `/api/files?path=` | Verzeichnis auflisten (path-traversal-sicher) |
-| `GET` | `/api/files/content?path=` | Dateiinhalt (begrenzt auf 256 KB) |
-| `GET` | `/api/connections` | SSH-Verbindungen aus `agents.yaml` (ohne Credentials) |
-| `GET` | `/api/settings` | editierbare UI-Settings |
-| `PUT` | `/api/settings` | Settings speichern (Whitelist) |
-| `GET` | `/api/automatik` | Automatikmodus: Not-Aus + gewünschter/echter Status je Agent |
-| `POST` | `/api/automatik/{name}` | Body `{an}` — Automatik eines Agenten an/aus (aus = sanft) |
-| `POST` | `/api/automatik/notaus` | Body `{an}` — globaler Not-Aus (an = alle sofort hart stoppen) |
-| `GET` | `/api/ssh/sessions` | laufende Terminal-Sessions (`name`, `sid`, `attached`, `age`, `idle`) |
-| `DELETE` | `/api/ssh/{name}/session?sid=` | Terminal-Session explizit beenden (⏻-Knopf) |
-| `WS` | `/ws/ssh/{name}` | SSH-Terminal-Bridge (JSON `{type:"data"/"resize"}` rein, Text raus) |
-
----
-
-## Konfiguration
-
-```
-/workspace/                 (Volume, beschreibbar)
-├── projects/               vom Orchestrator angelegte Projekte
-├── mailboxes/<agent>/      inbox/ · outbox/ · inbox/.processing/
-├── config/
-│   ├── settings.json       editierbare UI-Settings (vom Dashboard gepflegt)
-│   ├── agents.yaml         Agenten: SSH-Verbindungen, Rolle (coordinator/worker)
-│   ├── integrations.yaml   benannte HTTP-Integrationen je Workflow
-│   └── llm-providers.yaml  Provider-Reihenfolge (Claude/OpenRouter/Ollama)
-├── logs/
-└── ssl/                    self-signed Platzhalter, bis echtes Zertifikat da ist
-```
-
-**`.env`** (aus `.env.example` kopieren) — Secrets, nie committen:
-`ANTHROPIC_API_KEY`, `OLLAMA_BASE_URL`, `ADMIN_INITIAL_PASSWORD`,
-`SESSION_SECRET`, …
-
-**Wichtige Env-Variablen:** `WORKSPACE_DIR` (Default `/workspace`),
-`DATA_CONFIG_DIR` (`/workspace/config`), `MCP_HOST`/`MCP_PORT` (`127.0.0.1`/`9000`),
-`API_PORT` (`5000`), `ORCH_MODEL` (`claude-opus-4-8`).
-
----
-
-## Schnellstart
-
-### Nur den Vertical Slice testen (ohne LLM, ohne pip)
-
-`mailbox.py` und `agent_watcher.py` brauchen nur die Python-Standardlib:
+## Quickstart
 
 ```bash
-ROOT=/tmp/mb/mailboxes
-PYTHONPATH=backend python3 -c "from app.mailbox import Mailbox, Task; \
-  Mailbox('$ROOT','frontend').put_task(Task('task-0001','frontend','Erstelle login.html'))"
-python3 scripts/agent_watcher.py --agent frontend --root "$ROOT" --dry-run --once
-cat "$ROOT"/frontend/outbox/*-response.json   # status: done
-```
-
-### Vollständig lokal (Frontend + Backend + LLM)
-
-```bash
-# 1. Frontend (Terminal A)
-cd frontend && npm install && npm run dev          # http://localhost:5173
-
-# 2. Backend-Deps + Keys
-cd backend && pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...
-export WORKSPACE_DIR=/tmp/mb
-
-# 3. MCP-Server (Terminal B)
-cd backend && python -m mcp_server                 # :9000
-
-# 4. FastAPI (Terminal C)
-cd backend && uvicorn main:app --host 127.0.0.1 --port 5000
-
-# 5. optional: ein Test-Agent (Terminal D)
-python scripts/agent_watcher.py --agent frontend --root "$WORKSPACE_DIR/mailboxes" --dry-run
-```
-
-Dann im Browser `http://localhost:5173` öffnen und chatten — die Aufgabe landet
-real in der Mailbox, der Watcher bearbeitet sie, das Ergebnis erscheint im
-MCP-Monitor.
-
----
-
-## Deployment (Docker)
-
-> **Schritt-für-Schritt-Anleitung: siehe [`START.md`](START.md)** — `.env`,
-> Konfig, erster Durchlauf, Remote-Agenten, Troubleshooting.
-
-```bash
-cp .env.example .env        # ausfüllen (mindestens ANTHROPIC_API_KEY)
+git clone https://github.com/Meisterull/agent-dashboard && cd agent-dashboard
+cp .env.example .env
+# pick a provider in .env:
+#   ORCH_PROVIDER=anthropic  + ANTHROPIC_API_KEY=sk-ant-...     (Claude)
+#   ORCH_PROVIDER=ollama     + OLLAMA_BASE_URL=...              (local, no key)
 docker compose up --build
-# Dashboard:  https://localhost:8443   (self-signed Zertifikat im MVP)
+# → https://localhost:8443
 ```
 
-Der Build ist **mehrstufig**: Node baut das Frontend, ein Build-Stage kompiliert
-die Python-Wheels, das schlanke Runtime-Image enthält weder `npm` noch
-`build-essential`. **supervisord** startet nginx + uvicorn + mcp_server (+ optional
-mcp-tunnel) und startet abgestürzte Dienste neu; bleibt ein Dienst endgültig
-unten (FATAL), beendet sich der Container, damit Docker ihn neu startet.
+Hook up a machine as an agent (dry run, no Claude needed):
 
-Härtung in `docker-compose.yml`: non-root, `no-new-privileges`, `cap_drop: ALL`
-+ nur nötige Caps, Healthcheck auf `/api/health`, **kein** `docker.sock`-Mount,
-FastAPI/MCP-Ports nicht nach außen veröffentlicht.
+```bash
+python3 scripts/agent_watcher.py --agent frontend \
+  --root /path/to/workspace/mailboxes --dry-run
+```
 
----
+Step-by-step setup, remote agents and troubleshooting: **[START.md](START.md)**.
 
-## Sicherheit
+## Documentation
 
-- **Path-Traversal** unterbunden: jeder Workspace-Zugriff resolved + gegen
-  `WORKSPACE_DIR` geprüft (`app/files._safe`, `_safe` im MCP-Server). Getestet.
-- **Atomare Mailbox**: `tmp` + `fsync` + `os.replace` → keine halb gelesenen
-  JSON-Dateien; `.processing/`-Claim verhindert Doppel-Pickup.
-- **Secrets** nur in `.env`/Docker-Secrets — nie ins Frontend, nie im Klartext in
-  `agents.yaml`. `/api/connections` liefert nur Name/Host/User/Modus.
-- **Settings-Whitelist** (`config.ALLOWED_KEYS`): `/api/settings` ignoriert
-  unbekannte Keys.
-- **SSH**: Key-Only vorgesehen, `sshpass` bewusst entfernt; Credentials verlassen
-  den Server nie Richtung Frontend.
-- **Container**: non-root `app`-User, read-only Vorlagen-Config, kein Host-Socket.
+| Document | Content |
+|---|---|
+| [START.md](START.md) | setup walkthrough: `.env`, config, first run, remote agents |
+| [docs/REFERENZ.md](docs/REFERENZ.md) | full architecture and API reference |
+| [PROJECT.md](PROJECT.md) | design decisions and project history |
 
----
+The in-depth documentation is currently written in German — translations
+welcome. The code and configuration are English-friendly throughout.
 
-## Status & getestet
+## Security model in one paragraph
 
-| Teil | Verifikation |
-|------|--------------|
-| Mailbox-Roundtrip (atomar) | ✅ real getestet (Orchestrator→inbox→Watcher→outbox) |
-| `files.py` / `config.py` (Dateibaum, Settings, Path-Traversal) | ✅ real getestet (3 Traversal-Angriffe blockiert, Settings-Whitelist greift) |
-| Frontend-Build | ✅ `npm run build` grün (xterm gebündelt) |
-| **Agentic-Loop gegen echtes LLM** (Tool-Calls → Mailbox, ein- und mehrstufig) | ✅ **real getestet** via Ollama (`gpt-oss:120b`), provider-neutrale Schicht |
-| MCP-Server · FastAPI (Server live) | ⚠️ kompiliert (`py_compile`); Server selbst hier nicht gestartet (kein pip für `fastapi`/`mcp`) |
-| SSH-Bridge (`/ws/ssh`) | ⚠️ real implementiert, ohne SSH-Ziel nicht getestet |
+Secrets live only in `.env`/Docker secrets and never reach the frontend. Every
+workspace file access is resolved and checked against the workspace root. The
+mailbox uses `tmp` + `fsync` + `os.replace`, so there are no half-written
+tasks, and a `.processing/` claim prevents double pickup. Agent identity is
+bound to the transport channel (per-agent port or token, constant-time check,
+lockout after repeated failures) — a caller cannot impersonate another agent
+by passing a parameter.
 
-Der LLM-Pfad und der Container-Lauf scheitern hier nur an der **Umgebung**
-(kein `pip`/`venv`, kein API-Key), nicht am Code. Erster echter End-to-End-Test:
-`docker compose up --build`.
+## License
 
----
-
-## Roadmap
-
-1. ✅ Mailbox-Roundtrip (atomar)
-2. ✅ MCP-Server an Orchestrator-Loop (Claude API, CLI)
-3. ✅ FastAPI-Wrapper (`/api/health`, `/api/chat`, `/api/agents`, …)
-4. ✅ Vollständige React-Dashboard-View (Chat · Dateibaum · Terminal · MCP-Monitor · Settings)
-5. ✅ **Multi-Provider** (anthropic + ollama) über `app/llm.py` — Agentic-Loop gegen Ollama real getestet
-6. **Nächste Schritte (additiv):**
-   - erster echter Container-Lauf (`docker compose up`) end-to-end
-   - OpenRouter als dritter Provider + automatischer Fallback bei Ausfall
-   - Telegram-Bot als zweiter Eingangskanal
-   - echtes SSL/Domäne (Let's Encrypt) statt self-signed
-   - Persistenz (SQLite) für Chat-History/Tasks statt in-memory
-   - `needs_confirm`-Flow (Rückfragen der Agenten an den User)
-
-Details und Designentscheidungen: siehe **`PROJECT.md`**.
+[AGPL-3.0](LICENSE). Build something on top of it — just keep it open.
