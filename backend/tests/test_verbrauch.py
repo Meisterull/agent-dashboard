@@ -82,6 +82,47 @@ class AggregationTests(unittest.TestCase):
         self.assertFalse(agg["ueber_schwelle"])  # 0 = aus
 
 
+class ReviewHaerteTests(unittest.TestCase):
+    """Review N/P2: Infinity aus fremden Responses + mtime-Vorfilter."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="verbrauch-rev-"))
+        self._root = verbrauch.MAILBOX_ROOT
+        verbrauch.MAILBOX_ROOT = self.tmp
+        self.outbox = self.tmp / "a" / "outbox"
+        self.outbox.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        verbrauch.MAILBOX_ROOT = self._root
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_unendliche_werte_crashen_nicht(self):
+        jetzt = datetime.now().astimezone()
+        (self.outbox / "task-inf-response.json").write_text(json.dumps({
+            "responded_at": jetzt.isoformat(timespec="seconds"),
+            "verbrauch": {"input_tokens": 5,
+                          "output_tokens": float("inf"),
+                          "total_cost_usd": float("nan")},
+        }), encoding="utf-8")
+        agg = verbrauch.lade("a")
+        self.assertEqual(agg["heute"]["tokens"], 5)   # inf ignoriert
+        self.assertEqual(agg["heute"]["kosten"], 0.0)  # nan ignoriert
+
+    def test_mtime_vorfilter_liest_alte_dateien_nicht(self):
+        import os as _os
+        import time as _zeit
+        gestern = datetime.now().astimezone() - timedelta(hours=30)
+        p = self.outbox / "task-alt-response.json"
+        p.write_text(json.dumps({
+            "responded_at": gestern.isoformat(timespec="seconds"),
+            "verbrauch": {"output_tokens": 7},
+        }), encoding="utf-8")
+        alt = _zeit.time() - 3 * 86400
+        _os.utime(p, (alt, alt))  # Datei sieht 3 Tage alt aus
+        agg = verbrauch.lade("a")
+        self.assertEqual(sum(t["tasks"] for t in agg["tage"]), 0)
+
+
 class LaderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="verbrauch-test-"))

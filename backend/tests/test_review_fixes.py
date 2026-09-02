@@ -141,6 +141,25 @@ class ZeitplanStempelTests(unittest.TestCase):
         self.assertEqual(ergebnis[0]["letzter_lauf"], "2026-09-02T07:00:00")
 
 
+class SettingsKeysTests(unittest.TestCase):
+    """Review N: der Kommentar an SettingsIn ('neue Felder auch in
+    ALLOWED_KEYS') wird hier zum Test — save_settings verwirft unbekannte
+    Keys STILL, der Drift fiele sonst erst dem Nutzer auf."""
+
+    def test_settingsin_felder_sind_erlaubt(self):
+        import re
+        from app import config
+        quelle = (Path(__file__).resolve().parents[1] / "main.py").read_text(
+            encoding="utf-8")
+        block = quelle.split("class SettingsIn", 1)[1]
+        block = block.split("\n\n\n", 1)[0]
+        felder = re.findall(r"^    (\w+):", block, re.MULTILINE)
+        self.assertTrue(felder, "SettingsIn-Felder nicht gefunden")
+        fehlend = [f for f in felder if f not in config.ALLOWED_KEYS]
+        self.assertEqual(fehlend, [],
+                         f"SettingsIn-Felder fehlen in ALLOWED_KEYS: {fehlend}")
+
+
 class RollenFrontmatterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="frontmatter-"))

@@ -78,6 +78,8 @@ function fetchDoppel(url, opt = {}) {
     }
     return json({});
   }
+  if (url === "/api/rollen") return json({ rollen: [] });
+  if (url === "/api/zeitplaene") return json({ plaene: [] });
   if (url === "/api/agents") return json({ agents: ["PMNB029", "erp"] });
   if (url === "/api/automatik") return json({ notaus: false, agents: {} });
   if (url.startsWith("/api/agents/PMNB029/tasks"))

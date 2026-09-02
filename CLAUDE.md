@@ -151,6 +151,7 @@ Dockerfile · docker-compose.yml · entrypoint.sh · supervisord.conf · nginx/
 cd frontend && npm install && npm run dev      # http://localhost:5173 (proxyt /api,/ws)
 cd frontend && npm run build                   # erzeugt dist/ (nginx liefert es aus)
 cd frontend && node tests/test_layout.mjs      # Fensteranordnung, rein rechnerisch (kein Browser)
+cd frontend && node tests/test_woerter.mjs     # Wörterbuch-Konsistenz (Duplikate, Platzhalter)
 # Im echten Browser (Prüfstand ohne Backend/Login, ?panel=… wählt den Teil) —
 # Aufruf steht im Kopf der Testdatei; Handy-Format + Touch-Emulation:
 #   tests/test_workspace_browser.cjs  Fensteranordnung (#24)
@@ -364,7 +365,7 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
 | SSH-Bridge (`/ws/ssh`) | ✅ E2E getestet 12.07.2026 (persistente Sessions, sid-Reattach) |
 | MCP-Tunnel (`app/mcp_tunnel.py`) | ✅ E2E verifiziert 07.07.2026 (Host als Test-Agent `lokal`, Port 9100: Handshake + `claude mcp list` ✔ Connected) |
 
-| Backend-Tests (`python -m tests.run_alle`) | ✅ 11 Module grün 16.08.2026 (Standardlib, Host wie Container) |
+| Backend-Tests (`python -m tests.run_alle`) | ✅ 21 Module grün 02.09.2026 (Standardlib, Host wie Container; httpx-Roundtrip skippt auf dem Host) |
 | Review 16.08.2026 (H/M/N-Befunde) | ✅ Code gefixt + Tests + deployt 16.08.2026 (mit Issues #12–#19) |
 
 Wenn du etwas änderst: bei reinen Standardlib-Modulen (mailbox, files, config, watcher)

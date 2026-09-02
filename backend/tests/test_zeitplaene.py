@@ -188,6 +188,65 @@ class VerwaltungTests(unittest.TestCase):
         self.assertNotIn("fehler", bericht)
 
 
+class TickTests(unittest.TestCase):
+    """tick(): postet Fällige — und EIN kaputter Post blockiert nicht
+    die übrigen Pläne (Review N: _poste unters Fangnetz)."""
+
+    def setUp(self) -> None:  # wie VerwaltungTests: alles in ein tmp-Verzeichnis
+        self.tmp = Path(tempfile.mkdtemp(prefix="tick-test-"))
+        self._yaml = zeitplaene.ZEITPLAENE_YAML
+        self._root = zeitplaene.MAILBOX_ROOT
+        self._vroot = verbrauch.MAILBOX_ROOT
+        zeitplaene.ZEITPLAENE_YAML = self.tmp / "zeitplaene.yaml"
+        zeitplaene.MAILBOX_ROOT = self.tmp / "mailboxes"
+        verbrauch.MAILBOX_ROOT = self.tmp / "mailboxes"
+
+    def tearDown(self) -> None:
+        zeitplaene.ZEITPLAENE_YAML = self._yaml
+        zeitplaene.MAILBOX_ROOT = self._root
+        verbrauch.MAILBOX_ROOT = self._vroot
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_ein_kaputter_post_blockiert_nicht(self):
+        Mailbox(zeitplaene.MAILBOX_ROOT, "werkstatt")
+        zeitplaene.speichere_plaene([
+            {"name": "n1", "agent": "werkstatt", "instruction": "a",
+             "zeit": "07:00"},
+            {"name": "n2", "agent": "werkstatt", "instruction": "b",
+             "zeit": "07:00"},
+        ])
+        echte = zeitplaene._poste
+        gepostet = []
+
+        def doppel(plan, soll, schwelle=0):
+            if plan["name"] == "n1":
+                raise OSError("Platte voll")
+            gepostet.append(plan["name"])
+            return {"agent": plan["agent"], "plan": plan["name"]}
+
+        zeitplaene._poste = doppel
+        try:
+            berichte = zeitplaene.tick(jetzt=lokal(2026, 9, 2, 7, 1))
+        finally:
+            zeitplaene._poste = echte
+        self.assertEqual(gepostet, ["n2"])
+        self.assertEqual([b["plan"] for b in berichte], ["n2"])
+
+    def test_tick_postet_faellige_wirklich(self):
+        Mailbox(zeitplaene.MAILBOX_ROOT, "werkstatt")
+        zeitplaene.speichere_plaene([
+            {"name": "n1", "agent": "werkstatt", "instruction": "a",
+             "zeit": "07:00"},
+        ])
+        berichte = zeitplaene.tick(jetzt=lokal(2026, 9, 2, 7, 1))
+        self.assertEqual(len(berichte), 1)
+        inbox = list((zeitplaene.MAILBOX_ROOT / "werkstatt" / "inbox")
+                     .glob("task-*.json"))
+        self.assertEqual(len(inbox), 1)
+        # zweiter Tick am selben Tag: gestempelt, nichts Neues
+        self.assertEqual(zeitplaene.tick(jetzt=lokal(2026, 9, 2, 7, 2)), [])
+
+
 class NichtVorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="nichtvor-test-"))

@@ -138,15 +138,26 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `app/orchestrator_core.py` | Gemeinsamer Kern: `mcp_session()` + `run_turn()`. CLI **und** API nutzen ihn |
 | `app/llm.py` | Provider-neutrale LLM-Schicht (ein Loop, Backends **ollama** + **anthropic**) |
 | `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox` (FIFO nach `created_at`), `claim_tasks`/`claim_task` (nur Tasks, **exklusiv**: ein laufender Task wirft `AlreadyClaimed`), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `beantworte_frage` (die eine Antwort-Primitive für Dashboard und MCP), `schliesse_frage`/`verwerfe_frage` (Rückfrage ohne Antwort beenden — der nur auf sie wartende Task scheitert mit Klartext), `requeue_stale`/`aufraeumen`/`pflege` (verwaiste Tasks zurück in die Warteschlange, alte Ablagen rotieren), `normalize_envelope`. Read-Modify-Write läuft unter einem Datei-Lock je Mailbox |
-| `app/files.py` | Pfad-sichere Datei-Ops (`list_dir`, `read_file`) für den Dateibaum |
+| `app/files.py` | Pfad-sichere Datei-Ops für Dateibaum und Editor: `list_dir`, `read_file`, `write_file`, `make_dir`, `rename`, `delete`, `save_upload`, `file_path` (Download) — alles über `_safe` gegen Path-Traversal gehärtet; `GESPERRT` hält `keys/`, `ssl/` und `chat.db` aus dem Panel |
 | `app/config.py` | Settings (`settings.json`) + Verbindungen (`agents.yaml`, ohne Credentials) |
 | `app/integrations.py` | Config-getriebene HTTP-Integrationen (`integrations.yaml`, generisch) |
 | `app/mcp_scope.py` | Kanal-Identität + Tool-Allowlists je Agent (Port-Vergabe, Port-Map, `resolve_ident`) |
 | `app/auto_watcher.py` | Automatikmodus: hält pro Agent einen Remote-Watcher per SSH (`/api/automatik*`) |
 | `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
+| `app/remote_files.py` | SFTP-Datei-Ops auf den Agenten-PCs (`/api/remote/…`) |
+| `app/ssh_connect.py` | zentraler SSH-Connect mit Host-Key-Pinning (TOFU, `known_hosts`) |
+| `app/mcp_tunnel.py` | Reverse-SSH-Tunnel: gebundene MCP-Kanäle auf die Agenten-PCs |
+| `app/mcp_token.py` | Bearer-Token-Prüfung für den HTTPS-MCP-Kanal (`/mcp/{agent}`, Issue #32) |
+| `app/chat_store.py` | SQLite-Persistenz der Chat-Sessions (`/workspace/chat.db`) |
+| `app/events.py` | Mailbox-Wächter: watchfiles/mtime → SSE (`/api/events`) + Push-Auslöser |
+| `app/push.py` | Web-Push: VAPID-Keys + Subscriptions, Versand via pywebpush |
+| `app/auth.py` | Session-Cookie-Auth (Login, Middleware) |
+| `app/rollen.py` | Rollen für Task-Läufe (`config/rollen/*.md`), beim send_task eingefroren |
+| `app/zeitplaene.py` | geplante Tasks (`config/zeitplaene.yaml`) + Planer-Loop im API-Prozess |
+| `app/verbrauch.py` | Verbrauchszähler je Agent, ON-READ aus der Outbox aggregiert |
 
 **MCP-Tools** (im `mcp_server.py`, pfad-gehärtet gegen `WORKSPACE_DIR`):
-- Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?, rolle?)` (`create_task` als Alias) · `list_rollen()` · `read_responses(worker, for_sender?)` (Outbox-Archiv des Bearbeiters)
+- Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?, files?, rolle?, nicht_vor?)` — `files` sind Workspace-Pfade, die als Kontextzeile in die Instruction wandern; `nicht_vor` plant den Start (serverseitig tz-eingefroren) (`create_task` als Alias) · `list_rollen()` · `read_responses(worker, for_sender?)` (Outbox-Archiv des Bearbeiters)
 - Task-Lebenszyklus (Agent-Seite): `claim_task(task_id, agent?, erneut?)` (→ "in Arbeit"; ein bereits laufender Task wird **nicht** erneut vergeben — `erneut=True` holt dem eigenen Bearbeiter seinen Auftragstext zurück) · `complete_task(task_id, result, status?, log?, agent?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab; ein wiederholter Aufruf ist kein Fehler (`already: true`), damit eine verlorene Antwort erneut abgeliefert werden kann
 - Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` (archiviert die beantwortete Frage gleich mit) · `inbox(agent, kind?)` · `mark_read(envelope_id, agent?)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder). Empfänger müssen bekannt sein (Mailbox oder `agents.yaml`) — sonst Fehler statt Geister-Mailbox
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
@@ -305,7 +316,14 @@ Ergebnisses unterzugehen.
 | `termScroll.js` | Wischen im Terminal-Verlauf und Größenwechsel: xterm verliert bei einer Wischgeste das Berührungsziel (der DOM-Renderer ersetzt die Zeilen darunter) — die Geste wird per Pointer-Capture selbst geführt; dazu bleibt die Stelle im Verlauf erhalten, wenn die Bildschirmtastatur auf- oder zugeht |
 | `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; pro Verbindung mehrere Terminals (⧉-Knopf, z. B. Claude Code + eigene Shell nebeneinander); Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
 | `components/Settings.jsx` | Einstellungen-Modal (Modellwahl/Sprache/externe Fenster) |
-| `components/Modal.jsx` | generischer Modal-Container |
+| `components/Modal.jsx` | generischer Modal-Container (Escape schließt nur den obersten Dialog) |
+| `components/QuestionsBanner.jsx` | Banner offener Rückfragen (`/api/questions`), fremde Fragen eingeklappt |
+| `components/Workspace.jsx` / `WorkspaceViews.jsx` | frei verschiebbare Fenster + gespeicherte Anordnungen (localStorage) |
+| `components/RollenDialog.jsx` / `ZeitplaeneDialog.jsx` | Rollen-Editor bzw. geplante Tasks (Agenten-Panel) |
+| `components/Dialog.jsx` / `Fehlergrenze.jsx` | Bestätigungs-Dialoge · ErrorBoundary um jedes Panel |
+| `sprache.js` + `sprache/woerter_*.js` | Oberfläche de/en: `t("Deutscher Text")`, Deutsch ist der Schlüssel |
+| `speicher.js` | abgesicherte localStorage-Helfer (WebView-Privatmodus wirft beim Zugriff) |
+| `live.js` / `viewport.js` / `keys.js` | SSE-Client (entprellt) · sichtbare Höhe/Tastatur · KeyBar-Definitionen |
 
 ### Agenten-Seite (`scripts/`)
 
@@ -343,7 +361,23 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `POST` | `/api/automatik/notaus` | Body `{an}` — globaler Not-Aus (an = alle sofort hart stoppen) |
 | `GET` | `/api/ssh/sessions` | laufende Terminal-Sessions (`name`, `sid`, `attached`, `age`, `idle`) |
 | `DELETE` | `/api/ssh/{name}/session?sid=` | Terminal-Session explizit beenden (⏻-Knopf) |
+| `GET` | `/api/ssh/{name}/buffer?sid=` | Klartext-Replay-Puffer einer Session |
 | `WS` | `/ws/ssh/{name}` | SSH-Terminal-Bridge (JSON `{type:"data"/"resize"}` rein, Text raus) |
+| `POST` | `/api/chat/stream` | wie `/api/chat`, als SSE-Strom (`start` → `tool`… → `done`/`aborted`/`error`) |
+| `POST` | `/api/chat/stream/{id}/cancel` | laufenden Stream-Turn anhalten |
+| `GET`/`DELETE` | `/api/chat/sessions` · `/api/chat/{id}` | Session-Liste · History lesen/löschen |
+| `PUT`/`DELETE` | `/api/files/content` · `/api/files` | Editor-Speichern · Datei/Ordner löschen |
+| `POST` | `/api/files/upload` · `/mkdir` · `/rename` | Upload (multipart) · anlegen · umbenennen |
+| `GET` | `/api/files/download` · `/raw` | herunterladen · inline anzeigen/abspielen |
+| `*` | `/api/remote/{name}/…` | dieselben Datei-Ops auf Agenten-PCs via SFTP |
+| `POST`/`DELETE` | `/api/connections` · `/{name}` | Verbindung anlegen (erzeugt Key) · entfernen |
+| `GET` | `/api/connections/{name}/pubkey` | Public Key + fertiges Setup-Kommando |
+| `GET`/`PUT`/`DELETE` | `/api/rollen` · `/{name}` | Rollen fürs Task-Laufen (config/rollen/*.md) |
+| `GET`/`PUT` | `/api/zeitplaene` (+ `POST /{name}/jetzt`) | geplante Tasks lesen/ersetzen · sofort ausführen |
+| `GET` | `/api/models` | Modell-Liste des aktiven Providers |
+| `GET` | `/api/events` | Mailbox-Änderungen als SSE (Polling bleibt Fallback) |
+| `GET`/`POST` | `/api/push/key` · `/subscribe` · `/unsubscribe` · `/test` | Web-Push: VAPID-Key · Gerät an/abmelden · Testmeldung |
+| `*` | `/mcp/{agent}` | MCP über HTTPS (Bearer-Token je Agent, Issue #32) |
 
 ---
 
@@ -358,7 +392,13 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 │   ├── agents.yaml         Agenten: SSH-Verbindungen, Rolle (coordinator/worker)
 │   ├── integrations.yaml   benannte HTTP-Integrationen je Workflow
 │   ├── rollen/             Rollen für Task-Läufe (St.1, *.md mit Frontmatter)
-│   └── zeitplaene.yaml     geplante Tasks (St.2, Dialog im Agenten-Panel)
+│   ├── zeitplaene.yaml     geplante Tasks (St.2, Dialog im Agenten-Panel)
+│   ├── tokens/             HTTPS-MCP-Zugangstoken (scripts/make_agent_token.sh)
+│   ├── mcp_ports.json      aktive Port-Map der gebundenen MCP-Kanäle
+│   ├── known_hosts         SSH-Host-Key-Pinning (TOFU)
+│   └── vapid.json · push_subscriptions.json   Web-Push-Schlüssel + Geräte
+├── keys/                   private SSH-Schlüssel der UI-Verbindungen (im Datei-Panel gesperrt)
+├── chat.db                 Chat-Sessions (SQLite, im Datei-Panel gesperrt)
 ├── logs/
 └── ssl/                    self-signed Platzhalter, bis echtes Zertifikat da ist
 ```

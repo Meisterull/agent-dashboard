@@ -6,6 +6,7 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/auth/check             Login nötig/vorhanden? (öffentlich)
   POST /api/auth/login             Login (Passwort) → Session-Cookie
   POST /api/auth/logout            Session-Cookie löschen
+  GET  /api/auth/verify            nginx-auth_request fürs /ext/-Proxy (intern)
        alles Weitere unter /api    nur mit gültigem Session-Cookie (auth.py)
   GET  /api/agents                 Agenten = Mailbox-Ordner
   GET  /api/agents/{name}/tasks    Inbox (+ .processing als running) + Outbox
@@ -13,6 +14,10 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
                                    + verbrauch (Zähler heute/5 h/7 Tage, St.3)
   POST /api/agents/{name}/inbox/read-all  alles Erledigte ins Archiv (#21)
   POST /api/agents/{name}/inbox/{id}/read  eine Nachricht ins Archiv (#33)
+  GET  /api/agents/{name}/inbox    alle Eingänge normalisiert (?kind=)
+  GET  /api/questions              offene Rückfragen (needs_confirm, ?to= filtert)
+  POST /api/questions/{agent}/{qid}/answer  Rückfrage beantworten
+  POST /api/questions/{agent}/{qid}/close   Rückfrage ohne Antwort schließen (#23)
   POST /api/tasks/{agent}/{id}/close  hängengebliebenen Task manuell abschließen
   POST /api/chat                   Eine Chat-Runde (Orchestrator + Tool-Calls)
   POST /api/chat/stream            dito als SSE-Strom: tool-Events live + Abbruch (F3)
@@ -26,17 +31,25 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/files/download?path=   Datei herunterladen
   GET  /api/files/raw?path=        Datei anzeigen/abspielen (inline, echter Typ)
   POST /api/files/upload?path=     Datei(en) hochladen (multipart)
+  POST /api/files/mkdir · /rename  Verzeichnis anlegen / umbenennen
+  DEL  /api/files?path=            Datei/Ordner löschen
   GET  /api/remote/{name}/files    dasselbe für Agenten-PCs via SFTP
   GET  /api/remote/{name}/file     (…/file lesen, PUT speichern,
-  GET  /api/remote/{name}/download  …/download, …/raw, …/upload)
+  GET  /api/remote/{name}/download  …/download, …/raw, …/upload,
+                                    …/mkdir, …/rename, DELETE …/files)
   POST /mcp/{agent}                MCP-Kanal über HTTPS (Bearer-Token je Agent)
   GET  /api/connections            SSH-Verbindungen (ohne Credentials)
+  POST /api/connections            neue SSH-Verbindung (+ Key-Erzeugung)
+  GET  /api/connections/{name}/pubkey  Public Key + Setup-Kommando
+  DEL  /api/connections/{name}     UI-verwaltete Verbindung entfernen
+  GET  /api/integrations           konfigurierte Integrationen (ohne Secrets)
   GET  /api/rollen                 Rollen für Task-Läufe (config/rollen/*.md)
   GET  /api/rollen/{name}          eine Rolle: Rohtext + geparste Felder
   PUT  /api/rollen/{name}          Rolle speichern · DELETE /api/rollen/{name} löschen
   GET  /api/zeitplaene             geplante Tasks (config/zeitplaene.yaml)
   PUT  /api/zeitplaene             Pläne speichern (ersetzt die Liste, validiert)
   POST /api/zeitplaene/{name}/jetzt  einen Plan sofort laufen lassen (Test)
+  GET  /api/models                 Modell-Liste des aktiven Providers
   GET  /api/settings               Editierbare UI-Settings
   PUT  /api/settings               Settings speichern
   GET  /api/automatik              Automatikmodus: Not-Aus + Status je Agent
