@@ -94,6 +94,36 @@ class AlreadyClaimed(RuntimeError):
         )
 
 
+class ZuFrueh(RuntimeError):
+    """Task ist geplant (nicht_vor liegt in der Zukunft) — jetzt kein Claim.
+
+    Eigener Fehlertyp statt None: der Aufrufer muss „liegt nicht (mehr) da"
+    von „liegt da, ist aber noch nicht dran" unterscheiden können."""
+
+    def __init__(self, task_id: str, nicht_vor: str) -> None:
+        self.task_id = task_id
+        self.nicht_vor = nicht_vor
+        super().__init__(f"Task {task_id} ist geplant für {nicht_vor}")
+
+
+def zu_frueh(env: dict[str, Any], jetzt: float | None = None) -> bool:
+    """Liegt der Ausführungszeitpunkt (nicht_vor) noch in der Zukunft?
+
+    Unparsebare Zeitstempel gelten als NICHT zu früh — ein kaputtes Feld darf
+    einen Task nicht für immer einfrieren. Naive Zeiten gelten als lokale
+    Serverzeit (TZ steht in docker-compose)."""
+    roh = env.get("nicht_vor")
+    if not roh:
+        return False
+    try:
+        ziel = datetime.fromisoformat(str(roh))
+    except ValueError:
+        return False
+    if ziel.tzinfo is None:
+        ziel = ziel.astimezone()
+    return ziel.timestamp() > (jetzt if jetzt is not None else time.time())
+
+
 # Welche Mailbox-Locks dieser Thread schon hält — flock ist an die geöffnete
 # Datei gebunden, ein verschachtelter Lock auf denselben Pfad würde sich also
 # selbst blockieren.
@@ -139,6 +169,9 @@ class Task:
     rollen_prompt: Optional[str] = None
     rollen_permission_mode: Optional[str] = None
     rollen_tools: Optional[list[str]] = None
+    # Geplanter Task (Paket St.2): vor diesem Zeitpunkt (ISO-8601, lokale
+    # Serverzeit) liefert kein claim ihn aus — die Inbox ist der Wartepuffer.
+    nicht_vor: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -189,6 +222,8 @@ def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
         # Rollen-Badge am Task (Dashboard-Paket St.1) — nur der Name; Prompt
         # und Rechte gehen die Oberfläche nichts an.
         "rolle": env.get("rolle"),
+        # Geplant-Badge (St.2): „läuft nicht vor …".
+        "nicht_vor": env.get("nicht_vor"),
     }
 
 
@@ -421,6 +456,8 @@ class Mailbox:
         for p, env in _lese_ordner(self.inbox):
             if env.get("kind", "task") != "task":
                 continue
+            if zu_frueh(env):
+                continue  # geplant (St.2): liegen lassen, bis die Zeit kommt
             claimed = self.processing / p.name
             try:
                 os.replace(p, claimed)  # atomar -> exklusiver Anspruch
@@ -457,6 +494,8 @@ class Mailbox:
                 env = json.loads(src.read_text(encoding="utf-8"))
                 if env.get("kind", "task") != "task":
                     raise ValueError(f"{task_id} ist kein Task (kind={env.get('kind')!r})")
+                if zu_frueh(env):  # geplant (St.2): noch nicht ausliefern
+                    raise ZuFrueh(task_id, str(env.get("nicht_vor")))
                 os.replace(src, dst)  # atomar -> exklusiver Anspruch
             except (FileNotFoundError, json.JSONDecodeError):
                 env = None

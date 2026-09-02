@@ -28,6 +28,10 @@ Docker-Container auf deinem eigenen Server.
   mit `cat` debugbar.
 - **Agenten fragen zurück** — braucht ein Worker Klärung, parkt sein Task; du
   antwortest im Banner, der Task läuft mit deiner Antwort im Kontext weiter.
+- **Geplante Tasks** — einmalig („führ das um 22 Uhr aus") per
+  Nicht-vor-Zeitpunkt und wiederkehrend („werktags 7:00, Rolle review") im
+  Dialog; Verpasstes verfällt (je Plan ein Nachzügler zuschaltbar), Ergebnisse
+  kommen wie gewohnt als Push.
 - **Rollen für Läufe** — Rollen wie ein Nur-Lese-`review` zentral definieren
   (Prompt + Rechte-Teilmenge) und jedem Task mitgeben; eine Rolle kann die
   Rechte eines Agenten nur einschränken, nie erweitern.

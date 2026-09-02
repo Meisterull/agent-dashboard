@@ -132,4 +132,45 @@ export default {
   "noch nicht gespeichert": "not saved yet",
   "Laden fehlgeschlagen: {0}": "Loading failed: {0}",
   "Löschen fehlgeschlagen: {0}": "Deleting failed: {0}",
+
+  // ZeitplaeneDialog.jsx + ⏰-Knopf/Badge im AgentsPanel (St.2)
+  "Zeitpläne": "Schedules",
+  "Zeitpläne — Tasks zur Uhrzeit, einmalig oder wiederkehrend":
+    "Schedules — tasks at a set time, one-off or recurring",
+  "Fällige Pläne werden als normale Tasks gepostet (Absender: du) — Ergebnis kommt wie gewohnt als Nachricht/Push. Verpasste Termine verfallen; „nachholen“ holt höchstens einen nach.":
+    "Due plans are posted as regular tasks (sender: you) — results arrive as messages/push like any other task. Missed slots expire; “catch up” runs at most one late.",
+  "neuer-plan (kleinbuchstaben, - und _)": "new-plan (lowercase, - and _)",
+  "„{0}“ gibt es schon.": "“{0}” already exists.",
+  "Noch kein Zeitplan — oben einen Namen vergeben.":
+    "No schedule yet — enter a name above.",
+  "täglich": "daily",
+  "zuletzt: {0}": "last run: {0}",
+  "noch nie gelaufen": "never ran yet",
+  "Plan aktiv/inaktiv schalten (speichert sofort)":
+    "Toggle plan on/off (saves immediately)",
+  "an": "on",
+  "aus": "off",
+  "sofort ausführen (Test)": "run now (test)",
+  "Sofort ausgeführt — Task {0} an {1}.": "Ran now — task {0} sent to {1}.",
+  "Ausführen fehlgeschlagen: {0}": "Running failed: {0}",
+  "Plan löschen": "Delete plan",
+  "Plan „{0}“ endgültig löschen?": "Delete plan “{0}” permanently?",
+  "Agent": "Agent",
+  "Rolle": "Role",
+  "(keine Rolle)": "(no role)",
+  "Uhrzeit": "Time",
+  "Projekt (optional)": "Project (optional)",
+  "Unterverzeichnis im workdir": "subdirectory inside workdir",
+  "Tage (keiner gewählt = täglich)": "Days (none selected = daily)",
+  "Mo": "Mon",
+  "Di": "Tue",
+  "Mi": "Wed",
+  "Do": "Thu",
+  "Fr": "Fri",
+  "Sa": "Sat",
+  "So": "Sun",
+  "nachholen — ein verpasster Termin läuft nach, sobald alles wieder lebt":
+    "catch up — one missed slot runs late once everything is back",
+  "Auftrag": "Instruction",
+  "geplant — läuft nicht vor {0}": "scheduled — will not run before {0}",
 };

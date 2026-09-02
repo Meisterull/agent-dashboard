@@ -78,6 +78,15 @@ backend/
                            Agenten-Rechten (wirksame_rechte — Rolle kann nur
                            einschränken, nie erweitern) und hängt den Prompt per
                            --append-system-prompt an. UI: Agenten-Panel → Rollen
+    zeitplaene.py          Geplante Tasks (St.2): Planer-Loop im API-Prozess
+                           postet fällige Pläne (config/zeitplaene.yaml, Dialog
+                           im Agenten-Panel ⏰) als normale Tasks (sender=
+                           orchestrator → Ergebnis+Push an den Menschen);
+                           verpasst = verfallen (PLANER_KULANZ 600 s),
+                           nachholen: true = höchstens EIN Nachzügler. Dazu
+                           nicht_vor am Task-Envelope: claim_tasks überspringt,
+                           claim_task wirft ZuFrueh, Datei-Watcher lässt liegen.
+                           TZ=Europe/Berlin steht in docker-compose (UTC-Falle!)
     mcp_scope.py           Kanal-Identität + Tool-Allowlists je Agent (Issue #13):
                            Port-Vergabe (frei :9000, gebunden ab :9100), Port-Map
                            mcp_ports.json, resolve_ident; reine Stdlib, Tests in

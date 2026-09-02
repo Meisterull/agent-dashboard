@@ -178,6 +178,12 @@ export const saveRolle = (name, text) =>
 export const deleteRolle = (name) =>
   jsend(`/api/rollen/${encodeURIComponent(name)}`, "DELETE");
 
+// Zeitpläne (Dashboard-Paket St.2)
+export const getZeitplaene = () => jget("/api/zeitplaene");
+export const saveZeitplaene = (plaene) => jsend("/api/zeitplaene", "PUT", { plaene });
+export const runZeitplanJetzt = (name) =>
+  jsend(`/api/zeitplaene/${encodeURIComponent(name)}/jetzt`, "POST", {});
+
 export const getSettings = () => jget("/api/settings");
 export const getModels = () => jget("/api/models");
 // Ohne `to` alle offenen Rückfragen (jede trägt `fuer_mensch`), mit `to` nur

@@ -172,6 +172,26 @@ Datei; API: `GET/PUT/DELETE /api/rollen[/{name}]`. Unbekannte Rollen lehnt
 `send_task` mit der Liste der verfügbaren ab (kein Tippfehler-Task ohne die
 gemeinte Rolle). Das Rollen-Badge am Task zeigt nur den Namen.
 
+**Zeitpläne + geplante Tasks** (Dashboard-Paket St.2): Zwei Bausteine. (1)
+`send_task(nicht_vor="2026-09-02T22:00")` plant einen EINZELNEN Task: er
+liegt in der Inbox (die Mailbox ist der Wartepuffer), und kein claim liefert
+ihn vor der Zeit aus — `claim_tasks` überspringt ihn, `claim_task` antwortet
+mit `zu_frueh`, der Datei-Watcher lässt ihn liegen; das Panel zeigt ein
+⏰-Badge. (2) WIEDERKEHRENDE Pläne stehen in
+`workspace/config/zeitplaene.yaml` (Dialog: Agenten-Panel → ⏰): je Plan
+Agent, Instruction, optionale Rolle/Projekt, `zeit` (HH:MM, lokale
+Serverzeit — `TZ` steht in docker-compose!), `tage` (mo…so, leer = täglich),
+`an`, `nachholen`. Der Planer-Loop läuft im API-Prozess (Muster
+Mailbox-Pflege) und postet Fälliges als GANZ NORMALEN Task mit Absender
+`orchestrator` — Automatik, Rückfragen und Push greifen von selbst, und der
+Not-Aus wirkt wie überall (der Task bleibt dann eben liegen). VERPASSTE
+Termine verfallen (Kulanz `PLANER_KULANZ`, Default 600 s); `nachholen: true`
+holt höchstens EINEN nach (den jüngsten verpassten Soll-Termin), nie eine
+Salve. `letzter_lauf` stempelt der Planer — auch bei Fehlversuchen
+(unbekannter Agent, kaputte Rolle): ein Termin = höchstens ein Versuch.
+`POST /api/zeitplaene/{name}/jetzt` (▶ im Dialog) führt einen Plan sofort
+aus.
+
 **Nebenläufigkeit:** Jedes Tool wird als `async` registriert und läuft in einem
 Thread (Integrationen in einem eigenen, kleinen Pool). Das SDK würde synchrone
 Tools sonst direkt im Event-Loop ausführen — und da sich **alle** Kanäle einen

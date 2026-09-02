@@ -888,6 +888,19 @@ def inbox_tasks(inbox: Path) -> list[Path]:
             continue
         if not isinstance(env, dict) or env.get("kind", "task") != "task":
             continue
+        # Geplante Tasks (nicht_vor, Paket St.2) liegen lassen, bis die Zeit
+        # kommt — die Inbox ist der Wartepuffer. Kaputte Zeitstempel frieren
+        # den Task NICHT ein (dann lieber ausführen).
+        nicht_vor = env.get("nicht_vor")
+        if nicht_vor:
+            try:
+                ziel = datetime.fromisoformat(str(nicht_vor))
+                if ziel.tzinfo is None:
+                    ziel = ziel.astimezone()
+                if ziel.timestamp() > time.time():
+                    continue
+            except ValueError:
+                pass
         eintraege.append((str(env.get("created_at") or ""), pfad.name, pfad))
     eintraege.sort(key=lambda e: (e[0] == "", e[0], e[1]))
     return [e[2] for e in eintraege]

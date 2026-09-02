@@ -33,6 +33,9 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/rollen                 Rollen für Task-Läufe (config/rollen/*.md)
   GET  /api/rollen/{name}          eine Rolle: Rohtext + geparste Felder
   PUT  /api/rollen/{name}          Rolle speichern · DELETE /api/rollen/{name} löschen
+  GET  /api/zeitplaene             geplante Tasks (config/zeitplaene.yaml)
+  PUT  /api/zeitplaene             Pläne speichern (ersetzt die Liste, validiert)
+  POST /api/zeitplaene/{name}/jetzt  einen Plan sofort laufen lassen (Test)
   GET  /api/settings               Editierbare UI-Settings
   PUT  /api/settings               Settings speichern
   GET  /api/automatik              Automatikmodus: Not-Aus + Status je Agent
@@ -69,7 +72,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import auth, auto_watcher, chat_store, events, llm, push, remote_files
-from app import mcp_scope, mcp_token, rollen
+from app import mcp_scope, mcp_token, rollen, zeitplaene
 from app.config import (
     KEYS_DIR,
     add_ui_connection,
@@ -164,6 +167,13 @@ async def _events_start() -> None:
     events.start()
 
 
+@app.on_event("startup")
+async def _planer_start() -> None:
+    """Zeitpläne (Paket St.2): fällige Pläne als ganz normale Tasks posten —
+    Automatik, Rückfragen und Push greifen dann von selbst."""
+    zeitplaene.start()
+
+
 @app.on_event("shutdown")
 async def _automatik_stop() -> None:
     # Container fährt herunter — hart schließen, die Reconcile-Logik startet
@@ -171,6 +181,7 @@ async def _automatik_stop() -> None:
     if _pflege_task is not None:
         _pflege_task.cancel()
     events.stop()
+    zeitplaene.stop()
     await auto_watcher.manager.stopp_alle_hart()
 
 # --- Auth ---------------------------------------------------------------
@@ -1055,6 +1066,41 @@ async def rolle_loeschen(name: str) -> dict:
     if not weg:
         raise HTTPException(404, f"Rolle '{name}' gibt es nicht.")
     return {"geloescht": name}
+
+
+# --- Zeitpläne (Dashboard-Paket St.2) ---------------------------------------
+# Der Planer-Loop (app/zeitplaene.py) läuft im API-Prozess; hier nur die
+# Verwaltung. PUT ersetzt die ganze Liste (der Dialog schickt sie komplett),
+# `letzter_lauf` bestehender Pläne bleibt dabei serverseitig erhalten.
+
+class ZeitplaeneIn(BaseModel):
+    plaene: list[dict[str, Any]]
+
+
+@app.get("/api/zeitplaene")
+async def zeitplaene_liste() -> dict:
+    plaene, fehler = zeitplaene.lade_plaene()
+    return {"plaene": plaene, **({"fehler": fehler} if fehler else {})}
+
+
+@app.put("/api/zeitplaene")
+async def zeitplaene_speichern(body: ZeitplaeneIn) -> dict:
+    try:
+        return {"plaene": zeitplaene.speichere_plaene(body.plaene)}
+    except zeitplaene.ZeitplanFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/zeitplaene/{name}/jetzt")
+async def zeitplan_jetzt(name: str) -> dict:
+    """Einen Plan sofort laufen lassen — der Test-Knopf im Dialog."""
+    try:
+        bericht = zeitplaene.jetzt_ausfuehren(name)
+    except zeitplaene.ZeitplanFehler as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if bericht.get("fehler"):
+        raise HTTPException(400, bericht["fehler"])
+    return bericht
 
 
 @app.get("/api/models")

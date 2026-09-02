@@ -50,6 +50,9 @@ services:
       - .env
     environment:
       - APP_ENV=production
+      # Zeitpläne (Paket St.2) und Log-Zeitstempel rechnen in LOKALER Zeit —
+      # ohne TZ liefe der 7-Uhr-Review auf UTC um 9 (klassische Falle).
+      - TZ=${TZ:-Europe/Berlin}
       # Muss zum Host-Mapping "8443:443" oben passen (HTTP->HTTPS-Redirect).
       # muss zum Port-Mapping oben passen (nginx baut daraus den Redirect)
       - EXTERNAL_HTTPS_PORT=${EXTERNAL_HTTPS_PORT:-8443}

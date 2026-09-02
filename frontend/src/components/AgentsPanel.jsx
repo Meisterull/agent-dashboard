@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { bestaetigen, melden } from "./Dialog";
 import RollenDialog from "./RollenDialog";
+import ZeitplaeneDialog from "./ZeitplaeneDialog";
 import { t } from "../sprache";
 
 const STATUS_COLORS = {
@@ -85,6 +86,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const [offline, setOffline] = useState(false); // letzter Poll fehlgeschlagen
   const [logOffen, setLogOffen] = useState(false); // Automatik-Log aufgeklappt
   const [rollenOffen, setRollenOffen] = useState(false); // Rollen-Dialog (St.1)
+  const [plaeneOffen, setPlaeneOffen] = useState(false); // Zeitpläne-Dialog (St.2)
   const [raeumt, setRaeumt] = useState(false); // "alles gelesen" läuft gerade
   // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
@@ -344,6 +346,13 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
           </button>
         )}
         <button
+          onClick={() => setPlaeneOffen(true)}
+          title={t("Zeitpläne — Tasks zur Uhrzeit, einmalig oder wiederkehrend")}
+          className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
+        >
+          ⏰
+        </button>
+        <button
           onClick={() => setRollenOffen(true)}
           title={t("Rollen verwalten — Prompt und Rechte je Task-Lauf")}
           className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
@@ -489,6 +498,14 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                           {tk.rolle}
                         </span>
                       )}
+                      {tk.nicht_vor && new Date(tk.nicht_vor) > new Date() && (
+                        <span
+                          title={t("geplant — läuft nicht vor {0}", new Date(tk.nicht_vor).toLocaleString())}
+                          className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                        >
+                          ⏰ {kurzZeit(tk.nicht_vor)}
+                        </span>
+                      )}
                       <StatusBadge status={tk.status} />
                       <button
                         onClick={(e) => {
@@ -610,6 +627,9 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         )}
       </div>
       {rollenOffen && <RollenDialog onClose={() => setRollenOffen(false)} />}
+      {plaeneOffen && (
+        <ZeitplaeneDialog agents={agents} onClose={() => setPlaeneOffen(false)} />
+      )}
     </div>
   );
 }

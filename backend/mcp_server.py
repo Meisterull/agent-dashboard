@@ -47,11 +47,14 @@ from mcp.server.fastmcp import FastMCP
 from app import integrations, mcp_scope, rollen
 from app.config import load_agents_full
 from app.files import decode_text
+from datetime import datetime
+
 from app.mailbox import (
     AGENT_NAME_RE,
     AlreadyClaimed,
     Mailbox,
     Task,
+    ZuFrueh,
     merged_instruction,
     new_id,
     normalize_envelope,
@@ -245,6 +248,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             project: str | None = None,
             files: list[str] | None = None,
             rolle: str | None = None,
+            nicht_vor: str | None = None,
         ) -> dict:
             """Einen Arbeitsauftrag in die Inbox eines Agenten legen.
 
@@ -258,6 +262,10 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             "review"): ihr Prompt wird an den Lauf angehängt, ihre Rechte können
             die des Agenten nur EINSCHRÄNKEN, nie erweitern. Verfügbare Rollen
             liefert list_rollen(); eine unbekannte Rolle ist ein Fehler.
+
+            `nicht_vor` (optional, ISO-8601 in lokaler Serverzeit, z.B.
+            "2026-09-02T22:00") plant den Task: er bleibt in der Inbox liegen
+            und wird erst ab diesem Zeitpunkt ausgeführt.
             """
             try:
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
@@ -275,8 +283,14 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                     rollen_felder = rollen.rolle_fuer_task(rolle)
                 except rollen.RollenFehler as exc:
                     return {"error": str(exc)}
+            if nicht_vor:
+                try:
+                    datetime.fromisoformat(str(nicht_vor))
+                except ValueError:
+                    return {"error": f"nicht_vor muss ISO-8601 sein "
+                                     f"(z.B. 2026-09-02T22:00), nicht {nicht_vor!r}"}
             _log(kanal, "send_task", to=to, sender=absender, rolle=rolle,
-                 zeichen=len(instruction))
+                 nicht_vor=nicht_vor, zeichen=len(instruction))
             task = Task(
                 task_id=new_id("task"),
                 agent=to,
@@ -284,11 +298,13 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 project=project,
                 files=files or [],
                 sender=absender,
+                nicht_vor=nicht_vor,
                 **rollen_felder,
             )
             Mailbox(MAILBOX_ROOT, to).put_task(task)
             return {"id": task.task_id, "to": to, "status": "pending",
-                    **({"rolle": rolle} if rolle else {})}
+                    **({"rolle": rolle} if rolle else {}),
+                    **({"nicht_vor": nicht_vor} if nicht_vor else {})}
 
     if on("list_rollen"):
         @werkzeug
@@ -372,6 +388,10 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                     "claim_task(..., erneut=True).",
                     "already_claimed": True,
                 }
+            except ZuFrueh as exc:
+                # Geplanter Task (St.2): liegt absichtlich noch in der Inbox.
+                return {"error": str(exc), "zu_frueh": True,
+                        "nicht_vor": exc.nicht_vor}
             if env is None:
                 return {"error": f"Task {task_id} liegt nicht (mehr) bei {wer}."}
             # merged_instruction: nach einem geparkten Lauf (Issue #17) stehen
