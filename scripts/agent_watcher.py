@@ -34,6 +34,7 @@ Test ohne echtes Claude-Code:  --dry-run  (echoed die instruction zurück).
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -47,6 +48,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -258,6 +260,46 @@ def abbrechen_laufenden() -> None:
     beende_prozessgruppe(proc)
 
 
+@contextmanager
+def mailbox_lock(base: Path):
+    """flock auf <agent>/.lock — DIESELBE Sperre wie die Server-Mailbox.
+
+    Review P1-10: Der Datei-Transport-Watcher änderte Envelopes bisher ohne
+    den Mailbox-Lock; der Server konnte einen gerade abgeräumten Task beim
+    Rückschreiben (link/resolve_question) wiederbeleben → Zombie-Requeue →
+    Doppellauf. Fällt der Lock aus (Netz-Mount ohne flock), arbeiten wir wie
+    der Server weiter — atomares Schreiben bleibt als Netz."""
+    datei = None
+    gesperrt = False
+    try:
+        datei = open(base / ".lock", "a", encoding="utf-8")
+        if os.name == "posix":
+            import fcntl
+            fcntl.flock(datei.fileno(), fcntl.LOCK_EX)
+            gesperrt = True
+        else:  # pragma: no cover — Windows
+            import msvcrt
+            datei.seek(0)
+            msvcrt.locking(datei.fileno(), msvcrt.LK_LOCK, 1)
+            gesperrt = True
+    except (OSError, ImportError):
+        pass
+    try:
+        yield
+    finally:
+        if datei is not None:
+            try:
+                if gesperrt and os.name == "posix":
+                    import fcntl
+                    fcntl.flock(datei.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                datei.close()
+            except OSError:
+                pass
+
+
 def lock_pfad(agent: str) -> Path:
     return Path.home() / ".agent-dashboard" / f"{agent}.lock"
 
@@ -325,21 +367,20 @@ def tool_result_text(block: dict) -> str:
     return " ".join(t for t in teile if t)
 
 
-def baue_claude_cmd(claude_bin: str, instruction: str,
+def baue_claude_cmd(claude_bin: str,
                     permission_mode: str | None = None,
                     allowed_tools: str | None = None,
                     append_system_prompt: str | None = None) -> list[str]:
-    """Kommandozeile für einen headless-Lauf — die instruction IMMER hinter "--".
+    """Kommandozeile für einen headless-Lauf — die instruction kommt über STDIN.
 
-    Issue #20: `--allowed-tools` ist variadisch (`--allowed-tools <tools...>`)
-    und verschluckt jedes folgende Positional. Ohne Trenner landet die
-    instruction als weiterer Tool-Name in der Option, danach ist kein Prompt
-    mehr übrig und claude bricht ab mit "Input must be provided either through
-    stdin or as a prompt argument when using --print". Eine Komma-Liste hilft
-    dagegen NICHT — sie verhindert nur, dass mehrere Tool-Namen als getrennte
-    Argumente aufgefasst werden. "--" beendet die Optionsauswertung und ist
-    auch für sich genommen richtig: eine instruction, die mit "-" beginnt,
-    wäre sonst ebenfalls eine Option.
+    Review P1-3 (löst zugleich das alte Issue #20 gründlicher): Auf Windows
+    ist `claude` ein npm-Shim (`claude.cmd`), und CreateProcess startet
+    Batchdateien über cmd.exe, das die Argumentzeile ERNEUT parst — ein
+    `&`/`|` im Task-Text konnte dort Kommandos ausführen, an der ganzen
+    Rechte-Härtung vorbei. Der Prompt geht darum nicht mehr als Argument mit,
+    sondern über stdin des Kindprozesses (das entschärft nebenbei auch das
+    ARG_MAX-Limit bei langen Wiederanlauf-Prompts). Der stdin des WATCHERS
+    bleibt davon unberührt der Stopp-Kanal (Issue #16).
     """
     cmd = [claude_bin, "--print", "--output-format", "stream-json", "--verbose"]
     if permission_mode:
@@ -348,7 +389,7 @@ def baue_claude_cmd(claude_bin: str, instruction: str,
         cmd += ["--allowed-tools", allowed_tools]
     if append_system_prompt:
         cmd += ["--append-system-prompt", append_system_prompt]
-    return cmd + ["--", instruction]
+    return cmd
 
 
 # Rangfolge der permission-Modi, vom restriktivsten zum permissivsten — für
@@ -414,7 +455,7 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     Berechtigungs-Rückfrage beantworten — was der Lauf dürfen soll, muss als
     Flag mitkommen. Verweigerte Werkzeuge landen ausdrücklich im log, statt
     nur im Fließtext des Ergebnisses unterzugehen. Die Kommandozeile baut
-    `baue_claude_cmd` — das "--" vor der instruction ist Pflicht (Issue #20).
+    `baue_claude_cmd`; die instruction geht über STDIN des Kindes (P1-3).
 
     Abbruch (Not-Aus, H3): der Prozess ist global registriert, "kill" auf
     stdin schießt ihn samt Kindern ab. Die Lese-Schleife läuft unter
@@ -424,16 +465,23 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     """
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
-    cmd = baue_claude_cmd(claude_bin, instruction, permission_mode, allowed_tools,
+    cmd = baue_claude_cmd(claude_bin, permission_mode, allowed_tools,
                           append_system_prompt)
     try:
         proc = subprocess.Popen(
             cmd,
             cwd=str(workdir),
-            stdin=subprocess.DEVNULL,
+            # Prompt über stdin (Review P1-3, s. baue_claude_cmd) — der
+            # Watcher-stdin bleibt der Stopp-Kanal (Issue #16 gewahrt).
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # UTF-8 erzwingen (Review P2): text=True nähme die Locale-Kodierung
+            # — auf Windows (cp1252) wurde claudes UTF-8 zu Mojibake, und
+            # undefinierte Bytes warfen UnicodeDecodeError mitten im Lauf.
+            encoding="utf-8",
+            errors="replace",
             # Eigene Prozessgruppe (POSIX): beim Timeout muss die GANZE Gruppe
             # sterben — claude spawnt Tool-Subprozesse, die sonst die stdout-
             # Pipe offen halten und das Zeilen-Lesen weiter blockieren.
@@ -442,6 +490,18 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     except FileNotFoundError:
         # errno 2 allein nennt die Datei nicht — hier Klartext liefern (#14).
         return "", f"Claude-Binary nicht ausführbar: {claude_bin}", 127
+
+    # Prompt in einem eigenen Thread schreiben: bei sehr langen Prompts würde
+    # ein synchrones write blockieren, bis das Kind liest — und das Kind
+    # könnte auf unser stdout-Lesen warten (Deadlock-Klassiker).
+    def _prompt_schreiben() -> None:
+        try:
+            proc.stdin.write(instruction)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass  # Kind schon tot — der Lauf endet ohnehin gleich
+
+    threading.Thread(target=_prompt_schreiben, daemon=True).start()
 
     _merke_prozess(proc)
     if HART.is_set():  # Not-Aus kam zwischen Prüfung und Start
@@ -912,7 +972,12 @@ def inbox_tasks(inbox: Path) -> list[Path]:
         nicht_vor = env.get("nicht_vor")
         if nicht_vor:
             try:
-                ziel = datetime.fromisoformat(str(nicht_vor))
+                # "Z" normalisieren (P1-5): Python ≤3.10 wirft sonst ValueError
+                # und der geplante Task liefe SOFORT. Der Server friert den
+                # Zeitpunkt seit P1-5 tz-behaftet ein; naive Altwerte fallen
+                # auf die lokale Zeit dieses PCs zurück (best effort).
+                ziel = datetime.fromisoformat(
+                    str(nicht_vor).replace("Z", "+00:00"))
                 if ziel.tzinfo is None:
                     ziel = ziel.astimezone()
                 if ziel.timestamp() > time.time():
@@ -937,25 +1002,26 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             # Stapel — 5 Tasks à 30 min wären sonst 2,5 h Weiterarbeit (M14).
             break
         claimed = processing / task_path.name
-        try:
-            os.replace(task_path, claimed)  # atomarer, exklusiver Anspruch
-        except FileNotFoundError:
-            continue
-        try:
-            task = json.loads(claimed.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue  # nächster Tick
+        with mailbox_lock(inbox.parent):  # P1-10: wie der Server sperren
+            try:
+                os.replace(task_path, claimed)  # atomarer, exklusiver Anspruch
+            except FileNotFoundError:
+                continue
+            try:
+                task = json.loads(claimed.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue  # nächster Tick
 
-        # Anspruch stempeln (Review P0-2): os.replace erhält die mtime, und
-        # requeue_stale misst ohne `claimed_at` ab Dateialter — ein Task mit
-        # >3 h Inbox-Liegezeit (bei nicht_vor der Normalfall) gälte sofort
-        # als verwaist und liefe doppelt.
-        task["claimed_at"] = now()
-        task["status"] = "running"
-        try:
-            atomic_write_json(claimed, task)
-        except OSError:
-            pass  # Stempel ist Schutz, kein Grund den Lauf abzubrechen
+            # Anspruch stempeln (Review P0-2): os.replace erhält die mtime, und
+            # requeue_stale misst ohne `claimed_at` ab Dateialter — ein Task mit
+            # >3 h Inbox-Liegezeit (bei nicht_vor der Normalfall) gälte sofort
+            # als verwaist und liefe doppelt.
+            task["claimed_at"] = now()
+            task["status"] = "running"
+            try:
+                atomic_write_json(claimed, task)
+            except OSError:
+                pass  # Stempel ist Schutz, kein Grund den Lauf abzubrechen
 
         task_id = task.get("task_id", claimed.stem)
         sender = task.get("sender") or ""
@@ -997,13 +1063,14 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                 # Rückfrage offen (Issue #17): parken statt Erfolg melden. Der
                 # Server legt den Task nach der Antwort zurück in die Inbox.
                 try:
-                    env = json.loads(claimed.read_text(encoding="utf-8"))
-                    env.update(status="needs_confirm", open_questions=offen)
-                    if result:
-                        env["zwischenstand"] = result
-                    atomic_write_json(claimed, env)
-                    print(f"[{now()}] {agent}: {task_id} wartet auf Antwort "
-                          f"einer Rückfrage (geparkt)", flush=True)
+                    with mailbox_lock(inbox.parent):  # P1-10
+                        env = json.loads(claimed.read_text(encoding="utf-8"))
+                        env.update(status="needs_confirm", open_questions=offen)
+                        if result:
+                            env["zwischenstand"] = result
+                        atomic_write_json(claimed, env)
+                    sicher_print(f"[{now()}] {agent}: {task_id} wartet auf "
+                                 f"Antwort einer Rückfrage (geparkt)")
                     handled += 1
                     continue
                 except (json.JSONDecodeError, OSError):
@@ -1031,12 +1098,13 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         deliver_response(root, sender, agent, task_id, result, status,
                          antwort.get("instruction"))
         try:
-            if status == "error":
-                failed = inbox / ".failed"
-                failed.mkdir(exist_ok=True)
-                os.replace(claimed, failed / claimed.name)  # Wiederanlauf (#15)
-            else:
-                claimed.unlink(missing_ok=True)
+            with mailbox_lock(inbox.parent):  # P1-10
+                if status == "error":
+                    failed = inbox / ".failed"
+                    failed.mkdir(exist_ok=True)
+                    os.replace(claimed, failed / claimed.name)  # Wiederanlauf (#15)
+                else:
+                    claimed.unlink(missing_ok=True)
         except OSError as exc:  # z.B. PermissionError auf Windows-Mounts
             sicher_print(f"[{now()}] {agent}: {task_id} — Aufräumen "
                          f"fehlgeschlagen ({exc}); Ergebnis liegt in der Outbox.")
@@ -1089,6 +1157,24 @@ def main() -> int:
         return 2
 
     stdin_stop_waechter()
+
+    # Review P1-2: kill/Reboot/systemd-Stopp beendete Python OHNE finally —
+    # die claude-Prozessgruppe (eigene Session!) arbeitete verwaist weiter und
+    # änderte Dateien, während der Task 3 h als "running" hing. SIGTERM/SIGHUP
+    # lösen jetzt den Not-Aus-Pfad aus; atexit ist der zweite Riegel.
+    def _signal_ende(signum, _frame):
+        HART.set()
+        abbrechen_laufenden()
+        sicher_print(f"[{now()}] Signal {signum} — laufenden Lauf abgebrochen, beende.")
+        sys.exit(143)
+
+    for _sig in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, _sig):
+            try:
+                signal.signal(getattr(signal, _sig), _signal_ende)
+            except (ValueError, OSError):
+                pass  # exotische Umgebung ohne Signal-Support
+    atexit.register(abbrechen_laufenden)
 
     # Preflight VOR dem ersten Claim: kaputte Umgebung → gar nicht erst
     # anfangen, kein einziger Task geht verloren (Issue #14).

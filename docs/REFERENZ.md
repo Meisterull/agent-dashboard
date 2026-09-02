@@ -357,7 +357,8 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 │   ├── settings.json       editierbare UI-Settings (vom Dashboard gepflegt)
 │   ├── agents.yaml         Agenten: SSH-Verbindungen, Rolle (coordinator/worker)
 │   ├── integrations.yaml   benannte HTTP-Integrationen je Workflow
-│   └── llm-providers.yaml  Provider-Reihenfolge (Claude/OpenRouter/Ollama)
+│   ├── rollen/             Rollen für Task-Läufe (St.1, *.md mit Frontmatter)
+│   └── zeitplaene.yaml     geplante Tasks (St.2, Dialog im Agenten-Panel)
 ├── logs/
 └── ssl/                    self-signed Platzhalter, bis echtes Zertifikat da ist
 ```
@@ -452,36 +453,18 @@ FastAPI/MCP-Ports nicht nach außen veröffentlicht.
 
 ---
 
-## Status & getestet
+## Status
 
-| Teil | Verifikation |
-|------|--------------|
-| Mailbox-Roundtrip (atomar) | ✅ real getestet (Orchestrator→inbox→Watcher→outbox) |
-| `files.py` / `config.py` (Dateibaum, Settings, Path-Traversal) | ✅ real getestet (3 Traversal-Angriffe blockiert, Settings-Whitelist greift) |
-| Frontend-Build | ✅ `npm run build` grün (xterm gebündelt) |
-| **Agentic-Loop gegen echtes LLM** (Tool-Calls → Mailbox, ein- und mehrstufig) | ✅ **real getestet** via Ollama (`gpt-oss:120b`), provider-neutrale Schicht |
-| MCP-Server · FastAPI (Server live) | ⚠️ kompiliert (`py_compile`); Server selbst hier nicht gestartet (kein pip für `fastapi`/`mcp`) |
-| SSH-Bridge (`/ws/ssh`) | ⚠️ real implementiert, ohne SSH-Ziel nicht getestet |
+Verifikations-Stand und Testkommandos pflegt **`CLAUDE.md`** (eine Quelle
+statt zweier driftender Tabellen — die frühere Kopie hier behauptete noch
+„MCP-Server nie gestartet", während er längst produktiv lief; Review
+02.09.2026). Kurzfassung: alles Kernige läuft produktiv und ist per
+`cd backend && python -m tests.run_alle` plus Browser-Prüfstand abgedeckt.
 
-Der LLM-Pfad und der Container-Lauf scheitern hier nur an der **Umgebung**
-(kein `pip`/`venv`, kein API-Key), nicht am Code. Erster echter End-to-End-Test:
-`docker compose up --build`.
-
----
-
-## Roadmap
-
-1. ✅ Mailbox-Roundtrip (atomar)
-2. ✅ MCP-Server an Orchestrator-Loop (Claude API, CLI)
-3. ✅ FastAPI-Wrapper (`/api/health`, `/api/chat`, `/api/agents`, …)
-4. ✅ Vollständige React-Dashboard-View (Chat · Dateibaum · Terminal · MCP-Monitor · Settings)
-5. ✅ **Multi-Provider** (anthropic + ollama) über `app/llm.py` — Agentic-Loop gegen Ollama real getestet
-6. **Nächste Schritte (additiv):**
-   - erster echter Container-Lauf (`docker compose up`) end-to-end
-   - OpenRouter als dritter Provider + automatischer Fallback bei Ausfall
-   - Telegram-Bot als zweiter Eingangskanal
-   - echtes SSL/Domäne (Let's Encrypt) statt self-signed
-   - Persistenz (SQLite) für Chat-History/Tasks statt in-memory
-   - `needs_confirm`-Flow (Rückfragen der Agenten an den User)
+Die frühere Roadmap an dieser Stelle stammte aus der MVP-Phase und
+widersprach dem eigenen Dokument (SQLite-Chat-Persistenz und der
+`needs_confirm`-Rückfragen-Flow sind seit Juli 2026 gebaut und oben
+beschrieben). Offene Vorhaben stehen in `PROJECT.md` bzw. der Ideenliste
+des Betreibers.
 
 Details und Designentscheidungen: siehe **`PROJECT.md`**.

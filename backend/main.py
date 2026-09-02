@@ -183,6 +183,9 @@ async def _automatik_stop() -> None:
         _pflege_task.cancel()
     events.stop()
     zeitplaene.stop()
+    # Reconcile ZUERST beenden (Review P1-9) — sonst startet er die gerade
+    # hart gestoppten Watcher ≤15 s später wieder, mitten im Herunterfahren.
+    auto_watcher.manager.stop()
     await auto_watcher.manager.stopp_alle_hart()
 
 # --- Auth ---------------------------------------------------------------
@@ -409,7 +412,10 @@ async def agent_inbox_read_all(name: str) -> dict:
     von Hand quittieren. Offene Tasks und offene Rückfragen bleiben liegen.
     """
     _agent_base(name)
-    archiviert = Mailbox(MAILBOXES, name).alle_gelesen()
+    # to_thread (Review P1-1): alle_gelesen nimmt den Mailbox-flock PRO
+    # Envelope — hält ihn gerade der MCP-Prozess oder die Pflege, stünde
+    # sonst der ganze Event-Loop (Terminals, SSE, jede API-Antwort).
+    archiviert = await asyncio.to_thread(Mailbox(MAILBOXES, name).alle_gelesen)
     return {"agent": name, "archiviert": archiviert}
 
 
@@ -425,7 +431,10 @@ async def agent_envelope_read(name: str, envelope_id: str) -> dict:
     _agent_base(name)
     _geprüfte_id(envelope_id, "Envelope-ID")
     try:
-        moved = Mailbox(MAILBOXES, name).mark_read(envelope_id)
+        # to_thread (Review P1-1): blockierender Mailbox-flock gehört nicht
+        # in den Event-Loop.
+        moved = await asyncio.to_thread(
+            Mailbox(MAILBOXES, name).mark_read, envelope_id)
     except ValueError as exc:  # offener Task
         raise HTTPException(400, str(exc)) from exc
     if not moved:
@@ -480,8 +489,11 @@ async def answer_question(agent: str, qid: str, body: AnswerIn) -> dict:
     if not (base / "inbox" / f"{qid}.json").exists():
         raise HTTPException(404, "Rückfrage nicht gefunden.")
     try:
-        ergebnis = Mailbox(MAILBOXES, agent).beantworte_frage(
-            qid, body.text, answered_by="dashboard"
+        # to_thread (Review P1-1): beantworte_frage nimmt Mailbox-flocks —
+        # blockierend und prozessübergreifend, gehört nicht in den Event-Loop.
+        ergebnis = await asyncio.to_thread(
+            Mailbox(MAILBOXES, agent).beantworte_frage,
+            qid, body.text, answered_by="dashboard",
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -510,7 +522,13 @@ async def close_question(agent: str, qid: str, body: CloseQuestionIn) -> dict:
     _geprüfte_id(qid, "Rückfrage-ID")
     if not (base / "inbox" / f"{qid}.json").exists():
         raise HTTPException(404, "Rückfrage nicht gefunden.")
-    ergebnis = Mailbox(MAILBOXES, agent).schliesse_frage(qid, body.grund)
+    try:
+        # to_thread (Review P1-1) + ValueError-Fang (Review P3: eine Frage mit
+        # kaputtem sender wurde archiviert und antwortete danach mit 500).
+        ergebnis = await asyncio.to_thread(
+            Mailbox(MAILBOXES, agent).schliesse_frage, qid, body.grund)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {
         "closed": qid,
         "to": ergebnis["to"],
@@ -538,7 +556,9 @@ async def close_task(agent: str, task_id: str, body: CloseTaskIn) -> dict:
                  base / "inbox" / ".processing" / f"{task_id}.json"]
     if not any(p.exists() for p in open_task):
         raise HTTPException(404, f"Task '{task_id}' liegt nicht (mehr) bei '{agent}'.")
-    Mailbox(MAILBOXES, agent).write_response(
+    # to_thread (Review P1-1): write_response läuft unter dem Mailbox-flock.
+    await asyncio.to_thread(
+        Mailbox(MAILBOXES, agent).write_response,
         task_id,
         body.result or "[von Hand im Dashboard geschlossen, ohne Ergebnis]",
         body.status,

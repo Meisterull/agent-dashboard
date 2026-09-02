@@ -277,9 +277,12 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   (`projekt_workdir` — Ausbruch/fehlendes Verzeichnis → Task scheitert mit
   Klartext); `permission_mode`/`allowed_tools` je Agent in agents.yaml werden
   an `claude --permission-mode`/`--allowed-tools` durchgereicht (allowed_tools
-  als EIN Komma-Argument, **und die instruction steht hinter `--`**: die Option
-  ist variadisch und verschluckt sonst den Prompt — „Input must be provided…",
-  Issue #20; die Kommandozeile baut `baue_claude_cmd`, dafür gibt es Tests);
+  als EIN Komma-Argument; **die instruction geht über STDIN des claude-Kinds**
+  — seit Review 02.09. (P1-3): auf Windows parst cmd.exe die Argumentzeile des
+  claude.cmd-Shims erneut, ein `&` im Task-Text konnte Kommandos ausführen;
+  stdin löst zugleich Issue #20 (variadisches --allowed-tools) und ARG_MAX.
+  Der Watcher-stdin bleibt der Stopp-Kanal (Issue #16). Kommandozeile baut
+  `baue_claude_cmd`, dafür gibt es Tests);
   verweigerte Werkzeuge landen als „Berechtigung verweigert: …"
   im log der Antwort (permission_denials aus dem result-Event + tool_result-
   Heuristik). Headless beantwortet niemand Freigabe-Fragen — was die Automatik

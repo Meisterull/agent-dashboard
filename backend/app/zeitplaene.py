@@ -36,9 +36,10 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app import rollen, verbrauch
 from app.config import (DATA_CONFIG_DIR, _atomic_write_text, load_agents_full,
@@ -166,19 +167,33 @@ def speichere_plaene(plaene: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 # --- Fälligkeit -------------------------------------------------------------
 
+def _zone():
+    """Kalender-Zeitzone des Planers (Review P1-6): eine ECHTE ZoneInfo statt
+    des fixen UTC-Offsets von astimezone() — sonst rechnete der Rückblick über
+    eine Sommerzeit-Umstellung mit dem falschen Offset (Pläne zwischen 02:00
+    und 02:59 liefen bei der Rückstellung doppelt, bei der Vorstellung nie)."""
+    try:
+        return ZoneInfo(os.environ.get("TZ") or "Europe/Berlin")
+    except Exception:  # noqa: BLE001 — kaputte TZ-Angabe: fixer Offset als Netz
+        return datetime.now().astimezone().tzinfo
+
+
 def _juengster_soll(plan: dict[str, Any], jetzt: datetime) -> datetime | None:
     """Der jüngste Soll-Zeitpunkt <= jetzt an einem erlaubten Tag (max. 7 Tage
-    zurück — weiter reicht der Wochentagsfilter nicht)."""
+    zurück — weiter reicht der Wochentagsfilter nicht). Gerechnet wird über
+    KALENDERTAGE in der Planer-Zone (P1-6), nicht über Offset-Arithmetik."""
     m = ZEIT_RE.fullmatch(str(plan.get("zeit") or ""))
     if not m:
         return None
     stunde, minute = int(m.group(1)), int(m.group(2))
     tage = [str(t).lower() for t in plan.get("tage") or []] or TAGE
+    zone = _zone()
+    jetzt = jetzt.astimezone(zone)
     for zurueck in range(8):
-        tag = jetzt - timedelta(days=zurueck)
-        if TAGE[tag.weekday()] not in tage:
+        tag = (jetzt - timedelta(days=zurueck)).date()
+        soll = datetime.combine(tag, dt_time(stunde, minute), tzinfo=zone)
+        if TAGE[soll.weekday()] not in tage:
             continue
-        soll = tag.replace(hour=stunde, minute=minute, second=0, microsecond=0)
         if soll <= jetzt:
             return soll
     return None
@@ -200,8 +215,15 @@ def ist_faellig(plan: dict[str, Any], jetzt: datetime,
     letzter = plan.get("letzter_lauf")
     if letzter:
         try:
-            if datetime.fromisoformat(str(letzter)) >= soll:
-                return None  # dieser Termin ist schon gelaufen
+            lz = datetime.fromisoformat(str(letzter))
+            if lz.tzinfo is None:
+                lz = lz.replace(tzinfo=soll.tzinfo)
+            # Schon gelaufen? Absolutzeit-Vergleich PLUS Kalendertag (P1-6):
+            # Bei der Uhr-Rückstellung existiert 02:xx zweimal — absolut liegt
+            # der zweite Soll NACH dem Stempel, aber ein Plan läuft höchstens
+            # einmal pro Kalendertag.
+            if lz >= soll or lz.astimezone(soll.tzinfo).date() == soll.date():
+                return None
         except ValueError:
             pass  # kaputter Stempel: lieber laufen als für immer schweigen
     if (jetzt - soll).total_seconds() <= kulanz:

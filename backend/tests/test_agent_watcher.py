@@ -43,7 +43,8 @@ def ev(obj):
     sys.stdout.flush()
 
 
-szenario = sys.argv[-1] if len(sys.argv) > 1 else ""
+# Seit Review P1-3 kommt die instruction über STDIN (nicht mehr als Argument).
+szenario = sys.stdin.read().strip()
 
 if szenario.startswith("normal"):
     ev({"type": "assistant", "message": {"content": [
@@ -245,34 +246,29 @@ class TestReineFunktionen(unittest.TestCase):
         aw._schnelle_fehler = 0
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    # --- baue_claude_cmd (Issue #20) ---------------------------------------
+    # --- baue_claude_cmd (Review P1-3: instruction über STDIN) -------------
 
-    def test_instruction_steht_hinter_dem_trenner(self):
-        """Ohne "--" verschluckt das variadische --allowed-tools die instruction."""
-        cmd = aw.baue_claude_cmd("claude", "sag nur OK",
+    def test_instruction_nie_auf_der_kommandozeile(self):
+        """P1-3: Auf Windows parst cmd.exe die Argumentzeile des claude.cmd-
+        Shims erneut — der Task-Text darf NIE als Argument mitfahren."""
+        cmd = aw.baue_claude_cmd("claude",
                                  permission_mode="acceptEdits",
                                  allowed_tools="Bash,mcp__dashboard")
-        self.assertEqual(cmd[-2:], ["--", "sag nur OK"])
-        # Der Wert der Option darf nicht mit der instruction verschmelzen.
+        self.assertNotIn("sag nur OK", " ".join(cmd))
         self.assertEqual(cmd[cmd.index("--allowed-tools") + 1], "Bash,mcp__dashboard")
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
 
-    def test_trenner_auch_ohne_optionen(self):
-        cmd = aw.baue_claude_cmd("claude", "sag nur OK")
-        self.assertEqual(cmd[-2:], ["--", "sag nur OK"])
+    def test_ohne_optionen_nur_grundkommando(self):
+        cmd = aw.baue_claude_cmd("claude")
+        self.assertEqual(cmd[:2], ["claude", "--print"])
         self.assertNotIn("--allowed-tools", cmd)
         self.assertNotIn("--permission-mode", cmd)
 
-    def test_instruction_mit_bindestrich_bleibt_prompt(self):
-        """Auch ohne allowed_tools nötig: sonst wäre '--help' eine Option."""
-        cmd = aw.baue_claude_cmd("claude", "--help ist hier Text")
-        self.assertEqual(cmd[-2:], ["--", "--help ist hier Text"])
-
-    def test_rollen_prompt_steht_vor_dem_trenner(self):
-        cmd = aw.baue_claude_cmd("claude", "x",
+    def test_rollen_prompt_als_option(self):
+        cmd = aw.baue_claude_cmd("claude",
                                  append_system_prompt="Du bist Reviewer")
         i = cmd.index("--append-system-prompt")
         self.assertEqual(cmd[i + 1], "Du bist Reviewer")
-        self.assertEqual(cmd[-2:], ["--", "x"])
 
     # --- wirksame_rechte (Rollen, Dashboard-Paket St.1) ---------------------
     # Eine Rolle darf die Agenten-Rechte nur EINSCHRÄNKEN, nie erweitern.

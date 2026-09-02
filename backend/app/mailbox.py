@@ -129,7 +129,9 @@ def zu_frueh(env: dict[str, Any], jetzt: float | None = None) -> bool:
     if not roh:
         return False
     try:
-        ziel = datetime.fromisoformat(str(roh))
+        # "Z" normalisieren (P1-5) — Python ≤3.10 würfe sonst ValueError und
+        # der geplante Task liefe sofort.
+        ziel = datetime.fromisoformat(str(roh).replace("Z", "+00:00"))
     except ValueError:
         return False
     if ziel.tzinfo is None:
@@ -542,11 +544,19 @@ class Mailbox:
             for p, env in _lese_ordner(self.processing):
                 if env.get("kind", "task") != "task":
                     continue
+                # GEPARKTE Tasks überspringen (Review P2): die laufen gerade
+                # nicht — eine fremde Frage daran zu heften hieße: fremde
+                # Antwort im Folge-Prompt, und der Task hinge zusätzlich an
+                # einer Frage, die nie für ihn war.
+                if env.get("status") == "needs_confirm":
+                    continue
                 fragen = env.get("open_questions") or []
                 if any(f.get("id") == question_id for f in fragen):
                     continue
                 fragen.append({"id": question_id, "frage": question_text})
                 env["open_questions"] = fragen
+                if not p.exists():  # P1-10: nie einen abgeräumten Task wiederbeleben
+                    continue
                 atomic_write_json(p, env)
 
     def _beantwortet(self, question_id: str) -> bool:
@@ -612,12 +622,18 @@ class Mailbox:
                 env.setdefault("nachtraege", []).append(
                     {"frage": passend[0].get("frage", ""), "antwort": f"[{text}]"}
                 )
+                if not p.exists():  # P1-10: abgeräumt = nicht wiederbeleben
+                    continue
                 # Erst den Envelope aktualisieren, dann ggf. scheitern lassen —
                 # so trägt auch die Kopie in .failed/ den Nachtrag.
                 atomic_write_json(p, env)
                 if env.get("status") == "needs_confirm" and not env["open_questions"]:
                     task_id = env.get("task_id") or p.stem
-                    self._write_response(task_id, text, "error", log="question closed")
+                    try:
+                        self._write_response(task_id, text, "error",
+                                             log="question closed")
+                    except ValueError:
+                        continue  # kaputte Task-ID im Envelope — nicht crashen (P0-1)
                     gescheitert.append(task_id)
         return gescheitert
 
@@ -641,6 +657,8 @@ class Mailbox:
                 env.setdefault("nachtraege", []).append(
                     {"frage": passend[0].get("frage", ""), "antwort": antwort}
                 )
+                if not p.exists():  # P1-10: abgeräumt = nicht wiederbeleben
+                    continue
                 if env.get("status") == "needs_confirm" and not env["open_questions"]:
                     # Erst in .processing/ aktualisieren, DANN atomar in die Inbox
                     # schieben — so existiert der Task nie an zwei Orten zugleich.

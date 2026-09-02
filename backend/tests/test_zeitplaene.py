@@ -33,8 +33,13 @@ from app.mailbox import Mailbox, Task, ZuFrueh, zu_frueh  # noqa: E402
 import agent_watcher as aw  # noqa: E402
 
 
+from zoneinfo import ZoneInfo  # noqa: E402
+
+ZONE = ZoneInfo("Europe/Berlin")  # der Planer rechnet in dieser Zone (P1-6)
+
+
 def lokal(*args) -> datetime:
-    return datetime(*args).astimezone()
+    return datetime(*args, tzinfo=ZONE)
 
 
 # 2026-09-02 ist ein Mittwoch — feste Daten statt "heute", damit der
@@ -80,6 +85,27 @@ class FaelligTests(unittest.TestCase):
         self.assertIsNone(
             zeitplaene.ist_faellig(self.plan(an=False),
                                    MI_0700 + timedelta(seconds=90)))
+
+    # --- Sommerzeit (Review P1-6, beide Kanten verifiziert gemeldet) -------
+
+    def test_rueckstellung_laeuft_nur_einmal(self):
+        """25.10.2026: 02:30 existiert zweimal — nach dem Stempel ist Ruhe
+        (ein Plan läuft höchstens einmal je Kalendertag)."""
+        plan = self.plan(zeit="02:30", nachholen=True)
+        jetzt = lokal(2026, 10, 25, 9, 0)
+        soll = zeitplaene.ist_faellig(plan, jetzt)
+        self.assertIsNotNone(soll)
+        self.assertEqual(soll.date().isoformat(), "2026-10-25")
+        gelaufen = {**plan, "letzter_lauf": soll.isoformat(timespec="seconds")}
+        self.assertIsNone(zeitplaene.ist_faellig(gelaufen, jetzt))
+
+    def test_vorstellung_verfaellt_nicht_still(self):
+        """29.03.2026: 02:30 existiert nicht — mit nachholen läuft trotzdem
+        genau EIN Termin, statt still auszufallen."""
+        plan = self.plan(zeit="02:30", nachholen=True)
+        soll = zeitplaene.ist_faellig(plan, lokal(2026, 3, 29, 9, 0))
+        self.assertIsNotNone(soll)
+        self.assertEqual(soll.date().isoformat(), "2026-03-29")
 
 
 class VerwaltungTests(unittest.TestCase):

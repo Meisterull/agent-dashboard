@@ -70,6 +70,9 @@ def test_project_ueberlebt_den_mcp_weg(ws: Path) -> None:
     """H1: claim_task MUSS project liefern — sonst arbeitet der Watcher falsch."""
     mcp_server = _mcp_server_laden(ws)
     (ws / "mailboxes" / "worker").mkdir(parents=True)
+    # Seit Review P1-7 muss auch der SENDER auf dem freien Kanal bekannt sein
+    # (Geister-Mailbox-Schutz) — chef ist hier der Koordinator.
+    (ws / "mailboxes" / "chef").mkdir(parents=True)
     t = _tools(mcp_server)
 
     gesendet = t["send_task"](to="worker", instruction="baue X", sender="chef",
@@ -108,6 +111,9 @@ def test_doppelter_claim_meldet_fehler(ws: Path) -> None:
     """H2: der zweite Claimer bekommt einen Fehler, keinen Auftrag."""
     mcp_server = _mcp_server_laden(ws)
     (ws / "mailboxes" / "worker").mkdir(parents=True)
+    # Seit Review P1-7 muss auch der SENDER auf dem freien Kanal bekannt sein
+    # (Geister-Mailbox-Schutz) — chef ist hier der Koordinator.
+    (ws / "mailboxes" / "chef").mkdir(parents=True)
     t = _tools(mcp_server)
     task = t["send_task"](to="worker", instruction="einmal", sender="chef")
 
@@ -127,6 +133,9 @@ def test_unbekannter_empfaenger_wird_abgelehnt(ws: Path) -> None:
     """M5: ein Tippfehler darf keine Geister-Mailbox anlegen."""
     mcp_server = _mcp_server_laden(ws)
     (ws / "mailboxes" / "worker").mkdir(parents=True)
+    # Seit Review P1-7 muss auch der SENDER auf dem freien Kanal bekannt sein
+    # (Geister-Mailbox-Schutz) — chef ist hier der Koordinator.
+    (ws / "mailboxes" / "chef").mkdir(parents=True)
     t = _tools(mcp_server)
 
     for aufruf in (

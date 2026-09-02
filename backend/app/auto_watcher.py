@@ -188,6 +188,14 @@ class AutoWatcherManager:
         if self._task is None:
             self._task = asyncio.create_task(self._reconcile_loop())
 
+    def stop(self) -> None:
+        """Reconcile-Loop beenden (Review P1-9): ohne das machte er den
+        Shutdown-Hart-Stopp ≤15 s später rückgängig und startete mitten im
+        Herunterfahren frische Remote-Watcher (SSH-Connect inklusive)."""
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
     def status(self) -> dict[str, Any]:
         settings = load_settings()
         gewuenscht = settings.get("automatik") or {}

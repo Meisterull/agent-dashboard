@@ -125,6 +125,23 @@ def _pruefe_empfaenger(to: str) -> dict | None:
     return None
 
 
+def _pruefe_absender(identity: str | None, absender: str) -> dict | None:
+    """Geister-Mailbox-Schutz für SENDER (Review P1-7).
+
+    Auf gebundenen Kanälen ist der Absender die (konfigurierte) Bindung —
+    nichts zu prüfen. Auf dem FREIEN Kanal ist er frei wählbar, und jeder
+    Pfad, der später Mailbox(absender) anfasst (Response-Zustellung,
+    link_question, beantworte_frage), legt das Verzeichnis an: ein erfundener
+    Name zementierte sich damit in list_agents. `orchestrator` ist die
+    eingebaute Identität und immer erlaubt."""
+    if identity is not None or absender == "orchestrator":
+        return None
+    unbekannt = _pruefe_empfaenger(absender)
+    if unbekannt:
+        return {"error": f"sender: {unbekannt['error']}"}
+    return None
+
+
 def _log(kanal: str, tool: str, **info: object) -> None:
     """Ein Aufruf-Logeintrag pro Tool-Call: welcher Kanal hat was aufgerufen.
 
@@ -271,6 +288,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
             except ScopeError as exc:
                 return {"error": str(exc)}
+            unbekannt = _pruefe_absender(identity, absender)
+            if unbekannt:
+                return unbekannt
             unbekannt = _pruefe_empfaenger(to)
             if unbekannt:
                 return unbekannt
@@ -285,10 +305,18 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                     return {"error": str(exc)}
             if nicht_vor:
                 try:
-                    datetime.fromisoformat(str(nicht_vor))
+                    ziel = datetime.fromisoformat(str(nicht_vor).replace("Z", "+00:00"))
                 except ValueError:
                     return {"error": f"nicht_vor muss ISO-8601 sein "
                                      f"(z.B. 2026-09-02T22:00), nicht {nicht_vor!r}"}
+                # Review P1-5: den Zeitpunkt HIER tz-behaftet einfrieren
+                # (naiv = lokale SERVERzeit, TZ steht in docker-compose) —
+                # sonst deutete jeder Leser ihn in seiner eigenen Zone: ein
+                # Datei-Transport-Agent auf UTC startete den 22-Uhr-Task
+                # um Mitternacht, das Browser-Badge zeigte Browser-Zeit.
+                if ziel.tzinfo is None:
+                    ziel = ziel.astimezone()
+                nicht_vor = ziel.isoformat(timespec="seconds")
             _log(kanal, "send_task", to=to, sender=absender, rolle=rolle,
                  nicht_vor=nicht_vor, zeichen=len(instruction))
             task = Task(
@@ -356,8 +384,11 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 except ScopeError as exc:
                     return [{"error": str(exc)}]
             _log(kanal, "read_responses", worker=worker, for_sender=for_sender)
-            if not AGENT_NAME_RE.fullmatch(worker or ""):
-                return [{"error": f"ungültiger Agentenname: {worker!r}"}]
+            # P1-7: auch das LESETOOL legte über Mailbox(worker) ein
+            # Verzeichnis an — ein Tippfehler zementierte sich in list_agents.
+            unbekannt = _pruefe_empfaenger(worker)
+            if unbekannt:
+                return [unbekannt]
             out = Mailbox(MAILBOX_ROOT, worker).read_responses()
             if for_sender:
                 out = [r for r in out if r.get("to") == for_sender]
@@ -493,7 +524,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
             except ScopeError as exc:
                 return {"error": str(exc)}
-            unbekannt = _pruefe_empfaenger(to)
+            unbekannt = _pruefe_absender(identity, absender) or _pruefe_empfaenger(to)
             if unbekannt:
                 return unbekannt
             _log(kanal, "send_message", to=to, sender=absender, zeichen=len(text))
@@ -527,7 +558,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
             except ScopeError as exc:
                 return {"error": str(exc)}
-            unbekannt = _pruefe_empfaenger(to)
+            unbekannt = _pruefe_absender(identity, absender) or _pruefe_empfaenger(to)
             if unbekannt:
                 return unbekannt
             _log(kanal, "ask", to=to, sender=absender)
@@ -562,6 +593,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
             except ScopeError as exc:
                 return {"error": str(exc)}
+            unbekannt = _pruefe_absender(identity, absender)
+            if unbekannt:
+                return unbekannt
             _log(kanal, "answer", to=to, sender=absender)
             if reply_to:
                 # Ein Weg für Dashboard und Tool (mailbox.beantworte_frage):

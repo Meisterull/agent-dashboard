@@ -194,7 +194,7 @@ Host und überlebt Neustarts.
 | Chat antwortet `502 Orchestrator-Fehler` | MCP-Server nicht erreichbar → Logs des `mcp`-Prozesses prüfen |
 | `/api/agents` bleibt leer | Noch keine Mailbox angelegt — erst eine Aufgabe per Chat senden (oder `mkdir ./workspace/mailboxes/<name>/inbox`) |
 | Browser meckert über Zertifikat | self-signed im MVP — akzeptieren oder echtes Zertifikat in `./ssl/{fullchain,privkey}.pem` legen |
-| Terminal verbindet nicht | SSH-Key in `./secrets` + korrekter `key_file:`/`host:` in `agents.yaml`; `known_hosts` ist im MVP deaktiviert |
+| Terminal verbindet nicht | SSH-Key in `./secrets` + korrekter `key_file:`/`host:` in `agents.yaml`. Host-Keys werden per TOFU gepinnt (`workspace/config/known_hosts`) — nach einer Neuinstallation des Agenten-PCs den alten Eintrag dort löschen |
 | Integration-Tool gibt `error` | Name/Methode nicht in `integrations.yaml` erlaubt, oder `auth_env`-Variable fehlt in `.env` |
 
 ---

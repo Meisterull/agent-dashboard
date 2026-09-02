@@ -70,8 +70,9 @@ def aggregiere(responses: list[dict[str, Any]],
             wann = datetime.fromisoformat(str(r.get("responded_at")))
         except (TypeError, ValueError):
             continue
-        if wann.tzinfo is None:
-            wann = wann.astimezone()
+        # IMMER in die Server-Zone (Review P2): responded_at schreibt der
+        # Watcher auf dem Agenten-PC — dessen Kalendertag ist nicht unserer.
+        wann = wann.astimezone()
         tag = wann.date().isoformat()
         if tag in tage:
             _addiere(tage[tag], r.get("verbrauch"))
