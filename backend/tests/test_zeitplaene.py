@@ -28,7 +28,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "backend"))
 sys.path.insert(0, str(REPO / "scripts"))
 
-from app import rollen, zeitplaene  # noqa: E402
+from app import rollen, verbrauch, zeitplaene  # noqa: E402
 from app.mailbox import Mailbox, Task, ZuFrueh, zu_frueh  # noqa: E402
 import agent_watcher as aw  # noqa: E402
 
@@ -91,11 +91,14 @@ class VerwaltungTests(unittest.TestCase):
         zeitplaene.ZEITPLAENE_YAML = self.tmp / "zeitplaene.yaml"
         zeitplaene.MAILBOX_ROOT = self.tmp / "mailboxes"
         rollen.ROLLEN_DIR = self.tmp / "rollen"
+        self._vroot = verbrauch.MAILBOX_ROOT
+        verbrauch.MAILBOX_ROOT = self.tmp / "mailboxes"
 
     def tearDown(self) -> None:
         zeitplaene.ZEITPLAENE_YAML = self._yaml
         zeitplaene.MAILBOX_ROOT = self._root
         rollen.ROLLEN_DIR = self._rollen
+        verbrauch.MAILBOX_ROOT = self._vroot
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_validierung(self):
@@ -137,6 +140,26 @@ class VerwaltungTests(unittest.TestCase):
         self.assertEqual(env["rollen_prompt"], "Prüfe.")
         plaene, _ = zeitplaene.lade_plaene()
         self.assertTrue(plaene[0].get("letzter_lauf"))
+
+    def test_verbrauchsschwelle_pausiert_geplante_tasks(self):
+        box = Mailbox(zeitplaene.MAILBOX_ROOT, "werkstatt")
+        (box.outbox / "task-alt-response.json").write_text(json.dumps({
+            "responded_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "verbrauch": {"output_tokens": 2000},
+        }), encoding="utf-8")
+        zeitplaene.speichere_plaene([{
+            "name": "n1", "agent": "werkstatt", "instruction": "mach",
+            "zeit": "07:00",
+        }])
+        plan = zeitplaene.lade_plaene()[0][0]
+        jetzt = datetime.now().astimezone()
+        bericht = zeitplaene._poste(plan, jetzt, schwelle=1000)
+        self.assertIn("pausiert", bericht.get("fehler", ""))
+        self.assertEqual(
+            len(list((zeitplaene.MAILBOX_ROOT / "werkstatt" / "inbox").glob("task-*.json"))), 0)
+        # Ohne Schwelle läuft derselbe Plan:
+        bericht = zeitplaene._poste(plan, jetzt, schwelle=0)
+        self.assertNotIn("fehler", bericht)
 
 
 class NichtVorTests(unittest.TestCase):

@@ -192,6 +192,22 @@ Salve. `letzter_lauf` stempelt der Planer — auch bei Fehlversuchen
 `POST /api/zeitplaene/{name}/jetzt` (▶ im Dialog) führt einen Plan sofort
 aus.
 
+**Verbrauchszähler** (Dashboard-Paket St.3): Der Watcher liest `usage` und
+`total_cost_usd` aus dem result-Event jedes Claude-Laufs und liefert sie mit
+dem Ergebnis ab (`verbrauch` an `complete_task` bzw. direkt in der
+Outbox-Response des Datei-Transports). Aggregiert wird ON-READ aus der
+Outbox (`app/verbrauch.py`) — bewusst keine eigene Persistenz, denn der
+Datei-Transport-Watcher schreibt remote am Server vorbei; die Outbox-Rotation
+(30 Tage) deckt die 7-Tage-Anzeige locker. `/api/agents/{name}/tasks` liefert
+das Aggregat gleich mit (dieselbe Outbox-Lesung, kein Doppel-I/O); das Panel
+zeigt ⚡ heute + rollierendes 5-h-Fenster, Antippen die letzten 7 Tage.
+Optionale Schwelle `verbrauch_schwelle_5h` (Settings, Tokens/5 h je Agent,
+0 = aus): darüber färbt sich der Zähler rot und der Planer pausiert
+GEPLANTE Tasks dieses Agenten (der ▶-Sofort-Knopf und Chat-Delegation laufen
+weiter — die Schwelle ist eine Automatik-Bremse, kein Verbot). EHRLICHE
+Messung, kein offizielles Limit-%: die Abo-Limits von Claude Code sind
+headless nicht abfragbar (Stand 09/2026).
+
 **Nebenläufigkeit:** Jedes Tool wird als `async` registriert und läuft in einem
 Thread (Integrationen in einem eigenen, kleinen Pool). Das SDK würde synchrone
 Tools sonst direkt im Event-Loop ausführen — und da sich **alle** Kanäle einen

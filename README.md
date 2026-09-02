@@ -26,6 +26,10 @@ No SaaS, no telemetry, one hardened Docker container on your own server.
   debuggable with `cat`.
 - **Agents can ask back** — a worker that needs clarification parks its task,
   you answer in a banner, the task resumes with your answer in context.
+- **Usage meter** — per agent: today's and the rolling 5-hour token/cost
+  consumption, read from each run's result event; an optional threshold
+  pauses *scheduled* tasks above budget (an honest self-imposed brake — plan
+  limits aren't queryable headlessly).
 - **Scheduled tasks** — one-off ("run this at 10 pm") via a not-before field,
   and recurring plans ("weekdays 7:00, role review") managed in a dialog;
   missed slots expire by default (opt-in single catch-up), results arrive as

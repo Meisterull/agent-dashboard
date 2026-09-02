@@ -424,6 +424,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             status: str = "done",
             log: str = "",
             agent: str | None = None,
+            verbrauch: dict | None = None,
         ) -> dict:
             """Einen bearbeiteten Task abschließen — das Gegenstück zu send_task.
 
@@ -465,7 +466,10 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                             "hinweis": "Rückfrage unbeantwortet — Task wartet und "
                                        "läuft nach der Antwort erneut."}
             _log(kanal, "complete_task", agent=wer, task=task_id, status=status, zeichen=len(result))
-            box.write_response(task_id, result, status, log)
+            # `verbrauch` (St.3): usage/Kosten des Laufs — der Watcher liefert
+            # sie mit, der Zähler aggregiert sie aus der Outbox. Optional.
+            box.write_response(task_id, result, status, log,
+                               verbrauch if isinstance(verbrauch, dict) else None)
             return {"task_id": task_id, "agent": wer, "status": status}
 
     # --- Agent-↔-Agent-Kommunikation ----------------------------------------

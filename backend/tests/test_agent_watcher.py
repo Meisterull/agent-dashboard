@@ -50,7 +50,10 @@ if szenario.startswith("normal"):
         {"type": "text", "text": "Ich sehe mir das an"},
         {"type": "tool_use", "id": "t1", "name": "Bash",
          "input": {"command": "ls -la"}}]}})
-    ev({"type": "result", "result": "FERTIG", "is_error": False})
+    ev({"type": "result", "result": "FERTIG", "is_error": False,
+        "usage": {"input_tokens": 100, "output_tokens": 7,
+                  "cache_read_input_tokens": 3},
+        "total_cost_usd": 0.05})
 elif szenario.startswith("fehler"):
     ev({"type": "result", "result": "ging schief", "is_error": True})
 elif szenario.startswith("verweigert"):
@@ -127,6 +130,18 @@ class TestRunClaude(unittest.TestCase):
         result, _log, rc = aw.run_claude(self.claude, "fehler", self.tmp, False)
         self.assertEqual(result, "ging schief")
         self.assertEqual(rc, 1)  # Exitcode 0, aber is_error im result-Event
+
+    def test_verbrauch_kommt_aus_dem_result_event(self):
+        """St.3: usage/total_cost_usd landen im übergebenen dict — die
+        Rückgabe bleibt ein 3-Tupel (zehn Entpackstellen unangetastet)."""
+        verbrauch: dict = {}
+        result, _log, rc = aw.run_claude(self.claude, "normal", self.tmp, False,
+                                         verbrauch_out=verbrauch)
+        self.assertEqual((result, rc), ("FERTIG", 0))
+        self.assertEqual(verbrauch["input_tokens"], 100)
+        self.assertEqual(verbrauch["output_tokens"], 7)
+        self.assertEqual(verbrauch["cache_read_input_tokens"], 3)
+        self.assertAlmostEqual(verbrauch["total_cost_usd"], 0.05)
 
     def test_permission_denials_landen_im_log(self):
         _result, log, _rc = aw.run_claude(self.claude, "verweigert", self.tmp, False)

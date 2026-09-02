@@ -56,6 +56,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Settings-Formular; app/auto_watcher.py stellt ihn nach Neustarts wieder her.
     "automatik": {},
     "automatik_notaus": False,
+    # Verbrauchszähler (Paket St.3): Tokens je Agent im rollierenden
+    # 5-h-Fenster, ab denen der Zähler sich färbt und der Planer GEPLANTE
+    # Tasks des Agenten pausiert. 0 = aus. Eine selbst gewählte Bremse —
+    # die echten Abo-Limits sind headless nicht abfragbar.
+    "verbrauch_schwelle_5h": 0,
 }
 
 # Editierbare Felder (Whitelist) — verhindert, dass das UI beliebige Keys setzt.

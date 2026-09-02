@@ -55,4 +55,9 @@ export default {
   "/Docker-Secrets.": "/Docker secrets.",
   "Speichern": "Save",
   "gespeichert": "saved",
+
+  // Verbrauchszähler (St.3)
+  "Verbrauchsschwelle (5-h-Fenster)": "Usage threshold (5-hour window)",
+  "Tokens je Agent im rollierenden 5-Stunden-Fenster; 0 = aus. Darüber färbt sich der Zähler und der Planer pausiert geplante Tasks dieses Agenten.":
+    "Tokens per agent in the rolling 5-hour window; 0 = off. Above it the meter turns red and the scheduler pauses that agent's planned tasks.",
 };

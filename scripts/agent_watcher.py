@@ -395,7 +395,8 @@ def wirksame_rechte(agent_mode: "str | None", agent_tools: "str | None",
 def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                fortschritt=None, permission_mode: str | None = None,
                allowed_tools: str | None = None,
-               append_system_prompt: str | None = None) -> tuple[str, str, int]:
+               append_system_prompt: str | None = None,
+               verbrauch_out: dict | None = None) -> tuple[str, str, int]:
     """Gibt (result, log, returncode) zurück.
 
     Headless Claude-Code mit --output-format stream-json (Issue #18): die
@@ -521,6 +522,19 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
             elif typ == "result":
                 ergebnis = ev.get("result") or ""
                 fehler_event = bool(ev.get("is_error"))
+                # Verbrauch (Paket St.3): usage + total_cost_usd stehen im
+                # result-Event — in das übergebene dict statt in den
+                # Rückgabewert, damit die zehn bestehenden Entpackstellen
+                # (Tests, Loops) unangetastet bleiben.
+                if verbrauch_out is not None:
+                    usage = ev.get("usage") or {}
+                    for feld in ("input_tokens", "output_tokens",
+                                 "cache_creation_input_tokens",
+                                 "cache_read_input_tokens"):
+                        if isinstance(usage.get(feld), (int, float)):
+                            verbrauch_out[feld] = int(usage[feld])
+                    if isinstance(ev.get("total_cost_usd"), (int, float)):
+                        verbrauch_out["total_cost_usd"] = float(ev["total_cost_usd"])
                 for d in ev.get("permission_denials") or []:
                     name = (d.get("tool_name") if isinstance(d, dict) else None) or "?"
                     if name not in abgelehnt:
@@ -734,7 +748,8 @@ class McpClient:
 
 
 def liefere_ergebnis(client: "McpClient | None", url: str, task_id: str,
-                     result: str, status: str, log: str
+                     result: str, status: str, log: str,
+                     verbrauch: dict | None = None
                      ) -> tuple[object, "McpClient | None", str | None]:
     """complete_task mit eigener Retry-Schleife (M8).
 
@@ -752,6 +767,7 @@ def liefere_ergebnis(client: "McpClient | None", url: str, task_id: str,
             antwort = client.call("complete_task", {
                 "task_id": task_id, "result": result,
                 "status": status, "log": log,
+                **({"verbrauch": verbrauch} if verbrauch else {}),
             })
             return antwort, client, None
         except (McpFehler, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
@@ -821,13 +837,15 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
 
                 task_dir, wd_fehler = projekt_workdir(workdir, projekt)
                 start = time.monotonic()
+                verbrauch: dict = {}  # usage/total_cost_usd aus dem result-Event (St.3)
                 if wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
                     result, err, status = "", wd_fehler, "error"
                 else:
                     try:
                         result, err, rc = run_claude(claude_bin, instruction, task_dir,
                                                      dry_run, fortschritt, pm, at,
-                                                     claimed.get("rollen_prompt"))
+                                                     claimed.get("rollen_prompt"),
+                                                     verbrauch_out=verbrauch)
                         status = "done" if rc == 0 else "error"
                     except Exception as exc:  # noqa: BLE001 — alles zurückmelden
                         result, err, status = "", repr(exc), "error"
@@ -838,7 +856,7 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 # bis zu 30 min Arbeit darf nicht verloren gehen, nur weil der
                 # Tunnel gerade neu verbindet oder inzwischen "stop" kam.
                 fertig, client, liefer_fehler = liefere_ergebnis(
-                    client, url, task_id, result, status, err)
+                    client, url, task_id, result, status, err, verbrauch)
                 if liefer_fehler:
                     sicher_print(f"[{now()}] {agent}: {task_id} — Ergebnis konnte nicht "
                                  f"abgeliefert werden ({liefer_fehler}); Task bleibt beim "
@@ -934,6 +952,7 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         print(f"[{now()}] {agent}: bearbeite {task_id}", flush=True)
         start = time.monotonic()
         status, err = "error", ""
+        verbrauch: dict = {}  # usage/total_cost_usd aus dem result-Event (St.3)
         try:
             task["instruction"]  # fehlende instruction soll wie bisher scheitern
             instruction = merge_instruction(task)
@@ -953,7 +972,8 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                     claude_bin, instruction, task_dir, dry_run,
                     lambda text, _tid=task_id: sicher_print(
                         f"[{now()}] {agent}: {_tid} · {text}"),
-                    pm, at, task.get("rollen_prompt"))
+                    pm, at, task.get("rollen_prompt"),
+                    verbrauch_out=verbrauch)
                 status = "done" if rc == 0 else "error"
                 if status == "error":
                     result = fehler_result(result, err)
@@ -980,6 +1000,8 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         antwort = {"task_id": task_id, "agent": agent, "to": sender or None,
                    "result": result, "status": status, "log": err,
                    "responded_at": now()}
+        if verbrauch:  # Verbrauchszähler (St.3) liest genau dieses Feld
+            antwort["verbrauch"] = verbrauch
         if status == "error" and task.get("instruction"):
             # Fehlschlag: die einzige Kopie der Aufgabenbeschreibung darf
             # nicht verloren gehen (Issue #15).

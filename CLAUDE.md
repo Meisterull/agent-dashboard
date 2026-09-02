@@ -78,6 +78,14 @@ backend/
                            Agenten-Rechten (wirksame_rechte — Rolle kann nur
                            einschränken, nie erweitern) und hängt den Prompt per
                            --append-system-prompt an. UI: Agenten-Panel → Rollen
+    verbrauch.py           Verbrauchszähler (St.3): usage/total_cost_usd aus dem
+                           result-Event (Watcher → complete_task(verbrauch)/
+                           Outbox-Response), Aggregation ON-READ aus der Outbox
+                           (keine eigene Persistenz — Datei-Watcher schreibt
+                           remote am Server vorbei), hängt an
+                           /api/agents/{name}/tasks; Schwelle
+                           verbrauch_schwelle_5h (Settings) färbt Panel rot +
+                           Planer pausiert GEPLANTE Tasks (▶/Chat laufen weiter)
     zeitplaene.py          Geplante Tasks (St.2): Planer-Loop im API-Prozess
                            postet fällige Pläne (config/zeitplaene.yaml, Dialog
                            im Agenten-Panel ⏰) als normale Tasks (sender=

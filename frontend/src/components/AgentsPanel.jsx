@@ -72,6 +72,14 @@ function kurzZeit(iso) {
     : d.toLocaleDateString([], { day: "2-digit", month: "2-digit" });
 }
 
+// Tokenzahlen kompakt (Verbrauchszähler, St.3): 1234 → "1 k", 2500000 → "2.5 M".
+const fmtTok = (n) =>
+  n >= 1e6
+    ? (n / 1e6).toFixed(1) + " M"
+    : n >= 1e3
+      ? Math.round(n / 1e3) + " k"
+      : String(n || 0);
+
 // Verdecktes Panel (Handy-Tab/Tab-Modus): so lange darf der letzte Stand alt
 // sein, bevor der 8-s-Takt wieder lädt — das Blinken kommt dann etwas später,
 // dafür ruckelt das sichtbare Panel beim Scrollen nicht von fremden Salven.
@@ -87,6 +95,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const [logOffen, setLogOffen] = useState(false); // Automatik-Log aufgeklappt
   const [rollenOffen, setRollenOffen] = useState(false); // Rollen-Dialog (St.1)
   const [plaeneOffen, setPlaeneOffen] = useState(false); // Zeitpläne-Dialog (St.2)
+  const [verbrauchOffen, setVerbrauchOffen] = useState(false); // Tages-Aufriss (St.3)
   const [raeumt, setRaeumt] = useState(false); // "alles gelesen" läuft gerade
   // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
@@ -465,6 +474,56 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
             )}
           </div>
         )}
+        {/* Verbrauchszähler (St.3): aus den result-Events der Läufe, vom
+            Server aus der Outbox aggregiert. Antippen zeigt die letzten
+            7 Tage. Rot = selbst gesetzte 5-h-Schwelle erreicht (Settings) —
+            der Planer pausiert dann geplante Tasks dieses Agenten. */}
+        {tasks?.verbrauch &&
+          (tasks.verbrauch.heute.tasks > 0 ||
+            tasks.verbrauch.fenster5h.tasks > 0 ||
+            tasks.verbrauch.ueber_schwelle) && (
+            <div
+              onClick={() => setVerbrauchOffen((v) => !v)}
+              className="cursor-pointer rounded bg-slate-50 p-1.5 dark:bg-slate-800"
+            >
+              <div
+                className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 ${
+                  tasks.verbrauch.ueber_schwelle
+                    ? "font-semibold text-red-600 dark:text-red-400"
+                    : "text-slate-500 dark:text-slate-400"
+                }`}
+              >
+                <span>
+                  ⚡{" "}
+                  {t(
+                    "heute: {0} Tasks · {1} Tok · {2} $",
+                    tasks.verbrauch.heute.tasks,
+                    fmtTok(tasks.verbrauch.heute.tokens),
+                    tasks.verbrauch.heute.kosten.toFixed(2),
+                  )}
+                </span>
+                <span>
+                  {t("5 h: {0} Tok", fmtTok(tasks.verbrauch.fenster5h.tokens))}
+                  {tasks.verbrauch.schwelle > 0
+                    ? ` / ${fmtTok(tasks.verbrauch.schwelle)}`
+                    : ""}
+                </span>
+                {tasks.verbrauch.ueber_schwelle && (
+                  <span>{t("Schwelle erreicht — geplante Tasks pausieren")}</span>
+                )}
+              </div>
+              {verbrauchOffen && (
+                <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                  {tasks.verbrauch.tage.map((tag) => (
+                    <div key={tag.datum}>
+                      {tag.datum}: {tag.tasks} · {fmtTok(tag.tokens)} Tok ·{" "}
+                      {tag.kosten.toFixed(2)} $
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         {tasks && (
           <>
             <div>

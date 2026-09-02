@@ -173,4 +173,10 @@ export default {
     "catch up — one missed slot runs late once everything is back",
   "Auftrag": "Instruction",
   "geplant — läuft nicht vor {0}": "scheduled — will not run before {0}",
+
+  // Verbrauchszähler im AgentsPanel (St.3)
+  "heute: {0} Tasks · {1} Tok · {2} $": "today: {0} tasks · {1} tok · ${2}",
+  "5 h: {0} Tok": "5 h: {0} tok",
+  "Schwelle erreicht — geplante Tasks pausieren":
+    "threshold reached — scheduled tasks pause",
 };

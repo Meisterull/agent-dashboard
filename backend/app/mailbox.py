@@ -642,18 +642,22 @@ class Mailbox:
         return wieder
 
     def write_response(
-        self, task_id: str, result: str, status: str = "done", log: str = ""
+        self, task_id: str, result: str, status: str = "done", log: str = "",
+        verbrauch: dict[str, Any] | None = None,
     ) -> Path:
         """Task abschließen: Response schreiben, zustellen, Task abräumen.
 
         Läuft unter dem Mailbox-Lock, weil Abschluss und Rückfragen-Parken
-        (Issue #17) denselben Envelope anfassen.
+        (Issue #17) denselben Envelope anfassen. `verbrauch` (St.3) sind die
+        usage-/Kosten-Felder des Laufs — der Zähler aggregiert sie aus der
+        Outbox.
         """
         with self._lock():
-            return self._write_response(task_id, result, status, log)
+            return self._write_response(task_id, result, status, log, verbrauch)
 
     def _write_response(
-        self, task_id: str, result: str, status: str = "done", log: str = ""
+        self, task_id: str, result: str, status: str = "done", log: str = "",
+        verbrauch: dict[str, Any] | None = None,
     ) -> Path:
         if status not in VALID_STATUS:
             raise ValueError(f"ungültiger Status: {status}")
@@ -685,6 +689,8 @@ class Mailbox:
             "log": log,
             "responded_at": _now(),
         }
+        if verbrauch:
+            response["verbrauch"] = dict(verbrauch)
         # Fehlschlag: Aufgabenbeschreibung mit in die Antwort nehmen — der
         # Auftraggeber muss nachvollziehen können, WORUM es ging (Issue #15).
         if status == "error" and task_env is not None:

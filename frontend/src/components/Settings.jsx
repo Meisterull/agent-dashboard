@@ -217,6 +217,27 @@ export default function Settings({ onClose }) {
             </select>
           </label>
 
+          <label className="block">
+            <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+              {t("Verbrauchsschwelle (5-h-Fenster)")}
+            </span>
+            <input
+              type="number"
+              min="0"
+              step="1000"
+              value={settings.verbrauch_schwelle_5h ?? 0}
+              onChange={(e) =>
+                update("verbrauch_schwelle_5h", Math.max(0, Number(e.target.value) || 0))
+              }
+              className="w-full rounded border border-slate-300 px-2 py-1.5 dark:border-slate-600 dark:bg-slate-800"
+            />
+            <p className="mt-1 text-xs text-slate-400">
+              {t(
+                "Tokens je Agent im rollierenden 5-Stunden-Fenster; 0 = aus. Darüber färbt sich der Zähler und der Planer pausiert geplante Tasks dieses Agenten.",
+              )}
+            </p>
+          </label>
+
           <div>
             <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
               {t("Benachrichtigungen")}

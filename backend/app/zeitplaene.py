@@ -40,8 +40,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from app import rollen
-from app.config import DATA_CONFIG_DIR, _atomic_write_text, load_agents_full
+from app import rollen, verbrauch
+from app.config import (DATA_CONFIG_DIR, _atomic_write_text, load_agents_full,
+                        load_settings)
 from app.mailbox import AGENT_NAME_RE, ORCHESTRATOR, Mailbox, Task, new_id
 
 ZEITPLAENE_YAML = DATA_CONFIG_DIR / "zeitplaene.yaml"
@@ -209,11 +210,13 @@ def _stempel(name: str, soll_iso: str) -> None:
         pass  # von Hand zerschriebene Nachbar-Pläne blockieren den Stempel nicht
 
 
-def _poste(plan: dict[str, Any], soll: datetime) -> dict[str, Any]:
+def _poste(plan: dict[str, Any], soll: datetime,
+           schwelle: int = 0) -> dict[str, Any]:
     """Einen fälligen Plan als normalen Task posten und den Termin stempeln.
 
-    Gestempelt wird AUCH bei Fehlern (unbekannter Agent, kaputte Rolle):
-    ein Termin = höchstens ein Versuch — sonst feuert das Log alle 30 s."""
+    Gestempelt wird AUCH bei Fehlern (unbekannter Agent, kaputte Rolle,
+    erreichte Verbrauchsschwelle): ein Termin = höchstens ein Versuch —
+    sonst feuert das Log alle 30 s."""
     soll_iso = soll.isoformat(timespec="seconds")
     name = plan.get("name") or "?"
     agent = str(plan.get("agent") or "")
@@ -222,6 +225,13 @@ def _poste(plan: dict[str, Any], soll: datetime) -> dict[str, Any]:
         print(f"[planer] {name}: Agent {agent!r} unbekannt — Termin übersprungen",
               flush=True)
         return {"fehler": f"Agent {agent!r} unbekannt"}
+    # Verbrauchsschwelle (St.3): über dem 5-h-Budget pausieren GEPLANTE Tasks
+    # dieses Agenten — der Termin verfällt (Stempel steht schon). Der
+    # ▶-Sofort-Knopf umgeht die Schwelle bewusst (jetzt_ausfuehren).
+    if schwelle > 0 and verbrauch.ist_ueber_schwelle(agent, schwelle):
+        print(f"[planer] {name}: Verbrauchsschwelle erreicht ({agent}, "
+              f"{schwelle} Tokens/5 h) — Termin pausiert", flush=True)
+        return {"fehler": "Verbrauchsschwelle erreicht — geplanter Task pausiert"}
     rollen_felder: dict[str, Any] = {}
     if plan.get("rolle"):
         try:
@@ -261,6 +271,7 @@ def tick(jetzt: datetime | None = None) -> list[dict[str, Any]]:
     if fehler:
         print(f"[planer] {fehler}", flush=True)
         return []
+    schwelle = int(load_settings().get("verbrauch_schwelle_5h") or 0)
     berichte = []
     for plan in plaene:
         try:
@@ -269,7 +280,7 @@ def tick(jetzt: datetime | None = None) -> list[dict[str, Any]]:
             print(f"[planer] {plan.get('name')}: {exc}", flush=True)
             continue
         if soll is not None:
-            berichte.append(_poste(plan, soll))
+            berichte.append(_poste(plan, soll, schwelle))
     return berichte
 
 

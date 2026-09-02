@@ -10,6 +10,7 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/agents                 Agenten = Mailbox-Ordner
   GET  /api/agents/{name}/tasks    Inbox (+ .processing als running) + Outbox
                                    + messages (Nachrichten/Antworten, #33)
+                                   + verbrauch (Zähler heute/5 h/7 Tage, St.3)
   POST /api/agents/{name}/inbox/read-all  alles Erledigte ins Archiv (#21)
   POST /api/agents/{name}/inbox/{id}/read  eine Nachricht ins Archiv (#33)
   POST /api/tasks/{agent}/{id}/close  hängengebliebenen Task manuell abschließen
@@ -72,7 +73,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import auth, auto_watcher, chat_store, events, llm, push, remote_files
-from app import mcp_scope, mcp_token, rollen, zeitplaene
+from app import mcp_scope, mcp_token, rollen, verbrauch, zeitplaene
 from app.config import (
     KEYS_DIR,
     add_ui_connection,
@@ -302,6 +303,7 @@ class SettingsIn(BaseModel):
     language: str | None = None
     orch_model: str | None = None
     external_windows: list[ExternalWindowIn] | None = None
+    verbrauch_schwelle_5h: int | None = None
 
 
 # --- Health / Agenten / Tasks ---------------------------------------------
@@ -373,11 +375,18 @@ async def agent_tasks(name: str) -> dict:
         key=lambda m: m.get("created_at") or "",
         reverse=True,  # neueste zuerst — anders als Tasks, die FIFO abgearbeitet werden
     )
+    outbox = _read_jsons(base / "outbox")
     return {
         "agent": name,
         "inbox": inbox + claimed,
-        "outbox": _read_jsons(base / "outbox"),
+        "outbox": outbox,
         "messages": messages,
+        # Verbrauchszähler (St.3): aus der OHNEHIN gelesenen Outbox gerechnet —
+        # kein zweiter Poll, kein Doppel-I/O. Schwelle aus den Settings.
+        "verbrauch": verbrauch.aggregiere(
+            outbox,
+            schwelle=int(load_settings().get("verbrauch_schwelle_5h") or 0),
+        ),
     }
 
 
