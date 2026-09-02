@@ -49,6 +49,13 @@ def _parse(text: str) -> dict[str, Any]:
     meta: dict[str, Any] = {}
     prompt = text
     m = _FRONTMATTER_RE.match(text)
+    if m is None and text.lstrip().startswith("---"):
+        # Review 02.09. (P0-7): Frontmatter-Beginn ohne schließendes `---`
+        # hieße „alles ist Prompt" — die Rechte-Angabe würde STILL ignoriert
+        # und der Lauf bekäme die vollen Agenten-Rechte. Lieber ablehnen.
+        raise RollenFehler(
+            "Frontmatter beginnt mit ---, wird aber nie geschlossen — "
+            "Rechte-Angaben würden sonst still ignoriert")
     if m:
         try:
             import yaml  # wie in config.py: lazy, PyYAML ist im Container da

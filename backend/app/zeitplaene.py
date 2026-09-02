@@ -113,12 +113,37 @@ def _pruefe_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return sauber
 
 
-def speichere_plaene(plaene: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Liste validieren und atomar schreiben. `letzter_lauf` bestehender Pläne
-    bleibt erhalten, auch wenn der Client ihn nicht mitschickt — sonst feuert
-    ein Plan nach jedem Speichern im Dialog sofort seinen Nachholer."""
+_DATEI_KOPF = (
+    "# Geplante Tasks — gepflegt über das Dashboard (Agenten-Panel → Zeitpläne).\n"
+    "# `letzter_lauf` stempelt der Planer; Doku: docs/REFERENZ.md.\n"
+)
+
+
+def _schreibe_roh(plaene: list[dict[str, Any]]) -> None:
+    """Liste OHNE Nachbar-Validierung schreiben — der Stempel-Pfad (Review
+    P0-5): ein von Hand zerschriebener Nachbar-Plan darf den Stempel eines
+    gerade gelaufenen Plans nicht blockieren, sonst feuert der bei jedem
+    Tick erneut (Task-Salve)."""
     import yaml
 
+    # Über den Dateipfad statt die Konstante: bleibt korrekt, wenn Tests
+    # ZEITPLAENE_YAML umbiegen.
+    ZEITPLAENE_YAML.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(
+        ZEITPLAENE_YAML,
+        _DATEI_KOPF + yaml.safe_dump({"plaene": plaene}, allow_unicode=True,
+                                     sort_keys=False),
+    )
+
+
+def speichere_plaene(plaene: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Liste validieren und atomar schreiben.
+
+    `letzter_lauf` ist SERVER-Wahrheit (Review P0-6): Der Dialog hält die
+    Liste im Browser-State und schickt sie samt — womöglich veraltetem —
+    Stempel zurück; ein alter Stempel ließe den Termin erneut feuern
+    (Doppelfeuer-Race, reproduziert). Client-Werte werden darum verworfen
+    und immer aus dem gespeicherten Stand übernommen."""
     sauber = [_pruefe_plan(p) for p in plaene]
     namen = [p["name"] for p in sauber]
     doppelt = {n for n in namen if namen.count(n) > 1}
@@ -127,17 +152,10 @@ def speichere_plaene(plaene: list[dict[str, Any]]) -> list[dict[str, Any]]:
     alt, _ = lade_plaene()
     letzter = {p.get("name"): p.get("letzter_lauf") for p in alt}
     for p in sauber:
-        if "letzter_lauf" not in p and letzter.get(p["name"]):
+        p.pop("letzter_lauf", None)
+        if letzter.get(p["name"]):
             p["letzter_lauf"] = letzter[p["name"]]
-    # Über den Dateipfad statt die Konstante: bleibt korrekt, wenn Tests
-    # ZEITPLAENE_YAML umbiegen.
-    ZEITPLAENE_YAML.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(
-        ZEITPLAENE_YAML,
-        "# Geplante Tasks — gepflegt über das Dashboard (Agenten-Panel → Zeitpläne).\n"
-        "# `letzter_lauf` stempelt der Planer; Doku: docs/REFERENZ.md.\n"
-        + yaml.safe_dump({"plaene": sauber}, allow_unicode=True, sort_keys=False),
-    )
+    _schreibe_roh(sauber)
     return sauber
 
 
@@ -200,14 +218,21 @@ def _bekannte_agenten() -> set[str]:
 
 
 def _stempel(name: str, soll_iso: str) -> None:
-    plaene, _ = lade_plaene()
+    """Termin-Stempel setzen — über den ROHEN Schreibpfad (Review P0-5):
+    speichere_plaene() validiert die ganze Liste, und ein kaputter
+    Nachbar-Plan hätte den Stempel verschluckt → Task-Salve. Scheitert das
+    Schreiben trotzdem (Platte, Rechte), wird es LAUT gemeldet."""
+    plaene, fehler = lade_plaene()
+    if fehler:
+        print(f"[planer] Stempel für {name} nicht möglich: {fehler}", flush=True)
+        return
     for p in plaene:
         if p.get("name") == name:
             p["letzter_lauf"] = soll_iso
     try:
-        speichere_plaene(plaene)
-    except ZeitplanFehler:
-        pass  # von Hand zerschriebene Nachbar-Pläne blockieren den Stempel nicht
+        _schreibe_roh(plaene)
+    except OSError as exc:
+        print(f"[planer] Stempel für {name} fehlgeschlagen: {exc}", flush=True)
 
 
 def _poste(plan: dict[str, Any], soll: datetime,

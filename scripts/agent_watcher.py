@@ -946,6 +946,17 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         except json.JSONDecodeError:
             continue  # nächster Tick
 
+        # Anspruch stempeln (Review P0-2): os.replace erhält die mtime, und
+        # requeue_stale misst ohne `claimed_at` ab Dateialter — ein Task mit
+        # >3 h Inbox-Liegezeit (bei nicht_vor der Normalfall) gälte sofort
+        # als verwaist und liefe doppelt.
+        task["claimed_at"] = now()
+        task["status"] = "running"
+        try:
+            atomic_write_json(claimed, task)
+        except OSError:
+            pass  # Stempel ist Schutz, kein Grund den Lauf abzubrechen
+
         task_id = task.get("task_id", claimed.stem)
         sender = task.get("sender") or ""
         root = inbox.parent.parent  # root/<agent>/inbox → Mailbox-Wurzel
@@ -1006,22 +1017,31 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             # Fehlschlag: die einzige Kopie der Aufgabenbeschreibung darf
             # nicht verloren gehen (Issue #15).
             antwort["instruction"] = task["instruction"]
+        # Review P0-3: Erst wenn das Ergebnis SICHER in der Outbox liegt, wird
+        # der Task abgeräumt. Ein Outbox-Schreibfehler (SSHFS-Blip, ENOSPC)
+        # warf über das frühere `finally` 30 min Arbeit spurlos weg — jetzt
+        # bleibt der Task in .processing, requeue_stale legt ihn zurück.
         try:
             atomic_write_json(outbox / f"{task_id}-response.json", antwort)
-            deliver_response(root, sender, agent, task_id, result, status,
-                             antwort.get("instruction"))
-        finally:
+        except OSError as exc:
+            sicher_print(f"[{now()}] {agent}: {task_id} — Outbox nicht "
+                         f"schreibbar ({exc}); Task bleibt in Arbeit. "
+                         f"Ergebnis: {kurz(result, 500)}")
+            continue
+        deliver_response(root, sender, agent, task_id, result, status,
+                         antwort.get("instruction"))
+        try:
             if status == "error":
                 failed = inbox / ".failed"
                 failed.mkdir(exist_ok=True)
-                try:  # Task für einen Wiederanlauf aufheben (Issue #15)
-                    os.replace(claimed, failed / claimed.name)
-                except FileNotFoundError:
-                    pass
+                os.replace(claimed, failed / claimed.name)  # Wiederanlauf (#15)
             else:
                 claimed.unlink(missing_ok=True)
+        except OSError as exc:  # z.B. PermissionError auf Windows-Mounts
+            sicher_print(f"[{now()}] {agent}: {task_id} — Aufräumen "
+                         f"fehlgeschlagen ({exc}); Ergebnis liegt in der Outbox.")
         handled += 1
-        print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})", flush=True)
+        sicher_print(f"[{now()}] {agent}: {task_id} abgeschlossen ({status})")
         if fehlerserie(status, time.monotonic() - start):
             print(f"[{now()}] {agent}: {FEHLER_SCHWELLE} Tasks in Folge sofort "
                   f"gescheitert — Umgebungsproblem vermutet, Watcher hält an. "

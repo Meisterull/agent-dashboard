@@ -392,6 +392,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 # Geplanter Task (St.2): liegt absichtlich noch in der Inbox.
                 return {"error": str(exc), "zu_frueh": True,
                         "nicht_vor": exc.nicht_vor}
+            except ValueError as exc:
+                # ungültige Task-ID (P0-1) o.ä. — Fehler-Dict statt Tool-Crash
+                return {"error": str(exc)}
             if env is None:
                 return {"error": f"Task {task_id} liegt nicht (mehr) bei {wer}."}
             # merged_instruction: nach einem geparkten Lauf (Issue #17) stehen
@@ -442,12 +445,18 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             except ScopeError as exc:
                 return {"error": str(exc)}
             box = Mailbox(MAILBOX_ROOT, wer)
+            try:
+                offen = box.task_offen(task_id)
+            except ValueError as exc:
+                # ungültige Task-ID (P0-1): Fehler-Dict statt Tool-Crash —
+                # und der Ausbruchsversuch steht damit auch im Kanal-Log.
+                return {"error": str(exc)}
             # Wiederholter Abschluss ist KEIN Fehler: geht die Antwort auf dem
             # Rückweg verloren (Tunnel-Reconnect), liefert der Watcher dasselbe
             # Ergebnis erneut ab. Der Task ist dann schon abgeräumt — das als
             # Erfolg melden, statt ihn 5 Retrys lang gegen eine Wand laufen zu
             # lassen und am Ende fälschlich "nicht abgeliefert" zu loggen.
-            if not box.task_offen(task_id):
+            if not offen:
                 if (box.outbox / f"{task_id}-response.json").exists():
                     _log(kanal, "complete_task", agent=wer, task=task_id, status="bereits")
                     return {"task_id": task_id, "agent": wer, "status": status,

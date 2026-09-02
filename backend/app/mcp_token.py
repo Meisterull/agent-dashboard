@@ -67,6 +67,10 @@ def _gesperrt(name: str) -> bool:
 
 
 def _fehlversuch(name: str) -> None:
+    # Deckel (Review P3): der Name kommt aus einem unauthentifizierten
+    # URL-Segment — ohne Grenze wüchse das Dict unbegrenzt.
+    if name not in _FEHLVERSUCHE and len(_FEHLVERSUCHE) >= 512:
+        _FEHLVERSUCHE.clear()
     _FEHLVERSUCHE.setdefault(name, []).append(time.monotonic())
 
 
@@ -93,6 +97,10 @@ def pruefe(name: str, kopfzeile: str | None) -> None:
     vorgelegt = ""
     if kopfzeile and kopfzeile.lower().startswith("bearer "):
         vorgelegt = kopfzeile[7:].strip()
-    if not vorgelegt or not hmac.compare_digest(vorgelegt, erwartet):
+    # Bytes-Vergleich (Review P1-8): compare_digest wirft bei Nicht-ASCII
+    # TypeError — ein Client-gesteuerter 500er statt sauberem 401.
+    if not vorgelegt or not hmac.compare_digest(
+        vorgelegt.encode("utf-8"), erwartet.encode("utf-8")
+    ):
         _fehlversuch(name)
         raise TokenFehler(f"{name}: Token stimmt nicht")

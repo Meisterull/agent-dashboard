@@ -57,8 +57,13 @@ if [ -d /app/config ]; then
         [ -e "$f" ] || continue
         base=$(basename "$f")
         if [ ! -e "$DATA_CONFIG_DIR/$base" ]; then
-            cp "$f" "$DATA_CONFIG_DIR/$base"
-            log "Config-Vorlage kopiert: $base"
+            # -r + tolerant (Review P0-8): ein Unterverzeichnis (z.B. das von
+            # make_agent_token.sh angelegte config/tokens/) ließ das nackte cp
+            # scheitern, und set -e schickte den Container in eine
+            # Neustart-Schleife, bevor supervisord überhaupt startete.
+            cp -r "$f" "$DATA_CONFIG_DIR/$base" \
+                && log "Config-Vorlage kopiert: $base" \
+                || log "WARNUNG: Config-Vorlage $base nicht kopierbar — übersprungen."
         fi
     done
 fi

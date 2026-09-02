@@ -54,6 +54,19 @@ ORCHESTRATOR = "orchestrator"
 # Allowlist wäre `to="../.."` ein Path-Traversal aus dem Workspace heraus.
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
+# Envelope-/Task-IDs landen ebenfalls als Dateinamen unter <agent>/inbox —
+# dieselbe Härte gehört in die PRIMITIVEN, nicht nur in die API-Schicht:
+# sonst bricht ein gebundener Kanal per complete_task(task_id="../../opfer/…")
+# aus seiner Mailbox aus (Review 02.09.2026, P0-1 — reproduziert: Exfiltration
+# der Instruction, gefälschte Response, Doppelausführung).
+ENV_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _sichere_id(wert, feld: str = "Envelope-ID") -> str:
+    if not ENV_ID_RE.fullmatch(str(wert or "")):
+        raise ValueError(f"ungültige {feld}: {wert!r}")
+    return str(wert)
+
 # Inbox-Envelopes haben ein `kind`:
 #   task     – Arbeitsauftrag (nur diese holt der Watcher und führt sie aus)
 #   message  – informativer Hinweis Agent → Agent
@@ -387,6 +400,7 @@ class Mailbox:
         jedem Inbox-Lesen erneut auftauchen. Offene Tasks sind tabu — die schließt
         write_response (sonst verschwände Arbeit ohne Rückmeldung).
         """
+        env_id = _sichere_id(env_id)  # P0-1
         with self._lock():
             src = self.inbox / f"{env_id}.json"
             try:
@@ -472,6 +486,7 @@ class Mailbox:
 
     def task_offen(self, task_id: str) -> bool:
         """Liegt der Task noch irgendwo offen (Inbox oder in Arbeit)?"""
+        task_id = _sichere_id(task_id, "Task-ID")  # P0-1
         return (self.inbox / f"{task_id}.json").exists() or (
             self.processing / f"{task_id}.json"
         ).exists()
@@ -486,6 +501,7 @@ class Mailbox:
         Bearbeiter braucht nach einem Kontextverlust seinen Auftragstext.
         None, wenn der Task nirgends (mehr) liegt.
         """
+        task_id = _sichere_id(task_id, "Task-ID")  # P0-1
         src = self.inbox / f"{task_id}.json"
         dst = self.processing / f"{task_id}.json"
         with self._lock():
@@ -659,6 +675,7 @@ class Mailbox:
         self, task_id: str, result: str, status: str = "done", log: str = "",
         verbrauch: dict[str, Any] | None = None,
     ) -> Path:
+        task_id = _sichere_id(task_id, "Task-ID")  # P0-1
         if status not in VALID_STATUS:
             raise ValueError(f"ungültiger Status: {status}")
         target = self.outbox / f"{task_id}-response.json"
@@ -753,6 +770,7 @@ class Mailbox:
         (Dashboard-Mensch statt Agent, Issue #22) — für den Fragesteller wäre
         das sonst ununterscheidbar.
         """
+        question_id = _sichere_id(question_id, "Fragen-ID")  # P0-1
         qpath = self.inbox / f"{question_id}.json"
         frage: dict[str, Any] | None = None
         with self._lock():
@@ -806,6 +824,7 @@ class Mailbox:
         Fragesteller aufräumen: `verwerfe_frage` lässt den geparkten Task mit
         Klartext scheitern statt ihn stillschweigend weiterlaufen zu lassen.
         """
+        question_id = _sichere_id(question_id, "Fragen-ID")  # P0-1
         qpath = self.inbox / f"{question_id}.json"
         frage: dict[str, Any] | None = None
         with self._lock():

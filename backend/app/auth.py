@@ -52,7 +52,12 @@ def enabled() -> bool:
 
 
 def verify_password(candidate: str) -> bool:
-    return enabled() and hmac.compare_digest(candidate, _password())
+    # Als BYTES vergleichen (Review P1-8): compare_digest wirft bei Nicht-ASCII-
+    # Strings TypeError — ein Umlaut im Passwort (oder im Login-Versuch) machte
+    # aus dem Login sonst dauerhaft einen 500er.
+    return enabled() and hmac.compare_digest(
+        candidate.encode("utf-8"), _password().encode("utf-8")
+    )
 
 
 def make_token() -> str:
