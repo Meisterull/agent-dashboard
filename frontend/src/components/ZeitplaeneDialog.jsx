@@ -25,8 +25,20 @@ export default function ZeitplaeneDialog({ agents = [], onClose }) {
   const [dateiFehler, setDateiFehler] = useState(null);
   const [rollen, setRollen] = useState([]);
   const [entwurf, setEntwurf] = useState(null); // Plan im Formular (Kopie)
+  const [entwurfV, setEntwurfV] = useState(0); // remountet Formular-Felder
   const [neuName, setNeuName] = useState("");
   const [speichert, setSpeichert] = useState(false);
+
+  // Review P1-4: handgepflegte YAML kann `tage: null` (oder Felder gar nicht)
+  // enthalten — GET liefert die rohen Dicts. Ohne Normalisierung crashte
+  // `entwurf.tage.includes(...)` das ganze Dashboard (weiße Seite).
+  const normalisiert = (p) => ({
+    ...p,
+    tage: Array.isArray(p.tage) ? p.tage : [],
+    zeit: p.zeit || "07:00",
+    an: p.an !== false,
+    nachholen: !!p.nachholen,
+  });
 
   const laden = async () => {
     try {
@@ -82,6 +94,7 @@ export default function ZeitplaeneDialog({ agents = [], onClose }) {
       nachholen: false,
       _neu: true,
     });
+    setEntwurfV((v) => v + 1);
   };
 
   const entwurfSpeichern = async () => {
@@ -122,10 +135,13 @@ export default function ZeitplaeneDialog({ agents = [], onClose }) {
 
   const feld = (patch) => setEntwurf((e) => ({ ...e, ...patch }));
   const tagToggle = (tag) =>
-    setEntwurf((e) => ({
-      ...e,
-      tage: e.tage.includes(tag) ? e.tage.filter((x) => x !== tag) : [...e.tage, tag],
-    }));
+    setEntwurf((e) => {
+      const tage = Array.isArray(e.tage) ? e.tage : []; // P1-4: nie crashen
+      return {
+        ...e,
+        tage: tage.includes(tag) ? tage.filter((x) => x !== tag) : [...tage, tag],
+      };
+    });
   const agentOptionen = [...new Set([...(agents || []), entwurf?.agent].filter(Boolean))];
 
   return (
@@ -142,7 +158,8 @@ export default function ZeitplaeneDialog({ agents = [], onClose }) {
       )}
       <div className="flex gap-2">
         <input
-          value={neuName}
+          key={`neu:${entwurfV}`}
+          defaultValue=""
           maxLength={64}
           onChange={(e) => setNeuName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && anlegen()}
@@ -176,7 +193,14 @@ export default function ZeitplaeneDialog({ agents = [], onClose }) {
               } ${p.an ? "" : "opacity-60"}`}
             >
               <button
-                onClick={() => setEntwurf({ tage: [], ...p })}
+                onClick={() => {
+                  // Remount erzwingen (Review P2): erneutes Antippen des schon
+                  // offenen Plans setzte nur den State zurück — die
+                  // defaultValue-Felder zeigten weiter die Bearbeitung, und
+                  // „Speichern" schrieb still den alten Stand.
+                  setEntwurf(normalisiert(p));
+                  setEntwurfV((v) => v + 1);
+                }}
                 className="min-w-0 flex-1 text-left"
               >
                 <div className="truncate text-sm">
@@ -222,7 +246,7 @@ export default function ZeitplaeneDialog({ agents = [], onClose }) {
       )}
 
       {entwurf && (
-        <div className="mt-3 rounded border border-slate-200 p-2.5 dark:border-slate-700" key={entwurf.name}>
+        <div className="mt-3 rounded border border-slate-200 p-2.5 dark:border-slate-700" key={`${entwurf.name}:${entwurfV}`}>
           <div className="mb-2 flex items-center gap-2">
             <span className="font-mono text-sm">{entwurf.name}</span>
             {entwurf._neu && (

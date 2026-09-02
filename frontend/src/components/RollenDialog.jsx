@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import { bestaetigen, melden } from "./Dialog";
 import { deleteRolle, getRolle, getRollen, saveRolle } from "../api";
@@ -7,10 +7,13 @@ import { t } from "../sprache";
 // Rollen für Task-Läufe (Dashboard-Paket St.1): eine Rolle ist eine
 // Markdown-Datei (config/rollen/<name>.md) mit Frontmatter (beschreibung,
 // optional permission_mode/allowed_tools) und dem Rollen-Prompt darunter.
-// Bearbeitet wird hier der ROHE Dateitext — dieselbe Datei ließe sich auch
-// über den Datei-Browser pflegen; der Dialog spart nur den Weg und prüft
-// beim Speichern das Frontmatter (Server lehnt kaputtes YAML ab, damit eine
-// Rechte-Angabe nie still ignoriert wird).
+//
+// Review 02.09. (P0-4): Der Text lebt im STATE und wird per defaultValue +
+// key-Remount ins textarea gemountet — die frühere imperative Ref-Zuweisung
+// lief ins Leere, solange das Feld noch nicht im DOM war: erste Auswahl
+// zeigte ein leeres Feld, und „Speichern" überschrieb die Rollen-Datei mit
+// Leertext. defaultValue statt value zugleich wegen der GBoard-Regel
+// (kontrollierte Text-Inputs verdoppeln Android-Wortvorschläge, s. Chat.jsx).
 
 const VORLAGE = `---
 beschreibung: Wofür diese Rolle ist (ein Satz)
@@ -28,11 +31,11 @@ const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export default function RollenDialog({ onClose }) {
   const [rollen, setRollen] = useState(null); // null = lädt
   const [name, setName] = useState(null); // ausgewählte Rolle
-  const [neu, setNeu] = useState(""); // Eingabefeld "Neue Rolle"
+  const [text, setText] = useState(""); // Editor-Inhalt (Quelle der Wahrheit)
+  const [version, setVersion] = useState(0); // remountet textarea/Eingabe
+  const [neu, setNeu] = useState(""); // Spiegel des "Neue Rolle"-Felds
   const [laedt, setLaedt] = useState(false);
   const [speichert, setSpeichert] = useState(false);
-  // Uncontrolled (GBoard-Regel, siehe Chat.jsx): der Text lebt im textarea.
-  const textRef = useRef(null);
 
   const liste = async () => {
     try {
@@ -52,7 +55,8 @@ export default function RollenDialog({ onClose }) {
     try {
       const d = await getRolle(n);
       setName(n);
-      if (textRef.current) textRef.current.value = d.text;
+      setText(d.text);
+      setVersion((v) => v + 1);
     } catch (e) {
       melden({ title: t("Fehler"), text: t("Laden fehlgeschlagen: {0}", e.message) });
     } finally {
@@ -67,15 +71,21 @@ export default function RollenDialog({ onClose }) {
       return;
     }
     setName(n);
+    setText(VORLAGE);
     setNeu("");
-    if (textRef.current) textRef.current.value = VORLAGE;
+    setVersion((v) => v + 1); // remountet auch das (uncontrolled) Namensfeld
   };
 
   const speichern = async () => {
-    if (!name || !textRef.current) return;
+    if (!name) return;
+    if (!text.trim()) {
+      // P0-4: nie still eine Rollen-Datei mit Leertext überschreiben.
+      melden({ title: t("Rollen"), text: t("Leerer Text wird nicht gespeichert — zum Entfernen die Rolle löschen.") });
+      return;
+    }
     setSpeichert(true);
     try {
-      await saveRolle(name, textRef.current.value);
+      await saveRolle(name, text);
       await liste();
     } catch (e) {
       melden({ title: t("Fehler"), text: t("Speichern fehlgeschlagen: {0}", e.message) });
@@ -96,7 +106,10 @@ export default function RollenDialog({ onClose }) {
       return;
     try {
       await deleteRolle(n);
-      if (name === n) setName(null);
+      if (name === n) {
+        setName(null);
+        setText("");
+      }
       await liste();
     } catch (e) {
       melden({ title: t("Fehler"), text: t("Löschen fehlgeschlagen: {0}", e.message) });
@@ -114,7 +127,8 @@ export default function RollenDialog({ onClose }) {
       </p>
       <div className="flex gap-2">
         <input
-          value={neu}
+          key={`neu:${version}`}
+          defaultValue=""
           maxLength={64}
           onChange={(e) => setNeu(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && anlegen()}
@@ -182,14 +196,16 @@ export default function RollenDialog({ onClose }) {
             <span className="flex-1" />
             <button
               onClick={speichern}
-              disabled={speichert || laedt}
+              disabled={speichert || laedt || !text.trim()}
               className="rounded bg-blue-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-40 hover:bg-blue-700"
             >
               {speichert ? "…" : t("Speichern")}
             </button>
           </div>
           <textarea
-            ref={textRef}
+            key={`${name}:${version}`}
+            defaultValue={text}
+            onChange={(e) => setText(e.target.value)}
             rows={12}
             spellCheck={false}
             className="w-full rounded border border-slate-300 p-2 font-mono text-xs leading-snug dark:border-slate-600 dark:bg-slate-900"

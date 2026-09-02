@@ -179,4 +179,6 @@ export default {
   "5 h: {0} Tok": "5 h: {0} tok",
   "Schwelle erreicht — geplante Tasks pausieren":
     "threshold reached — scheduled tasks pause",
+  "Leerer Text wird nicht gespeichert — zum Entfernen die Rolle löschen.":
+    "Empty text is not saved — delete the role to remove it.",
 };

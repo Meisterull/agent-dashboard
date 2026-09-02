@@ -72,8 +72,13 @@ def lade_plaene() -> tuple[list[dict[str, Any]], str | None]:
         import yaml  # lazy wie in config.py
 
         data = yaml.safe_load(ZEITPLAENE_YAML.read_text(encoding="utf-8")) or {}
-        plaene = list(data.get("plaene", []) or [])
-        return [p for p in plaene if isinstance(p, dict)], None
+        plaene = [p for p in (data.get("plaene", []) or []) if isinstance(p, dict)]
+        # Milde Normalisierung (Review P1-4): handgepflegtes YAML darf
+        # `tage:` leer lassen — `None` statt Liste crashte das Frontend.
+        for p in plaene:
+            if not isinstance(p.get("tage"), list):
+                p["tage"] = []
+        return plaene, None
     except Exception as exc:  # noqa: BLE001
         return [], f"zeitplaene.yaml nicht lesbar: {exc}"
 

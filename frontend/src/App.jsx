@@ -10,6 +10,7 @@ import ExternalFrame from "./components/ExternalFrame";
 import Settings from "./components/Settings";
 import Login from "./components/Login";
 import { DialogHost } from "./components/Dialog";
+import Fehlergrenze from "./components/Fehlergrenze";
 import { starteLiveEvents } from "./live";
 import { authCheck, getSettings, logout } from "./api";
 import { t, sprachAngleichen } from "./sprache";
@@ -248,7 +249,12 @@ export default function App() {
             title: w.name,
             body: <ExternalFrame url={w.url} />,
           })),
-        ]}
+          // Fehlergrenze je Panel (Review P1-4/P2): ein Render-Fehler in einem
+          // Panel machte sonst das GANZE Dashboard weiß.
+        ].map((p) => ({
+          ...p,
+          body: <Fehlergrenze titel={p.title}>{p.body}</Fehlergrenze>,
+        }))}
       />
 
       {/* Tab-Leiste unten: mobil immer, am Desktop nur im Tab-Modus.
