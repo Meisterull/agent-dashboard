@@ -21,6 +21,7 @@ const STATUS_COLORS = {
   error: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300",
   needs_confirm:
     "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300",
+  gesperrt: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
 };
 
 function StatusBadge({ status }) {
@@ -42,6 +43,9 @@ const AUTO_DOT = {
   startet: "bg-amber-400 animate-pulse",
   stoppt: "bg-amber-400 animate-pulse",
   fehler: "bg-red-500",
+  // Review N: der Zustand existierte im Backend (rc=1-Sperre), war im
+  // Panel aber unsichtbar — der Toggle wirkte einfach "kaputt".
+  gesperrt: "bg-red-700",
 };
 
 // Pollt alle 8 s die Mailboxen ALLER Agenten (nicht nur des angezeigten):
@@ -128,7 +132,11 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         const d = await getAgents();
         if (stale) return;
         setAgents(d.agents);
-        setSelected((s) => s || d.agents[0] || null);
+        // Verschwundener Agent (Verbindung gelöscht) → Auswahl zurücksetzen
+        // (Review N: das Panel zeigte sonst dauerhaft einen Geist).
+        setSelected((s) =>
+          s && d.agents.includes(s) ? s : d.agents[0] || null,
+        );
         const pairs = await Promise.all(
           d.agents.map((a) =>
             getTasks(a)

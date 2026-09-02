@@ -26,6 +26,7 @@ limit_req_zone $binary_remote_addr zone=mcp:10m rate=120r/m;
 # HTTP -> HTTPS. Browser muss auf den extern veröffentlichten HTTPS-Port
 # (${EXTERNAL_HTTPS_PORT}) — der ist NICHT 443, sondern das Host-Mapping.
 server {
+    server_tokens off;
     listen 80;
     server_name _;
 
@@ -41,6 +42,7 @@ server {
 }
 
 server {
+    server_tokens off;
     # http2 als listen-Parameter (nginx < 1.25; "http2 on;" gibt es erst ab 1.25.1).
     listen 443 ssl http2;
     server_name _;

@@ -20,6 +20,7 @@ Schwelle ist eine Automatik-Bremse, kein Verbot).
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,10 +44,12 @@ def _addiere(summe: dict[str, Any], verbrauch: dict[str, Any] | None) -> None:
         return  # Response ohne Messung (dry-run, alter Watcher): zählt als Task
     summe["tokens"] += sum(
         int(verbrauch[f]) for f in TOKEN_FELDER
-        if isinstance(verbrauch.get(f), (int, float))
+        # isfinite (Review N): float("inf") aus einer manipulierten
+        # Response ließe int() mit OverflowError das ganze Panel killen.
+        if isinstance(verbrauch.get(f), (int, float)) and math.isfinite(verbrauch[f])
     )
     kosten = verbrauch.get("total_cost_usd")
-    if isinstance(kosten, (int, float)):
+    if isinstance(kosten, (int, float)) and math.isfinite(kosten):
         summe["kosten"] += float(kosten)
 
 
@@ -91,13 +94,20 @@ def aggregiere(responses: list[dict[str, Any]],
 
 def lade(agent: str, schwelle: int = 0) -> dict[str, Any]:
     """Aggregat direkt aus der Outbox eines Agenten (für den Planer)."""
+    import time as _zeit
+
+    # mtime-Vorfilter (Review P2): fürs 5-h-Fenster reicht der letzte Tag —
+    # 30 Tage Task-Ergebnisse zu parsen blockierte den Planer-Tick spürbar.
+    grenze = _zeit.time() - 2 * 86400
     responses: list[dict[str, Any]] = []
     outbox = MAILBOX_ROOT / agent / "outbox"
     if outbox.is_dir():
         for p in outbox.glob("*-response.json"):
             try:
+                if p.stat().st_mtime < grenze:
+                    continue
                 responses.append(json.loads(p.read_text(encoding="utf-8")))
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 continue
     return aggregiere(responses, schwelle=schwelle)
 

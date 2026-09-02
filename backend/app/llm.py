@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 import urllib.request
 from typing import Any, Awaitable, Callable
 
@@ -193,7 +194,7 @@ def _ollama_call_sync(cfg: dict, system: str, messages: list[dict], tools: list[
         data = json.loads(resp.read().decode("utf-8"))
     msg = data.get("message", {})
     tool_calls = []
-    for i, tc in enumerate(msg.get("tool_calls", []) or []):
+    for tc in msg.get("tool_calls", []) or []:
         fn = tc.get("function", {})
         args = fn.get("arguments", {})
         if isinstance(args, str):
@@ -201,7 +202,11 @@ def _ollama_call_sync(cfg: dict, system: str, messages: list[dict], tools: list[
                 args = json.loads(args)
             except json.JSONDecodeError:
                 args = {}
-        tool_calls.append({"id": f"call_{i}", "name": fn.get("name"), "input": args})
+        # Eindeutige ID statt Rundenzähler (Review N): "call_0" kollidierte
+        # rundenübergreifend — repariere_history hielt einen offenen Call
+        # dann fälschlich für beantwortet (Provider-Wechsel-Falle).
+        tool_calls.append({"id": f"call_{uuid.uuid4().hex[:12]}",
+                           "name": fn.get("name"), "input": args})
     return {"text": msg.get("content") or "", "tool_calls": tool_calls}
 
 

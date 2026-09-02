@@ -192,6 +192,8 @@ def add_ui_connection(
         {
             "name": name,
             "description": description or f"über das Dashboard angelegt",
+            # role/mode wertet derzeit niemand aus (Review N) — sie bleiben
+            # als informative Felder im YAML (Vorwärtskompatibilität).
             "role": "worker",
             "mode": "mailbox",
             "connection": {

@@ -474,16 +474,22 @@ class Mailbox:
                 continue
             if zu_frueh(env):
                 continue  # geplant (St.2): liegen lassen, bis die Zeit kommt
+            # Claim + Stempel unter dem Mailbox-Lock (Review N): das
+            # os.replace ist für sich atomar, aber der Stempel-Write
+            # konnte mit einem Server-Rückschreiber kollidieren. Das
+            # yield bleibt bewusst AUSSERHALB — der Consumer arbeitet
+            # Minuten, so lange darf niemand die Mailbox sperren.
             claimed = self.processing / p.name
-            try:
-                os.replace(p, claimed)  # atomar -> exklusiver Anspruch
-            except FileNotFoundError:
-                continue
-            env["claimed_at"] = _now()
-            try:
-                atomic_write_json(claimed, env)
-            except OSError:
-                pass  # Stempel ist Diagnose, kein Grund den Task fallenzulassen
+            with self._lock():
+                try:
+                    os.replace(p, claimed)  # atomar -> exklusiver Anspruch
+                except FileNotFoundError:
+                    continue
+                env["claimed_at"] = _now()
+                try:
+                    atomic_write_json(claimed, env)
+                except OSError:
+                    pass  # Stempel ist Diagnose, kein Grund den Task fallenzulassen
             yield claimed.name, env
 
     def task_offen(self, task_id: str) -> bool:
@@ -861,7 +867,17 @@ class Mailbox:
                     pass
         ziel = (frage or {}).get("sender")
         # Lock wieder frei — der Fragesteller nimmt seinen eigenen (s.o.).
-        gescheitert = Mailbox(self.root, ziel).verwerfe_frage(question_id, grund) if ziel else []
+        try:
+            gescheitert = (
+                Mailbox(self.root, ziel).verwerfe_frage(question_id, grund)
+                if ziel else []
+            )
+        except (OSError, ValueError) as exc:
+            # Review N: die Frage IST zu diesem Zeitpunkt archiviert — ein
+            # Fehlschlag beim Aufräumen des Fragestellers darf daraus kein
+            # 500 machen (das UI zeigte "Fehler", obwohl das Schließen
+            # gelang; den geparkten Task fängt später requeue_stale).
+            gescheitert = [f"aufräumen fehlgeschlagen: {exc}"]
         return {
             "to": ziel,
             "frage_archiviert": frage is not None,

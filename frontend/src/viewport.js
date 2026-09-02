@@ -22,6 +22,13 @@
 
 const SCHWELLE = 120; // px Höhenverlust, ab dem wir von "Tastatur" ausgehen
 
+// Nur auf Touch-Geräten gibt es eine Bildschirmtastatur (Review N): am
+// Desktop war ein kleiner gezogenes Browserfenster > SCHWELLE px sonst
+// ein "Tastatur zu" — und riss den Fokus aus dem Eingabefeld.
+const TOUCH =
+  typeof window !== "undefined" &&
+  window.matchMedia("(pointer: coarse)").matches;
+
 let hoechste = 0;
 let offen = false;
 
@@ -50,7 +57,7 @@ export function initViewport() {
     hoechste = Math.max(hoechste, hoehe);
     const jetztOffen = hoehe < hoechste - SCHWELLE;
 
-    if (offen && !jetztOffen) {
+    if (offen && !jetztOffen && TOUCH) {
       // Tastatur ist gerade verschwunden — Fokus abgeben, sonst klappt sie
       // beim nächsten Tap von selbst wieder auf.
       tastaturSchliessen();

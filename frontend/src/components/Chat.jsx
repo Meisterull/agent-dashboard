@@ -1,3 +1,4 @@
+import { lsGet, lsSet, lsDel } from "../speicher";
 import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -117,7 +118,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   // Beim Start: Session-Liste laden + letzte Session wiederherstellen
   useEffect(() => {
     refreshSessions();
-    const last = localStorage.getItem("chat-session");
+    const last = lsGet("chat-session");
     if (last) openSession(last);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -130,10 +131,10 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
         setMessages(d.messages);
         setError(null);
         setSessionId(id);
-        localStorage.setItem("chat-session", id);
+        lsSet("chat-session", id);
       })
       .catch(() => {
-        localStorage.removeItem("chat-session");
+        lsDel("chat-session");
       });
   }
 
@@ -142,7 +143,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     setSessionId(null);
     setMessages([]);
     setError(null);
-    localStorage.removeItem("chat-session");
+    lsDel("chat-session");
   }
 
   // Verlauf löschen (Endpunkt gibt es seit jeher, nur den Knopf nicht).
@@ -177,8 +178,17 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
   useEffect(() => {
     const parameter = new URLSearchParams(window.location.search);
     const entwurf = parameter.get("entwurf");
-    if (!entwurf) return;
-    if (inputRef.current) {
+    const teilenFehler = parameter.get("teilen_fehler");
+    if (!entwurf && !teilenFehler) return;
+    // Review P2: der Service Worker verschluckte Upload-Fehler beim Teilen —
+    // man glaubte, die Datei sei angehängt. Er meldet sie jetzt per Parameter.
+    if (teilenFehler)
+      setError(
+        t(
+          "Geteilte Dateien konnten nicht hochgeladen werden — bitte im Chat neu anhängen.",
+        ),
+      );
+    if (entwurf && inputRef.current) {
       inputRef.current.value = entwurf;
       setCanSend(true);
       setZeilen(Math.min(6, Math.max(2, entwurf.split("\n").length + 1)));
@@ -187,6 +197,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     // Parameter wieder aus der Adresse nehmen, sonst steht der Entwurf beim
     // nächsten Neuladen erneut da.
     parameter.delete("entwurf");
+    parameter.delete("teilen_fehler");
     const rest = parameter.toString();
     window.history.replaceState(
       {},
@@ -268,7 +279,7 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
       // Antwort da; nur hineinmischen dürfen wir sie nicht.
       if (viewRef.current !== view) return;
       setSessionId(data.sessionId);
-      localStorage.setItem("chat-session", data.sessionId);
+      lsSet("chat-session", data.sessionId);
       if (data.aborted) {
         // Abgebrochen: die reparierte Wahrheit (inkl. bereits ausgeführter
         // Tools) liegt serverseitig — neu laden statt raten.
@@ -290,7 +301,11 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
         m.length && m[m.length - 1].role === "user" ? m.slice(0, -1) : m,
       );
       if (inputRef.current && !inputRef.current.value) {
-        inputRef.current.value = text;
+        // volltext statt text (Review P2): die Anhänge sind zu diesem
+        // Zeitpunkt schon hochgeladen — ohne die "Anhänge:"-Zeile wären
+        // ihre Pfade beim erneuten Senden verloren.
+        inputRef.current.value = volltext;
+        setZeilen(Math.min(6, Math.max(2, volltext.split("\n").length)));
         setCanSend(true);
       }
     } finally {

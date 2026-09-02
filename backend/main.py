@@ -274,8 +274,11 @@ def _lock_for(session_id: str) -> asyncio.Lock:
     if len(_locks) > 200:
         # Ohne Aufräumen wächst der Dict mit jeder je gesehenen Session-ID.
         # Ungenutzte Locks (niemand wartet, keiner hält) dürfen weg.
+        # Review N: zwischen release() und Aufwachen des Wartenden ist ein
+        # Lock kurz "unlocked", obwohl jemand ansteht — der bekäme sonst ein
+        # verwaistes Lock, und ein neuer Request liefe parallel in den Turn.
         for sid, l in [(s, x) for s, x in _locks.items() if s != session_id]:
-            if not l.locked():
+            if not l.locked() and not getattr(l, "_waiters", None):
                 _locks.pop(sid, None)
     return lock
 
@@ -351,7 +354,29 @@ def _read_jsons(folder: Path) -> list[dict[str, Any]]:
         for p in sorted(folder.glob("*.json")):
             try:
                 out.append(json.loads(p.read_text(encoding="utf-8")))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                # Review N: EINE nicht-UTF-8-Datei ließ sonst /api/agents/*,
+                # /api/questions … mit 500 antworten — Panel tot für alle.
+                continue
+    return out
+
+
+def _lese_outbox(ordner: Path, tage: float = 8.0) -> list[dict[str, Any]]:
+    """Outbox mit mtime-Vorfilter (Review P2): das Panel pollt alle 8 s je
+    Agent, und 30 Tage ungekürzte Task-Ergebnisse zu parsen ruckelte spürbar.
+    8 Tage decken die Anzeige und das 7-Tage-Verbrauchsfenster; das ältere
+    Archiv bleibt auf der Platte (Rotation: MAILBOX_ARCHIV_TAGE)."""
+    import time as _zeit
+
+    grenze = _zeit.time() - tage * 86400
+    out: list[dict[str, Any]] = []
+    if ordner.exists():
+        for p in sorted(ordner.glob("*.json")):
+            try:
+                if p.stat().st_mtime < grenze:
+                    continue
+                out.append(json.loads(p.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 continue
     return out
 
@@ -359,6 +384,12 @@ def _read_jsons(folder: Path) -> list[dict[str, Any]]:
 @app.get("/api/agents/{name}/tasks")
 async def agent_tasks(name: str) -> dict:
     base = _agent_base(name)
+    # to_thread (Review P2): der 8-s-Poll je Agent parste Inbox + komplette
+    # Outbox synchron im Event-Loop — Terminals ruckelten mit.
+    return await asyncio.to_thread(_agent_tasks_sync, name, base)
+
+
+def _agent_tasks_sync(name: str, base: Path) -> dict:
     roh = _read_jsons(base / "inbox")
     inbox = [e for e in roh if e.get("kind", "task") == "task"]
     # Beanspruchte Tasks (.processing/) sichtbar machen — als "running";
@@ -378,7 +409,7 @@ async def agent_tasks(name: str) -> dict:
         key=lambda m: m.get("created_at") or "",
         reverse=True,  # neueste zuerst — anders als Tasks, die FIFO abgearbeitet werden
     )
-    outbox = _read_jsons(base / "outbox")
+    outbox = _lese_outbox(base / "outbox")
     return {
         "agent": name,
         "inbox": inbox + claimed,
@@ -579,7 +610,8 @@ async def chat(body: ChatIn) -> ChatOut:
         )
     session_id = body.session_id or uuid.uuid4().hex
     async with _lock_for(session_id):
-        messages = chat_store.load(session_id)
+        # SQLite-I/O nicht im Event-Loop (Review P2)
+        messages = await asyncio.to_thread(chat_store.load, session_id)
         messages.append({"role": "user", "content": body.message})
         try:
             async with mcp_session() as (session, tools):
@@ -589,25 +621,30 @@ async def chat(body: ChatIn) -> ChatOut:
             # (send_task!) sind echte Seiteneffekte. Würfe man die Runde weg,
             # wüsste der Orchestrator beim nächsten Turn nichts davon und
             # verschickte womöglich alles ein zweites Mal.
-            chat_store.save(session_id, llm.repariere_history(messages))
+            await asyncio.to_thread(
+                chat_store.save, session_id, llm.repariere_history(messages)
+            )
             raise HTTPException(502, f"Orchestrator-Fehler: {exc}") from exc
-        chat_store.save(session_id, messages)
+        await asyncio.to_thread(chat_store.save, session_id, messages)
     return ChatOut(session_id=session_id, reply=result["text"], tool_calls=result["tool_calls"])
 
 
 @app.get("/api/chat/sessions")
 async def chat_sessions() -> dict:
-    return {"sessions": chat_store.list_sessions()}
+    return {"sessions": await asyncio.to_thread(chat_store.list_sessions)}
 
 
 @app.get("/api/chat/{session_id}")
 async def chat_history(session_id: str) -> dict:
-    return {"session_id": session_id, "messages": chat_store.display_messages(session_id)}
+    return {
+        "session_id": session_id,
+        "messages": await asyncio.to_thread(chat_store.display_messages, session_id),
+    }
 
 
 @app.delete("/api/chat/{session_id}")
 async def chat_delete(session_id: str) -> dict:
-    return {"deleted": chat_store.delete_session(session_id)}
+    return {"deleted": await asyncio.to_thread(chat_store.delete_session, session_id)}
 
 
 # --- Chat-Streaming (F3) ----------------------------------------------------
@@ -649,7 +686,7 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
     async def lauf() -> None:
         try:
             async with _lock_for(session_id):
-                messages = chat_store.load(session_id)
+                messages = await asyncio.to_thread(chat_store.load, session_id)
                 messages.append({"role": "user", "content": body.message})
                 try:
                     async with mcp_session() as (session, tools):
@@ -661,16 +698,20 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
                 except llm.TurnAbbruch:
                     # Bis hierher ausgeführte Tools sind echte Seiteneffekte —
                     # History reparieren und sichern statt wegwerfen.
-                    chat_store.save(session_id, llm.repariere_history(messages))
+                    await asyncio.to_thread(
+                        chat_store.save, session_id, llm.repariere_history(messages)
+                    )
                     await queue.put({"type": "aborted", "session_id": session_id})
                     return
                 except Exception as exc:  # noqa: BLE001 — wie /api/chat: Stand sichern
-                    chat_store.save(session_id, llm.repariere_history(messages))
+                    await asyncio.to_thread(
+                        chat_store.save, session_id, llm.repariere_history(messages)
+                    )
                     await queue.put(
                         {"type": "error", "detail": f"Orchestrator-Fehler: {exc}"}
                     )
                     return
-                chat_store.save(session_id, messages)
+                await asyncio.to_thread(chat_store.save, session_id, messages)
                 await queue.put(
                     {
                         "type": "done",
@@ -883,13 +924,36 @@ async def remote_write(name: str, body: FileWriteIn) -> dict:
         raise HTTPException(502, str(exc)) from exc
 
 
+async def _remote_strom(name: str, path: str):
+    """Ersten Chunk VOR dem Response-Start holen (Review P2): scheitert der
+    SSH-Weg erst beim Streamen, gäbe es sonst ein 200 mit leerem Body — der
+    Browser zeigte eine 0-Byte-Datei, und der Fehler war weg."""
+    quelle = remote_files.stream_file(name, path)
+    try:
+        erster = await quelle.__anext__()
+    except StopAsyncIteration:
+        erster = None  # leere Datei: legitim
+
+    async def strom():
+        if erster is not None:
+            yield erster
+            async for teil in quelle:
+                yield teil
+
+    return strom()
+
+
 @app.get("/api/remote/{name}/download")
 async def remote_download(name: str, path: str) -> StreamingResponse:
     import posixpath
 
     filename = posixpath.basename(path) or "download"
+    try:
+        strom = await _remote_strom(name, path)
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
     return StreamingResponse(
-        remote_files.stream_file(name, path),
+        strom,
         media_type="application/octet-stream",
         headers=_attachment(filename),
     )
@@ -908,8 +972,12 @@ async def remote_raw(name: str, path: str) -> StreamingResponse:
 
     filename = posixpath.basename(path) or "download"
     typ = _medientyp(filename)
+    try:
+        strom = await _remote_strom(name, path)
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
     return StreamingResponse(
-        remote_files.stream_file(name, path),
+        strom,
         media_type=typ,
         headers=_inline(filename, typ),
     )
@@ -1015,6 +1083,9 @@ async def connection_create(body: ConnectionIn) -> dict:
 @app.get("/api/connections/{name}/pubkey")
 async def connection_pubkey(name: str) -> dict:
     """Public Key + Einrichtungsbefehl einer UI-Verbindung erneut anzeigen."""
+    if not _CONN_NAME_RE.match(name):
+        # Review N: der Name landet in Schlüssel-Dateipfaden.
+        raise HTTPException(400, "Name: nur Buchstaben/Zahlen/_/-, max. 32 Zeichen")
     pub_path = KEYS_DIR / f"{name}_key.pub"
     if not pub_path.exists():
         raise HTTPException(404, "kein Dashboard-verwalteter Schlüssel für diese Verbindung")
@@ -1029,6 +1100,9 @@ async def connection_pubkey(name: str) -> dict:
 @app.delete("/api/connections/{name}")
 async def connection_delete(name: str) -> dict:
     """UI-verwaltete Verbindung entfernen (handgepflegte agents.yaml bleibt tabu)."""
+    if not _CONN_NAME_RE.match(name):
+        # Review N: der Name landet in Schlüssel-Dateipfaden (unlink!).
+        raise HTTPException(400, "Name: nur Buchstaben/Zahlen/_/-, max. 32 Zeichen")
     removed = remove_ui_connection(name)
     if removed is None:
         raise HTTPException(
@@ -1216,7 +1290,10 @@ async def push_key() -> dict:
 @app.post("/api/push/subscribe")
 async def push_subscribe(body: PushSubIn) -> dict:
     try:
-        n = push.add_subscription(body.model_dump(exclude_none=True))
+        # to_thread (Review N): darunter liegt ein threading.Lock + Datei-I/O.
+        n = await asyncio.to_thread(
+            push.add_subscription, body.model_dump(exclude_none=True)
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "subscriptions": n}
@@ -1224,7 +1301,7 @@ async def push_subscribe(body: PushSubIn) -> dict:
 
 @app.post("/api/push/unsubscribe")
 async def push_unsubscribe(body: PushUnsubIn) -> dict:
-    return {"removed": push.remove_subscription(body.endpoint)}
+    return {"removed": await asyncio.to_thread(push.remove_subscription, body.endpoint)}
 
 
 @app.post("/api/push/test")
@@ -1363,7 +1440,7 @@ async def _mcp_weiterleiten(request: Request, agent: str, rest: str = "") -> Res
         # den vollständigen Rumpf gewartet, bliebe jede Server-Meldung liegen,
         # bis die Verbindung endet.
         antwort = await client.send(anfrage, stream=True)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
         await client.aclose()
         return JSONResponse(
             {"detail": f"MCP-Kanal nicht erreichbar: {exc}"}, status_code=502
@@ -1374,8 +1451,10 @@ async def _mcp_weiterleiten(request: Request, agent: str, rest: str = "") -> Res
             async for stueck in antwort.aiter_raw():
                 yield stueck
         finally:
-            await antwort.aclose()
-            await client.aclose()
+            try:
+                await antwort.aclose()
+            finally:
+                await client.aclose()
 
     durchreichen = {
         k: v

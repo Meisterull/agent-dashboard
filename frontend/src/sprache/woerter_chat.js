@@ -67,4 +67,11 @@ export default {
   "Verbindung gestört": "Connection disrupted",
   "{0} Rückfrage zwischen Agenten": "{0} question between agents",
   "{0} Rückfragen zwischen Agenten": "{0} questions between agents",
+  "Orchestrator-Fehler": "Orchestrator error",
+  "Stream abgerissen — der Orchestrator arbeitet weiter; die Antwort erscheint danach im Verlauf (Session neu öffnen).":
+    "Stream interrupted — the orchestrator keeps working; the reply will appear in the history afterwards (reopen the session).",
+  "Geteilte Dateien konnten nicht hochgeladen werden — bitte im Chat neu anhängen.":
+    "Shared files could not be uploaded — please attach them again in the chat.",
+  "Fragen, die Agenten untereinander stellen — beantworten kann sie auch der gefragte Agent selbst":
+    "Questions agents ask each other — the asked agent itself can answer them too",
 };

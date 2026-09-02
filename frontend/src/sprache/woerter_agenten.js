@@ -131,7 +131,6 @@ export default {
   "Rolle „{0}“ endgültig löschen?": "Delete role “{0}” permanently?",
   "noch nicht gespeichert": "not saved yet",
   "Laden fehlgeschlagen: {0}": "Loading failed: {0}",
-  "Löschen fehlgeschlagen: {0}": "Deleting failed: {0}",
 
   // ZeitplaeneDialog.jsx + ⏰-Knopf/Badge im AgentsPanel (St.2)
   "Zeitpläne": "Schedules",

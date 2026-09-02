@@ -31,6 +31,9 @@ export default function WorkspaceViews({
   onClose,
 }) {
   const [name, setName] = useState("");
+  // GBoard-Regel (Review P2): kein value-Prop auf Texteingaben — der
+  // key erzwingt nach dem Speichern ein frisches, leeres Feld.
+  const [feldV, setFeldV] = useState(0);
   const namen = Object.keys(views).sort((a, b) => a.localeCompare(b, "de"));
   const sauber = name.trim();
   const ueberschreibt = sauber && Object.hasOwn(views, sauber);
@@ -39,6 +42,7 @@ export default function WorkspaceViews({
     if (!sauber) return;
     onSpeichern(sauber);
     setName("");
+    setFeldV((v) => v + 1);
   };
 
   // Rückfrage, weil das ✕ direkt neben „Laden“ sitzt: ein Fehlgriff wäre die
@@ -60,7 +64,8 @@ export default function WorkspaceViews({
     <Modal title={t("Ansichten")} onClose={onClose}>
       <div className="flex gap-2">
         <input
-          value={name}
+          key={feldV}
+          defaultValue=""
           autoFocus
           maxLength={40}
           onChange={(e) => setName(e.target.value)}

@@ -38,6 +38,16 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))" > "$ZIEL"
 chmod 600 "$ZIEL"
 
 TOKEN="$(cat "$ZIEL")"
+
+# Der API-Prozess im Container läuft als uid 10001 (app) und muss die
+# Datei LESEN können — mit Eigentümer $USER und chmod 600 war der
+# dokumentierte Weg sonst fail-closed tot (Review P2).
+if ! chown 10001:10001 "$ZIEL" 2>/dev/null; then
+    if ! sudo chown 10001:10001 "$ZIEL"; then
+        echo "WARNUNG: chown fehlgeschlagen — bitte manuell:" >&2
+        echo "  sudo chown 10001:10001 $ZIEL" >&2
+    fi
+fi
 cat <<HINWEIS
 
 Token für '$NAME' liegt in:

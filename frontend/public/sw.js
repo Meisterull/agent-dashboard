@@ -12,12 +12,23 @@ self.addEventListener("push", (event) => {
   // Antworten lässt sich vom Sperrbildschirm aus erledigen. Ohne `optionen`
   // bleibt es beim Öffnen — wer eine Freitextfrage stellt oder eine mit
   // schweren Folgen, bekommt bewusst keinen Ein-Tipp-Weg.
-  const optionen = Array.isArray(d.optionen) ? d.optionen.slice(0, 2) : [];
+  // maxActions respektieren (Review P2): Chrome/Android erlaubt meist nur 2
+  // Knöpfe — der dritte wurde still verworfen, und WELCHER, entschied der
+  // Browser. Antwort-Knöpfe haben Vorrang; Tippen auf die Meldung selbst
+  // öffnet die App ohnehin. "Öffnen" folgt der Browsersprache (der Service
+  // Worker kommt an die App-Spracheinstellung im localStorage nicht heran).
+  const platz =
+    (typeof Notification !== "undefined" && Notification.maxActions) || 2;
+  const oeffnenTitel = (self.navigator?.language || "de").startsWith("de")
+    ? "Öffnen"
+    : "Open";
+  const optionen = Array.isArray(d.optionen) ? d.optionen.slice(0, platz) : [];
   const actions = optionen.map((o) => ({
     action: `antwort:${o}`,
     title: o.charAt(0).toUpperCase() + o.slice(1),
   }));
-  if (actions.length) actions.push({ action: "oeffnen", title: "Öffnen" });
+  if (actions.length && actions.length < platz)
+    actions.push({ action: "oeffnen", title: oeffnenTitel });
 
   event.waitUntil(
     (async () => {
@@ -102,6 +113,49 @@ self.addEventListener("notificationclick", (event) => {
 // Upload würde also an der Anmeldung scheitern. Der Service Worker liest die
 // Daten stattdessen selbst aus und lädt sie mit einem eigenen fetch hoch, das
 // als same-origin gilt und das Cookie mitbringt.
+// Der Browser darf eine Push-Subscription jederzeit erneuern (Ablauf,
+// Dienst-Rotation). Ohne diesen Handler war Push danach STILL tot, bis
+// jemand zufällig die Settings öffnete (Review P2): neu abonnieren und die
+// frische Adresse ans Backend melden. Läuft die Session gerade ab, greift
+// weiterhin der Settings-Besuch.
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(
+    (async () => {
+      try {
+        const r = await fetch("/api/push/key", { credentials: "same-origin" });
+        if (!r.ok) return;
+        const d = await r.json();
+        const key = d.key || d.public_key;
+        if (!key) return;
+        const b64 = (key + "=".repeat((4 - (key.length % 4)) % 4))
+          .replace(/-/g, "+")
+          .replace(/_/g, "/");
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const sub = await self.registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: bytes,
+        });
+        await fetch("/api/push/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(sub.toJSON()),
+          credentials: "same-origin",
+        });
+        const alt = event.oldSubscription?.endpoint;
+        if (alt && alt !== sub.endpoint)
+          await fetch("/api/push/unsubscribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ endpoint: alt }),
+            credentials: "same-origin",
+          });
+      } catch {
+        /* nächster Settings-Besuch repariert die Registrierung */
+      }
+    })(),
+  );
+});
+
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(clients.claim()));
 
@@ -113,27 +167,40 @@ async function geteiltesAblegen(request) {
     .join(" ");
 
   let pfade = [];
+  let uploadFehler = false;
   if (dateien.length) {
     const tag = new Date().toISOString().slice(0, 10);
     const form = new FormData();
     for (const f of dateien) form.append("files", f, f.name || "geteilt");
-    const antwort = await fetch(
-      `/api/files/upload?path=${encodeURIComponent("uploads/chat/" + tag)}`,
-      { method: "POST", body: form, credentials: "same-origin" },
-    );
-    if (antwort.ok) {
-      const d = await antwort.json();
-      pfade = (d.saved || []).map((s) => (typeof s === "string" ? s : s.path));
+    try {
+      const antwort = await fetch(
+        `/api/files/upload?path=${encodeURIComponent("uploads/chat/" + tag)}`,
+        { method: "POST", body: form, credentials: "same-origin" },
+      );
+      if (antwort.ok) {
+        const d = await antwort.json();
+        pfade = (d.saved || []).map((s) =>
+          typeof s === "string" ? s : s.path,
+        );
+      } else {
+        uploadFehler = true;
+      }
+    } catch {
+      uploadFehler = true;
     }
   }
 
   // Als fertigen Entwurf in den Chat geben: Der Nutzer ergänzt seine Frage
   // und schickt ab. Die Anhänge sind zu diesem Zeitpunkt bereits abgelegt.
+  // Ein gescheiterter Upload (Sitzung abgelaufen, Server weg) wird NICHT
+  // verschluckt (Review P2): der Parameter lässt den Chat eine übersetzte
+  // Meldung zeigen, statt dass man an angehängte Dateien glaubt.
   const entwurf = [text, pfade.length ? `Anhänge: ${pfade.join(", ")}` : ""]
     .filter(Boolean)
     .join("\n\n");
   return Response.redirect(
-    `/?tab=chat&entwurf=${encodeURIComponent(entwurf)}`,
+    `/?tab=chat&entwurf=${encodeURIComponent(entwurf)}` +
+      (uploadFehler ? "&teilen_fehler=1" : ""),
     303,
   );
 }
@@ -143,7 +210,7 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method === "POST" && url.pathname === "/share") {
     event.respondWith(
       geteiltesAblegen(event.request).catch(() =>
-        Response.redirect("/?tab=chat", 303),
+        Response.redirect("/?tab=chat&teilen_fehler=1", 303),
       ),
     );
   }

@@ -40,6 +40,12 @@ export function aktuelleSprache() {
 
 const EN = aktuelleSprache() === "en";
 
+// <html lang> mitziehen (Review P2): index.html sagt statisch lang="de" —
+// Screenreader und Browser-Übersetzer hielten die englische Oberfläche
+// sonst für Deutsch.
+if (typeof document !== "undefined")
+  document.documentElement.lang = EN ? "en" : "de";
+
 /** Übersetzt einen deutschen UI-Text; {0}, {1}, … werden durch `werte` ersetzt. */
 export function t(text, ...werte) {
   let out = EN ? (WOERTER[text] ?? text) : text;

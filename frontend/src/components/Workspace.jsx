@@ -125,11 +125,17 @@ export default function Workspace({
         }
       aktuell.forEach((id) => gesehenRef.current.add(id));
       if (changed) {
-        try {
-          localStorage.setItem(LS_KEY, JSON.stringify(out));
-        } catch {
-          /* voller/gesperrter Storage — Layout gilt trotzdem für die Sitzung */
-        }
+        // Seiteneffekt NICHT im Updater (Review N): React darf Updater
+        // doppelt ausführen (StrictMode) — der Write wandert in einen
+        // Microtask; doppelt ausgeführt schriebe er nur denselben Wert.
+        const persistiere = out;
+        queueMicrotask(() => {
+          try {
+            localStorage.setItem(LS_KEY, JSON.stringify(persistiere));
+          } catch {
+            /* voller/gesperrter Storage — Layout gilt trotzdem für die Sitzung */
+          }
+        });
       }
       return changed ? out : l;
     });

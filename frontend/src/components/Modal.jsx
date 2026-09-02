@@ -4,17 +4,33 @@ import { useEffect, useRef } from "react";
 // passieren: sonst schließt ein Klick, der in einem Eingabefeld beginnt und
 // beim Markieren über den Rand hinaus endet, den Dialog samt Eingaben.
 // Escape schließt zusätzlich (erwartet man bei jedem Dialog).
+
+// Escape darf nur den OBERSTEN Dialog schließen (Review P2): jede Instanz
+// hängt ihren eigenen keydown-Listener an — ohne diesen Stapel schloss EIN
+// Escape den Bestätigungsdialog UND den Dialog darunter, samt Eingaben.
+const offeneDialoge = [];
+
 export default function Modal({ title, onClose, children, wide }) {
   const downAufBackdrop = useRef(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
   useEffect(() => {
+    const eintrag = Symbol("modal");
+    offeneDialoge.push(eintrag);
     const onKey = (e) => {
-      if (e.key === "Escape") onCloseRef.current?.();
+      if (
+        e.key === "Escape" &&
+        offeneDialoge[offeneDialoge.length - 1] === eintrag
+      )
+        onCloseRef.current?.();
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      const i = offeneDialoge.indexOf(eintrag);
+      if (i >= 0) offeneDialoge.splice(i, 1);
+      document.removeEventListener("keydown", onKey);
+    };
   }, []);
 
   return (

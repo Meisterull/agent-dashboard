@@ -1,3 +1,4 @@
+import { lsGet, lsSet } from "../speicher";
 import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -44,6 +45,9 @@ export const DEFAULT_SID = "main";
 // Zwischenablage. `term` optional: wenn gesetzt, geht die Tastatur danach
 // zurück ans Terminal.
 function copyFallback(text, term) {
+  // Review N: term.focus() springt ans Pufferende — wer oben im Verlauf
+  // etwas kopiert, verlor seine Leseposition. Merken und zurückspringen.
+  const merkeY = term?.buffer?.active?.viewportY;
   const ta = document.createElement("textarea");
   ta.value = text;
   ta.style.position = "fixed";
@@ -58,6 +62,8 @@ function copyFallback(text, term) {
   }
   ta.remove();
   term?.focus();
+  if (term && typeof merkeY === "number" && typeof term.scrollToLine === "function")
+    term.scrollToLine(merkeY);
 }
 
 // writeText kann trotz vorhandener API scheitern (Fokus, Berechtigung,
@@ -79,7 +85,7 @@ const SCHRIFT_MIN = 9;
 const SCHRIFT_MAX = 20;
 
 function leseSchrift() {
-  const gemerkt = Number(localStorage.getItem("term.fontSize"));
+  const gemerkt = Number(lsGet("term.fontSize"));
   return gemerkt >= SCHRIFT_MIN && gemerkt <= SCHRIFT_MAX ? gemerkt : 13;
 }
 
@@ -146,7 +152,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       Math.max(SCHRIFT_MIN, (term.options.fontSize || 13) + schritt),
     );
     term.options.fontSize = neue;
-    localStorage.setItem("term.fontSize", String(neue));
+    lsSet("term.fontSize", String(neue));
     fitRef.current?.(); // fittet und meldet die neue Größe an die Gegenseite
   };
 
@@ -272,7 +278,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       if (gone) return;
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
       const ws = new WebSocket(
-        `${proto}://${window.location.host}/ws/ssh/${encodeURIComponent(name)}?sid=${sid}`,
+        `${proto}://${window.location.host}/ws/ssh/${encodeURIComponent(name)}?sid=${encodeURIComponent(sid)}`,
       );
       wsRef.current = ws;
 

@@ -114,6 +114,11 @@ def deliver_response(root: Path, sender: str, agent: str, task_id: str,
     bleibt die Outbox-Response die Quelle der Wahrheit."""
     if not sender or not AGENT_NAME_RE.fullmatch(sender) or sender == agent:
         return
+    # Review N: nur zustellen, wenn die Mailbox des Auftraggebers existiert —
+    # atomic_write_json legt sonst per mkdir eine Geister-Mailbox an, die
+    # list_agents ab dann als Agenten zählt.
+    if not (root / sender / "inbox").is_dir():
+        return
     rid = f"response-{uuid.uuid4().hex[:8]}"
     env = {
         "id": rid, "kind": "response", "sender": agent, "to": sender,
@@ -317,8 +322,13 @@ def instanz_lock(agent: str):
     try:
         pfad.parent.mkdir(parents=True, exist_ok=True)
         datei = open(pfad, "a+", encoding="utf-8")
-    except OSError:
-        return None  # kein Home/kein Schreibrecht: lieber laufen als blockieren
+    except OSError as exc:
+        # Review N: kein Home/kein Schreibrecht heißt NICHT "läuft schon" —
+        # ehrlich melden und ohne Lock weiterlaufen (wie der Kommentar es
+        # immer versprach; vorher endete der Start mit der falschen Meldung).
+        sicher_print(f"[{now()}] WARNUNG: Instanz-Lock nicht möglich ({exc}) — "
+                     f"laufe OHNE Doppelstart-Schutz weiter.")
+        return "OHNE_LOCK"
     try:
         if os.name == "posix":
             import fcntl
@@ -349,7 +359,9 @@ def kurz(text: str, n: int) -> str:
 
 def tool_hinweis(block: dict) -> str:
     """Knappster nützlicher Parameter eines Tool-Aufrufs für die Statuszeile."""
-    inp = block.get("input") or {}
+    inp = block.get("input")
+    if not isinstance(inp, dict):  # Review P2: kaputtes Event, kein Crash
+        return ""
     for key in ("description", "command", "file_path", "path", "pattern",
                 "prompt", "query", "url"):
         if inp.get(key):
@@ -397,6 +409,26 @@ def baue_claude_cmd(claude_bin: str,
 RANG_PERMISSION = {"plan": 0, "default": 1, "acceptEdits": 2, "bypassPermissions": 3}
 
 
+def _tools_liste(text: "str | None") -> list:
+    """Komma-Split mit Klammertiefe (Review N): `Bash(echo a,b)` zerfiel beim
+    naiven Split in zwei Unsinn-Regeln."""
+    teile, tiefe, akt = [], 0, ""
+    for zeichen in text or "":
+        if zeichen == "," and tiefe == 0:
+            if akt.strip():
+                teile.append(akt.strip())
+            akt = ""
+            continue
+        akt += zeichen
+        if zeichen == "(":
+            tiefe += 1
+        elif zeichen == ")":
+            tiefe = max(0, tiefe - 1)
+    if akt.strip():
+        teile.append(akt.strip())
+    return teile
+
+
 def wirksame_rechte(agent_mode: "str | None", agent_tools: "str | None",
                     rollen_mode: "str | None", rollen_tools: "list | None"
                     ) -> "tuple[str | None, str | None]":
@@ -424,7 +456,7 @@ def wirksame_rechte(agent_mode: "str | None", agent_tools: "str | None",
         elif not agent_mode and rollen_mode in RANG_PERMISSION \
                 and RANG_PERMISSION[rollen_mode] <= RANG_PERMISSION["default"]:
             mode = rollen_mode
-    basis = [t.strip() for t in (agent_tools or "").split(",") if t.strip()]
+    basis = _tools_liste(agent_tools)
     if rollen_tools is None:
         tools = basis
     else:
@@ -555,7 +587,11 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                 continue
             typ = ev.get("type")
             if typ == "assistant":
-                for block in (ev.get("message") or {}).get("content") or []:
+                nachricht = ev.get("message")
+                bloecke = nachricht.get("content") if isinstance(nachricht, dict) else None
+                for block in bloecke or []:
+                    if not isinstance(block, dict):
+                        continue  # Review P2: kaputtes Event darf den Lauf nicht killen
                     if block.get("type") == "tool_use":
                         if block.get("id"):
                             werkzeug_namen[block["id"]] = block.get("name", "?")
@@ -567,7 +603,9 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
             elif typ == "user":
                 # Abgelehnte Werkzeuge sichtbar machen (Issue #19): der Lauf
                 # endet sonst normal, und der Grund steht nur im Fließtext.
-                for block in (ev.get("message") or {}).get("content") or []:
+                nachricht = ev.get("message")
+                bloecke = nachricht.get("content") if isinstance(nachricht, dict) else None
+                for block in bloecke or []:
                     if not (isinstance(block, dict)
                             and block.get("type") == "tool_result"
                             and block.get("is_error")):
@@ -608,7 +646,17 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
         if not vollstaendig or HART.is_set():
             beende_prozessgruppe(proc)
         _vergiss_prozess(proc)
-    rc = proc.wait()
+    # Review P2: Kind schließt stdout, endet aber nicht (D-State, hängender
+    # Tool-Prozess) — ein wait() ohne Deckel hinge hier für immer, und der
+    # Wecker ist zu dem Zeitpunkt schon abbestellt.
+    try:
+        rc = proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        beende_prozessgruppe(proc)
+        try:
+            rc = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            rc = 124
     leser.join(timeout=5)
     for pipe in (proc.stdout, proc.stderr):  # Dauerläufer: keine fds ansammeln
         try:
@@ -730,6 +778,16 @@ class McpClient:
         self.session_id: str | None = None
         self.protocol: str = "2025-03-26"
         self._id = 0
+        # Token-Kanal (Issue #32/Review N): meldet sich der Watcher über
+        # HTTPS statt Tunnel, verlangt der Server einen Bearer-Token.
+        # MCP_TOKEN direkt oder MCP_TOKEN_FILE (Pfad zur .token-Datei).
+        self.token = os.environ.get("MCP_TOKEN") or ""
+        if not self.token and os.environ.get("MCP_TOKEN_FILE"):
+            try:
+                self.token = Path(os.environ["MCP_TOKEN_FILE"]).read_text(
+                    encoding="utf-8").strip()
+            except OSError:
+                self.token = ""
 
     def _post(self, body: dict, erwarte_antwort: bool = True) -> dict | None:
         daten = json.dumps(body).encode("utf-8")
@@ -737,6 +795,8 @@ class McpClient:
         req.add_header("Content-Type", "application/json")
         req.add_header("Accept", "application/json, text/event-stream")
         req.add_header("MCP-Protocol-Version", self.protocol)
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
         if self.session_id:
             req.add_header("Mcp-Session-Id", self.session_id)
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -829,6 +889,12 @@ def liefere_ergebnis(client: "McpClient | None", url: str, task_id: str,
                 "status": status, "log": log,
                 **({"verbrauch": verbrauch} if verbrauch else {}),
             })
+            if isinstance(antwort, dict) and antwort.get("error"):
+                # Review P2: ein Fehler-Dict (Task per ✕ geschlossen, requeued,
+                # ungültige ID) ist KEIN Erfolg — der Zustand ist endgültig,
+                # also nicht sinnlos retryn; das Ergebnis meldet der Aufrufer
+                # sichtbar statt es als "abgeschlossen" zu verbuchen.
+                return None, client, f"Server: {antwort['error']}"
             return antwort, client, None
         except (McpFehler, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
             fehler = f"{type(exc).__name__}: {exc}"
@@ -857,7 +923,7 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
             if client is None:
                 client = McpClient(url)
                 client.connect()
-                print(f"[{now()}] MCP verbunden: {url}", flush=True)
+                sicher_print(f"[{now()}] MCP verbunden: {url}")
                 letzter_fehler = None
             envelopes = client.call("inbox", {"kind": "task"})
             if isinstance(envelopes, dict):
@@ -869,6 +935,19 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                     continue
                 if env.get("error"):
                     raise McpFehler(str(env["error"]))
+                # Geplante Tasks überspringen (Review N): der claim würde eh
+                # mit zu_frueh abgelehnt — das verrauschte nur das Kanal-Log.
+                nicht_vor = env.get("nicht_vor")
+                if nicht_vor:
+                    try:
+                        ziel = datetime.fromisoformat(
+                            str(nicht_vor).replace("Z", "+00:00"))
+                        if ziel.tzinfo is None:
+                            ziel = ziel.astimezone()
+                        if ziel.timestamp() > time.time():
+                            continue
+                    except ValueError:
+                        pass
                 task_id = env.get("id") or env.get("task_id")
                 if not task_id:
                     continue
@@ -884,10 +963,15 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 pm, at = wirksame_rechte(permission_mode, allowed_tools,
                                          claimed.get("rollen_permission_mode"),
                                          claimed.get("rollen_tools"))
-                print(f"[{now()}] {agent}: bearbeite {task_id}"
-                      + (f" (project {projekt})" if projekt else "")
-                      + (f" (rolle {rollen_name})" if rollen_name else ""),
-                      flush=True)
+                sicher_print(f"[{now()}] {agent}: bearbeite {task_id}"
+                             + (f" (project {projekt})" if projekt else "")
+                             + (f" (rolle {rollen_name})" if rollen_name else ""))
+                if claimed.get("rollen_tools") and not at:
+                    # Review P2: leere Schnittmenge sichtbar machen — der Lauf
+                    # scheiterte sonst opak an "Berechtigung verweigert".
+                    sicher_print(f"[{now()}] {agent}: {task_id} — Rolle "
+                                 f"{rollen_name or '?'}: kein Agent-Werkzeug in "
+                                 f"der Schnittmenge, Lauf nutzt nur Auto-Werkzeuge")
                 if with_mcp_hint:
                     instruction = mcp_hint(agent) + instruction
                 def fortschritt(text: str, _tid: str = task_id) -> None:
@@ -939,15 +1023,15 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
             client = None  # Session neu aufbauen
             msg = f"{type(exc).__name__}: {exc}"
             if msg != letzter_fehler:  # nur Zustandswechsel loggen
-                print(f"[{now()}] MCP-Fehler: {msg} — neuer Versuch alle {max(interval, 10):.0f}s",
-                      flush=True)
+                sicher_print(f"[{now()}] MCP-Fehler: {msg} — neuer Versuch "
+                             f"alle {max(interval, 10):.0f}s")
                 letzter_fehler = msg
             if once:
                 return 1
             STOP.wait(max(interval, 10))
             continue
         STOP.wait(interval)
-    print(f"[{now()}] Watcher beendet.", flush=True)
+    sicher_print(f"[{now()}] Watcher beendet.")
     return 0
 
 
@@ -962,7 +1046,20 @@ def inbox_tasks(inbox: Path) -> list[Path]:
     for pfad in inbox.glob("*.json"):
         try:
             env = json.loads(pfad.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError:
+            # Review N: unparsbare Task-Datei verschwand lautlos für immer in
+            # der Inbox (pflege fasst Tasks nicht an, das UI zeigte nichts).
+            # Nach .failed verschieben macht sie sichtbar und beendet die Schleife.
+            failed = inbox / ".failed"
+            try:
+                failed.mkdir(exist_ok=True)
+                os.replace(pfad, failed / pfad.name)
+                sicher_print(f"[{now()}] kaputte Envelope-Datei nach .failed "
+                             f"verschoben: {pfad.name}")
+            except OSError:
+                pass
+            continue
+        except OSError:
             continue
         if not isinstance(env, dict) or env.get("kind", "task") != "task":
             continue
@@ -1026,10 +1123,18 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         task_id = task.get("task_id", claimed.stem)
         sender = task.get("sender") or ""
         root = inbox.parent.parent  # root/<agent>/inbox → Mailbox-Wurzel
-        print(f"[{now()}] {agent}: bearbeite {task_id}", flush=True)
+        sicher_print(f"[{now()}] {agent}: bearbeite {task_id}")
         start = time.monotonic()
         status, err = "error", ""
         verbrauch: dict = {}  # usage/total_cost_usd aus dem result-Event (St.3)
+        if task.get("rollen_tools"):
+            _pm_probe, _at_probe = wirksame_rechte(
+                permission_mode, allowed_tools,
+                task.get("rollen_permission_mode"), task.get("rollen_tools"))
+            if not _at_probe:
+                sicher_print(f"[{now()}] {agent}: {task_id} — Rolle "
+                             f"{task.get('rolle') or '?'}: kein Agent-Werkzeug "
+                             f"in der Schnittmenge, Lauf nutzt nur Auto-Werkzeuge")
         try:
             task["instruction"]  # fehlende instruction soll wie bisher scheitern
             instruction = merge_instruction(task)

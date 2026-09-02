@@ -1,3 +1,4 @@
+import { t } from "./sprache";
 // Zentrale fetch-Helfer. Relative /api-Pfade funktionieren in Dev (Vite-Proxy)
 // und Produktion (nginx).
 
@@ -297,12 +298,14 @@ export async function streamChat(message, sessionId, { onStart, onTool } = {}) {
       else if (d.type === "done")
         return { sessionId: d.session_id, reply: d.reply, toolCalls: d.tool_calls };
       else if (d.type === "aborted") return { sessionId: d.session_id, aborted: true };
-      else if (d.type === "error") throw new Error(d.detail || "Orchestrator-Fehler");
+      else if (d.type === "error") throw new Error(d.detail || t("Orchestrator-Fehler"));
     }
   }
   // Verbindung weg, bevor done/aborted/error kam: der Turn läuft serverseitig
   // weiter und speichert — die Antwort steht danach im Verlauf.
   throw new Error(
-    "Stream abgerissen — der Orchestrator arbeitet weiter; die Antwort erscheint danach im Verlauf (Session neu öffnen).",
+    t(
+      "Stream abgerissen — der Orchestrator arbeitet weiter; die Antwort erscheint danach im Verlauf (Session neu öffnen).",
+    ),
   );
 }

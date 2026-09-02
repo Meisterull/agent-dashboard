@@ -229,10 +229,21 @@ async def _aenderungen() -> AsyncIterator[set[str]]:
             yield agents
 
 
+# Baseline über Wächter-Neustarts hinweg (Review P2): stirbt die Schleife
+# an einem Dateisystem-Schluckauf, darf der Neustart NICHT alles, was in
+# der Lücke einging, als Bestand verbuchen — die needs_confirm-Rückfrage
+# aus genau diesem Moment bekäme sonst nie einen Push.
+_letzter_stand: dict | None = None
+
+
 async def _watch_schleife() -> None:
-    # Baseline OHNE Meldung: was beim Start schon da liegt, hat sein Push-
-    # Fenster gehabt — sonst klingelt jeder Container-Neustart alle Handys.
-    alt = await asyncio.to_thread(lies_snapshot, MAILBOXES)
+    global _letzter_stand
+    # Baseline OHNE Meldung: was beim ERSTEN Start schon da liegt, hat sein
+    # Push-Fenster gehabt — sonst klingelt jeder Container-Neustart alle
+    # Handys. Nur der allererste Lauf setzt sie; Neustarts erben den Stand.
+    if _letzter_stand is None:
+        _letzter_stand = await asyncio.to_thread(lies_snapshot, MAILBOXES)
+    alt = _letzter_stand
     async for betroffene in _aenderungen():
         broadcaster.publish({"type": "mailbox", "agents": sorted(betroffene)})
         try:
@@ -250,6 +261,7 @@ async def _watch_schleife() -> None:
                     },
                 )
             alt = neu
+            _letzter_stand = neu
         except Exception as exc:  # noqa: BLE001 — Push darf den Wächter nie killen
             print(f"[events] Push-Auslöser fehlgeschlagen: {exc}", flush=True)
 

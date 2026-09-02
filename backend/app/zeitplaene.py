@@ -332,7 +332,12 @@ def tick(jetzt: datetime | None = None) -> list[dict[str, Any]]:
             print(f"[planer] {plan.get('name')}: {exc}", flush=True)
             continue
         if soll is not None:
-            berichte.append(_poste(plan, soll, schwelle))
+            try:
+                berichte.append(_poste(plan, soll, schwelle))
+            except Exception as exc:  # noqa: BLE001 — Review N: ein
+                # fehlgeschlagener Post (volle Platte, kaputte Mailbox)
+                # darf die übrigen Pläne dieses Ticks nicht blockieren.
+                print(f"[planer] {plan.get('name')}: {exc}", flush=True)
     return berichte
 
 

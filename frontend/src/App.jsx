@@ -1,3 +1,4 @@
+import { lsGet, lsSet } from "./speicher";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import TopBar from "./components/TopBar";
 import QuestionsBanner from "./components/QuestionsBanner";
@@ -45,6 +46,10 @@ export default function App() {
   // Langdruck aufs App-Icon (Issue #31) und Push-Benachrichtigungen.
   const [tab, setTab] = useState(() => {
     const gewuenscht = new URLSearchParams(window.location.search).get("tab");
+    // ext:-Tabs sind erst nach dem Settings-Load bekannt — vorläufig
+    // annehmen (Review N: ?tab=ext:… fiel sonst still auf den Chat);
+    // existiert das Fenster nicht, räumt der Settings-Effect unten auf.
+    if (gewuenscht?.startsWith("ext:")) return gewuenscht;
     return TABS.some(([id]) => id === gewuenscht) ? gewuenscht : "chat";
   });
   const [authed, setAuthed] = useState(null); // null = prüft noch
@@ -59,7 +64,20 @@ export default function App() {
           // Gerätesprache an das globale Setting angleichen (lädt bei
           // Abweichung einmal neu — Details in sprache.js).
           sprachAngleichen(s.language);
-          setExtWindows((s.external_windows || []).filter((w) => w?.name && w?.url));
+          // Doppelte Namen aussieben (Review N): die Panel-Id ist ext:<name> —
+          // zwei gleiche Namen kollidierten als React-Keys und im Layout.
+          const roh = (s.external_windows || []).filter((w) => w?.name && w?.url);
+          const gesehen = new Set();
+          const bereinigt = roh.filter(
+            (w) => !gesehen.has(w.name) && gesehen.add(w.name),
+          );
+          setExtWindows(bereinigt);
+          setTab((t) =>
+            t.startsWith("ext:") &&
+            !bereinigt.some((w) => `ext:${w.name}` === t)
+              ? "chat"
+              : t,
+          );
         })
         .catch(() => {});
     load();
@@ -87,22 +105,22 @@ export default function App() {
   // Hell/Dunkel: gespeicherte Wahl, sonst System-Einstellung
   const [theme, setTheme] = useState(
     () =>
-      localStorage.getItem("theme") ||
+      lsGet("theme") ||
       (window.matchMedia("(prefers-color-scheme: dark)").matches
         ? "dark"
         : "light"),
   );
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
-    localStorage.setItem("theme", theme);
+    lsSet("theme", theme);
   }, [theme]);
 
   // Desktop-Ansicht: freie Fenster oder ein Panel vollflächig mit Tabs
   const [viewMode, setViewMode] = useState(
-    () => localStorage.getItem("workspace-view-mode") || "windows",
+    () => lsGet("workspace-view-mode") || "windows",
   );
   useEffect(() => {
-    localStorage.setItem("workspace-view-mode", viewMode);
+    lsSet("workspace-view-mode", viewMode);
     // xterm neu fitten, sobald der Moduswechsel gerendert ist
     setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   }, [viewMode]);

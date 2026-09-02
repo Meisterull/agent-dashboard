@@ -182,7 +182,15 @@ def save_upload(rel_dir: str, filename: str, data: bytes) -> dict[str, Any]:
     base = _safe(rel_dir)
     if not base.is_dir():
         raise FilesError(f"kein Verzeichnis: {rel_dir}")
-    safe_name = Path(filename or "upload").name
+    # Review N: Path.name schützt nur vor "/" — Windows-Clients schicken
+    # Backslash-Pfade, und "." / ".." wären sonst gültige Zielnamen.
+    safe_name = Path(filename or "upload").name.replace("\\", "_").strip()
+    if not safe_name or safe_name in {".", ".."}:
+        safe_name = "upload"
     dest = base / safe_name
+    if dest.relative_to(WORKSPACE).parts[0] in GESPERRT:
+        # Review N: ein Upload in die Workspace-Wurzel konnte chat.db
+        # oder keys/ überschreiben — _safe prüfte nur das Zielverzeichnis.
+        raise FilesError(f"gesperrter Bereich: {safe_name}")
     dest.write_bytes(data)
     return {"path": str(dest.relative_to(WORKSPACE)), "size": len(data)}
