@@ -6,9 +6,6 @@ services:
     image: agent-dashboard:latest
     container_name: agent-dashboard
     restart: unless-stopped
-    # Review N: Fork-Deckel — supervisord+nginx+api+mcp+SSH-Sessions
-    # brauchen weit weniger; eine Amok-Schleife reißt so nicht den Host mit.
-    pids_limit: 512
 
     ports:
       # Extern belegte Ports per .env übersteuerbar (z. B. wenn 8080 schon
