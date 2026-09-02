@@ -146,11 +146,31 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
 
 **MCP-Tools** (im `mcp_server.py`, pfad-gehärtet gegen `WORKSPACE_DIR`):
-- Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?)` (`create_task` als Alias) · `read_responses(worker, for_sender?)` (Outbox-Archiv des Bearbeiters)
+- Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?, rolle?)` (`create_task` als Alias) · `list_rollen()` · `read_responses(worker, for_sender?)` (Outbox-Archiv des Bearbeiters)
 - Task-Lebenszyklus (Agent-Seite): `claim_task(task_id, agent?, erneut?)` (→ "in Arbeit"; ein bereits laufender Task wird **nicht** erneut vergeben — `erneut=True` holt dem eigenen Bearbeiter seinen Auftragstext zurück) · `complete_task(task_id, result, status?, log?, agent?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab; ein wiederholter Aufruf ist kein Fehler (`already: true`), damit eine verlorene Antwort erneut abgeliefert werden kann
 - Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` (archiviert die beantwortete Frage gleich mit) · `inbox(agent, kind?)` · `mark_read(envelope_id, agent?)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder). Empfänger müssen bekannt sein (Mailbox oder `agents.yaml`) — sonst Fehler statt Geister-Mailbox
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
 - Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)` — Aufruf-Timeout `INTEGRATION_TIMEOUT` (Default 60 s, je Integration per `timeout:`); lange Vorgänge asynchron anstoßen (Job-ID zurück, Status pollen) statt das Timeout hochzudrehen
+
+**Rollen für Task-Läufe** (Dashboard-Paket St.1): Eine Rolle ist eine
+Markdown-Datei `workspace/config/rollen/<name>.md` — YAML-Frontmatter
+(`beschreibung`, optional `permission_mode`/`allowed_tools`), darunter der
+Rollen-Prompt. `send_task(rolle="review")` löst sie SERVERSEITIG auf und
+friert Prompt + Rechte im Task-Envelope ein (`rolle`, `rollen_prompt`,
+`rollen_permission_mode`, `rollen_tools`) — beide Watcher-Transporte lesen
+dieselben Felder, eine später editierte Rollen-Datei ändert keinen schon
+eingereihten Task. Der Watcher hängt den Prompt per `--append-system-prompt`
+an und rechnet die Rechte als **Schnittmenge** mit seinen Agenten-Rechten
+(`wirksame_rechte`): der `permission_mode` kann nur SINKEN (plan < default <
+acceptEdits < bypassPermissions; ohne Agent-Vorgabe ist claudes „default" die
+Messlatte), `allowed_tools` ist die exakte String-Schnittmenge — auf einem
+Agenten ohne eigene Liste schaltet eine Rolle also NICHTS frei. Eine
+Nur-Lese-Review-Rolle setzt `permission_mode: default` und
+`allowed_tools: []` (die Auto-Werkzeuge Read/Grep/Glob brauchen keine
+Freigabe). Gepflegt werden Rollen im Agenten-Panel („Rollen"-Dialog) oder als
+Datei; API: `GET/PUT/DELETE /api/rollen[/{name}]`. Unbekannte Rollen lehnt
+`send_task` mit der Liste der verfügbaren ab (kein Tippfehler-Task ohne die
+gemeinte Rolle). Das Rollen-Badge am Task zeigt nur den Namen.
 
 **Nebenläufigkeit:** Jedes Tool wird als `async` registriert und läuft in einem
 Thread (Integrationen in einem eigenen, kleinen Pool). Das SDK würde synchrone

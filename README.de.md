@@ -28,6 +28,9 @@ Docker-Container auf deinem eigenen Server.
   mit `cat` debugbar.
 - **Agenten fragen zurück** — braucht ein Worker Klärung, parkt sein Task; du
   antwortest im Banner, der Task läuft mit deiner Antwort im Kontext weiter.
+- **Rollen für Läufe** — Rollen wie ein Nur-Lese-`review` zentral definieren
+  (Prompt + Rechte-Teilmenge) und jedem Task mitgeben; eine Rolle kann die
+  Rechte eines Agenten nur einschränken, nie erweitern.
 - **Automatikmodus** — je Agent hält das Dashboard einen Watcher auf dem
   entfernten Rechner, der die Inbox selbständig abarbeitet; ein globaler
   Not-Aus stoppt alles auf einmal.

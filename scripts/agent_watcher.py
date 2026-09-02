@@ -327,7 +327,8 @@ def tool_result_text(block: dict) -> str:
 
 def baue_claude_cmd(claude_bin: str, instruction: str,
                     permission_mode: str | None = None,
-                    allowed_tools: str | None = None) -> list[str]:
+                    allowed_tools: str | None = None,
+                    append_system_prompt: str | None = None) -> list[str]:
     """Kommandozeile für einen headless-Lauf — die instruction IMMER hinter "--".
 
     Issue #20: `--allowed-tools` ist variadisch (`--allowed-tools <tools...>`)
@@ -345,12 +346,56 @@ def baue_claude_cmd(claude_bin: str, instruction: str,
         cmd += ["--permission-mode", permission_mode]
     if allowed_tools:
         cmd += ["--allowed-tools", allowed_tools]
+    if append_system_prompt:
+        cmd += ["--append-system-prompt", append_system_prompt]
     return cmd + ["--", instruction]
+
+
+# Rangfolge der permission-Modi, vom restriktivsten zum permissivsten — für
+# die Rollen-Schnittmenge: eine Rolle darf den Modus nur SENKEN.
+RANG_PERMISSION = {"plan": 0, "default": 1, "acceptEdits": 2, "bypassPermissions": 3}
+
+
+def wirksame_rechte(agent_mode: "str | None", agent_tools: "str | None",
+                    rollen_mode: "str | None", rollen_tools: "list | None"
+                    ) -> "tuple[str | None, str | None]":
+    """Rechte eines Laufs = SCHNITTMENGE aus Agent (CLI-Args) und Rolle (Task).
+
+    Bewusste Entscheidung (Dashboard-Paket St.1, 02.09.2026): Eine Rolle kann
+    nur EINSCHRÄNKEN, nie erweitern — sonst hebelte eine Rollen-Datei die
+    Härtung aus agents.yaml aus.
+
+      * permission_mode: der weniger permissive von beiden (RANG_PERMISSION).
+        Ohne Agent-Vorgabe gilt claudes Default ("default") als Messlatte —
+        die Rolle darf darunter (plan/default), nichts Permissiveres.
+        Unbekannte Modus-Namen sind nicht vergleichbar: Agent-Vorgabe gewinnt.
+      * allowed_tools: exakte String-Schnittmenge. rollen_tools=None heißt
+        "Rolle sagt nichts" (Agent-Liste gilt); eine Liste behält nur, was der
+        Agent auch gewährt — auf einem Agenten ohne eigene Liste kann eine
+        Rolle also NICHTS freischalten (leer -> Flag ganz weglassen; die
+        Auto-Werkzeuge wie Read/Grep brauchen ohnehin keine Freigabe).
+    """
+    mode = agent_mode or None
+    if rollen_mode:
+        if agent_mode and agent_mode in RANG_PERMISSION and rollen_mode in RANG_PERMISSION:
+            if RANG_PERMISSION[rollen_mode] < RANG_PERMISSION[agent_mode]:
+                mode = rollen_mode
+        elif not agent_mode and rollen_mode in RANG_PERMISSION \
+                and RANG_PERMISSION[rollen_mode] <= RANG_PERMISSION["default"]:
+            mode = rollen_mode
+    basis = [t.strip() for t in (agent_tools or "").split(",") if t.strip()]
+    if rollen_tools is None:
+        tools = basis
+    else:
+        gewuenscht = {str(t).strip() for t in rollen_tools if str(t).strip()}
+        tools = [t for t in basis if t in gewuenscht]
+    return mode, (",".join(tools) if tools else None)
 
 
 def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                fortschritt=None, permission_mode: str | None = None,
-               allowed_tools: str | None = None) -> tuple[str, str, int]:
+               allowed_tools: str | None = None,
+               append_system_prompt: str | None = None) -> tuple[str, str, int]:
     """Gibt (result, log, returncode) zurück.
 
     Headless Claude-Code mit --output-format stream-json (Issue #18): die
@@ -378,7 +423,8 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     """
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
-    cmd = baue_claude_cmd(claude_bin, instruction, permission_mode, allowed_tools)
+    cmd = baue_claude_cmd(claude_bin, instruction, permission_mode, allowed_tools,
+                          append_system_prompt)
     try:
         proc = subprocess.Popen(
             cmd,
@@ -755,8 +801,17 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                     continue  # schon von jemand anderem beansprucht
                 instruction = claimed.get("instruction") or env.get("text") or ""
                 projekt = claimed.get("project") or env.get("project")
+                # Rollen-Felder kommen verbindlich aus dem claim (inbox()
+                # normalisiert sie weg); Schnittmenge mit den Agenten-Rechten
+                # aus der eigenen Kommandozeile — nie erweitern (St.1).
+                rollen_name = claimed.get("rolle")
+                pm, at = wirksame_rechte(permission_mode, allowed_tools,
+                                         claimed.get("rollen_permission_mode"),
+                                         claimed.get("rollen_tools"))
                 print(f"[{now()}] {agent}: bearbeite {task_id}"
-                      + (f" (project {projekt})" if projekt else ""), flush=True)
+                      + (f" (project {projekt})" if projekt else "")
+                      + (f" (rolle {rollen_name})" if rollen_name else ""),
+                      flush=True)
                 if with_mcp_hint:
                     instruction = mcp_hint(agent) + instruction
                 def fortschritt(text: str, _tid: str = task_id) -> None:
@@ -771,8 +826,8 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 else:
                     try:
                         result, err, rc = run_claude(claude_bin, instruction, task_dir,
-                                                     dry_run, fortschritt,
-                                                     permission_mode, allowed_tools)
+                                                     dry_run, fortschritt, pm, at,
+                                                     claimed.get("rollen_prompt"))
                         status = "done" if rc == 0 else "error"
                     except Exception as exc:  # noqa: BLE001 — alles zurückmelden
                         result, err, status = "", repr(exc), "error"
@@ -872,6 +927,11 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             if with_mcp_hint:
                 instruction = mcp_hint(agent) + instruction
             task_dir, wd_fehler = projekt_workdir(workdir, task.get("project"))
+            # Rollen-Felder liegen beim Dateitransport direkt im Envelope;
+            # Schnittmenge mit den Agenten-Rechten — nie erweitern (St.1).
+            pm, at = wirksame_rechte(permission_mode, allowed_tools,
+                                     task.get("rollen_permission_mode"),
+                                     task.get("rollen_tools"))
             if wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
                 err = wd_fehler
                 result = fehler_result("", err)
@@ -880,7 +940,7 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                     claude_bin, instruction, task_dir, dry_run,
                     lambda text, _tid=task_id: sicher_print(
                         f"[{now()}] {agent}: {_tid} · {text}"),
-                    permission_mode, allowed_tools)
+                    pm, at, task.get("rollen_prompt"))
                 status = "done" if rc == 0 else "error"
                 if status == "error":
                     result = fehler_result(result, err)

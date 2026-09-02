@@ -252,6 +252,48 @@ class TestReineFunktionen(unittest.TestCase):
         cmd = aw.baue_claude_cmd("claude", "--help ist hier Text")
         self.assertEqual(cmd[-2:], ["--", "--help ist hier Text"])
 
+    def test_rollen_prompt_steht_vor_dem_trenner(self):
+        cmd = aw.baue_claude_cmd("claude", "x",
+                                 append_system_prompt="Du bist Reviewer")
+        i = cmd.index("--append-system-prompt")
+        self.assertEqual(cmd[i + 1], "Du bist Reviewer")
+        self.assertEqual(cmd[-2:], ["--", "x"])
+
+    # --- wirksame_rechte (Rollen, Dashboard-Paket St.1) ---------------------
+    # Eine Rolle darf die Agenten-Rechte nur EINSCHRÄNKEN, nie erweitern.
+
+    def test_rolle_senkt_permission_mode(self):
+        mode, _ = aw.wirksame_rechte("acceptEdits", None, "default", None)
+        self.assertEqual(mode, "default")
+
+    def test_rolle_kann_mode_nie_heben(self):
+        mode, _ = aw.wirksame_rechte("default", None, "bypassPermissions", None)
+        self.assertEqual(mode, "default")
+        # Ohne Agent-Vorgabe gilt claudes Default als Messlatte:
+        self.assertIsNone(aw.wirksame_rechte(None, None, "acceptEdits", None)[0])
+        self.assertEqual(aw.wirksame_rechte(None, None, "plan", None)[0], "plan")
+
+    def test_unbekannter_rollen_modus_agent_gewinnt(self):
+        mode, _ = aw.wirksame_rechte("acceptEdits", None, "superduper", None)
+        self.assertEqual(mode, "acceptEdits")
+
+    def test_tools_exakte_schnittmenge(self):
+        _, tools = aw.wirksame_rechte(None, "Edit,Write,Bash(git:*)", None,
+                                      ["Write", "WebSearch"])
+        self.assertEqual(tools, "Write")
+
+    def test_rolle_ohne_tools_laesst_agentliste(self):
+        _, tools = aw.wirksame_rechte(None, "Edit,Write", None, None)
+        self.assertEqual(tools, "Edit,Write")
+
+    def test_rolle_schaltet_auf_leerem_agenten_nichts_frei(self):
+        _, tools = aw.wirksame_rechte(None, None, None, ["Edit", "Write"])
+        self.assertIsNone(tools)
+
+    def test_leere_rollenliste_nimmt_alle_tools(self):
+        _, tools = aw.wirksame_rechte(None, "Edit,Write", None, [])
+        self.assertIsNone(tools)
+
     # --- projekt_workdir (Issue #19) ---------------------------------------
 
     def test_ohne_projekt_bleibt_basis(self):

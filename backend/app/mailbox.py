@@ -130,6 +130,15 @@ class Task:
     sender: str = ORCHESTRATOR  # wer die Aufgabe stellt (z.B. ein Koordinator)
     kind: str = "task"
     created_at: str = field(default_factory=_now)
+    # Rolle des Laufs (Dashboard-Paket St.1): serverseitig beim send_task aus
+    # config/rollen/<name>.md aufgelöst und hier EINGEFROREN — beide
+    # Watcher-Transporte lesen dieselben Felder, und eine später editierte
+    # Rollen-Datei ändert keinen schon eingereihten Task. Der Watcher rechnet
+    # daraus die SCHNITTMENGE mit seinen Agenten-Rechten (nie erweitern).
+    rolle: Optional[str] = None
+    rollen_prompt: Optional[str] = None
+    rollen_permission_mode: Optional[str] = None
+    rollen_tools: Optional[list[str]] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -177,6 +186,9 @@ def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
         # Ohne Durchreichen hier wären sie im Envelope zwar gespeichert, für
         # die Oberfläche aber unsichtbar.
         "options": env.get("options") or [],
+        # Rollen-Badge am Task (Dashboard-Paket St.1) — nur der Name; Prompt
+        # und Rechte gehen die Oberfläche nichts an.
+        "rolle": env.get("rolle"),
     }
 
 

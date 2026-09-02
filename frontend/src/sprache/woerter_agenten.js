@@ -111,4 +111,25 @@ export default {
     "use an existing private key (otherwise a new key pair is generated)",
   "legt an…": "creating…",
   "Anlegen": "Create",
+
+  // RollenDialog.jsx + Rollen-Knopf/Badge im AgentsPanel (St.1)
+  "Rollen": "Roles",
+  "Rollen verwalten — Prompt und Rechte je Task-Lauf":
+    "Manage roles — prompt and permissions per task run",
+  "Rolle dieses Laufs": "Role of this run",
+  "Eine Rolle gibt einem Task-Lauf einen Prompt und kann seine Rechte einschränken — als Schnittmenge mit agents.yaml, nie erweiternd.":
+    "A role gives a task run a prompt and can restrict its permissions — as an intersection with agents.yaml, never widening them.",
+  "neue-rolle (kleinbuchstaben, - und _)": "new-role (lowercase, - and _)",
+  "Ungültiger Name — erlaubt: kleinbuchstaben, ziffern, - und _":
+    "Invalid name — allowed: lowercase letters, digits, - and _",
+  "Noch keine Rolle angelegt — oben einen Namen vergeben, die Vorlage ist vorausgefüllt.":
+    "No role yet — enter a name above, the template is prefilled.",
+  "Datei fehlerhaft: {0}": "File is broken: {0}",
+  "ohne Beschreibung": "no description",
+  "schränkt Rechte ein": "restricts permissions",
+  "Rolle löschen": "Delete role",
+  "Rolle „{0}“ endgültig löschen?": "Delete role “{0}” permanently?",
+  "noch nicht gespeichert": "not saved yet",
+  "Laden fehlgeschlagen: {0}": "Loading failed: {0}",
+  "Löschen fehlgeschlagen: {0}": "Deleting failed: {0}",
 };

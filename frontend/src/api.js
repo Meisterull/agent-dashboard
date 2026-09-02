@@ -170,6 +170,14 @@ export const deleteSshSession = (name, sid) =>
     `/api/ssh/${encodeURIComponent(name)}/session?sid=${encodeURIComponent(sid)}`,
     "DELETE",
   );
+// Rollen für Task-Läufe (Dashboard-Paket St.1)
+export const getRollen = () => jget("/api/rollen");
+export const getRolle = (name) => jget(`/api/rollen/${encodeURIComponent(name)}`);
+export const saveRolle = (name, text) =>
+  jsend(`/api/rollen/${encodeURIComponent(name)}`, "PUT", { text });
+export const deleteRolle = (name) =>
+  jsend(`/api/rollen/${encodeURIComponent(name)}`, "DELETE");
+
 export const getSettings = () => jget("/api/settings");
 export const getModels = () => jget("/api/models");
 // Ohne `to` alle offenen Rückfragen (jede trägt `fuer_mensch`), mit `to` nur

@@ -10,6 +10,7 @@ import {
   setNotaus,
 } from "../api";
 import { bestaetigen, melden } from "./Dialog";
+import RollenDialog from "./RollenDialog";
 import { t } from "../sprache";
 
 const STATUS_COLORS = {
@@ -83,6 +84,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const [localKey, setLocalKey] = useState(0); // ↻-Button
   const [offline, setOffline] = useState(false); // letzter Poll fehlgeschlagen
   const [logOffen, setLogOffen] = useState(false); // Automatik-Log aufgeklappt
+  const [rollenOffen, setRollenOffen] = useState(false); // Rollen-Dialog (St.1)
   const [raeumt, setRaeumt] = useState(false); // "alles gelesen" läuft gerade
   // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
@@ -342,6 +344,13 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
           </button>
         )}
         <button
+          onClick={() => setRollenOffen(true)}
+          title={t("Rollen verwalten — Prompt und Rechte je Task-Lauf")}
+          className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
+        >
+          {t("Rollen")}
+        </button>
+        <button
           onClick={() => setLocalKey((k) => k + 1)}
           title={t("jetzt aktualisieren")}
           className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
@@ -472,6 +481,14 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                   >
                     <div className="flex items-center justify-between gap-1">
                       <span className="flex-1 truncate font-mono">{tk.task_id}</span>
+                      {tk.rolle && (
+                        <span
+                          title={t("Rolle dieses Laufs")}
+                          className="rounded bg-indigo-100 px-1 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+                        >
+                          {tk.rolle}
+                        </span>
+                      )}
                       <StatusBadge status={tk.status} />
                       <button
                         onClick={(e) => {
@@ -592,6 +609,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
           </>
         )}
       </div>
+      {rollenOffen && <RollenDialog onClose={() => setRollenOffen(false)} />}
     </div>
   );
 }

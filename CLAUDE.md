@@ -70,6 +70,14 @@ backend/
                            Timeout Default 60 s (INTEGRATION_TIMEOUT, je Integration
                            `timeout:`) — lange Vorgänge asynchron anstoßen, nicht
                            das Timeout hochdrehen (#34)
+    rollen.py              Rollen für Task-Läufe (St.1): config/rollen/<name>.md
+                           (Frontmatter beschreibung/permission_mode/allowed_tools
+                           + Prompt), SERVERSEITIG beim send_task(rolle=…) in den
+                           Envelope eingefroren (rolle/rollen_prompt/…); der
+                           Watcher rechnet die SCHNITTMENGE mit seinen
+                           Agenten-Rechten (wirksame_rechte — Rolle kann nur
+                           einschränken, nie erweitern) und hängt den Prompt per
+                           --append-system-prompt an. UI: Agenten-Panel → Rollen
     mcp_scope.py           Kanal-Identität + Tool-Allowlists je Agent (Issue #13):
                            Port-Vergabe (frei :9000, gebunden ab :9100), Port-Map
                            mcp_ports.json, resolve_ident; reine Stdlib, Tests in

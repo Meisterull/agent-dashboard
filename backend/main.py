@@ -30,6 +30,9 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/remote/{name}/download  …/download, …/raw, …/upload)
   POST /mcp/{agent}                MCP-Kanal über HTTPS (Bearer-Token je Agent)
   GET  /api/connections            SSH-Verbindungen (ohne Credentials)
+  GET  /api/rollen                 Rollen für Task-Läufe (config/rollen/*.md)
+  GET  /api/rollen/{name}          eine Rolle: Rohtext + geparste Felder
+  PUT  /api/rollen/{name}          Rolle speichern · DELETE /api/rollen/{name} löschen
   GET  /api/settings               Editierbare UI-Settings
   PUT  /api/settings               Settings speichern
   GET  /api/automatik              Automatikmodus: Not-Aus + Status je Agent
@@ -66,7 +69,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import auth, auto_watcher, chat_store, events, llm, push, remote_files
-from app import mcp_scope, mcp_token
+from app import mcp_scope, mcp_token, rollen
 from app.config import (
     KEYS_DIR,
     add_ui_connection,
@@ -1001,6 +1004,57 @@ async def connection_delete(name: str) -> dict:
 @app.get("/api/integrations")
 async def integrations_list() -> dict:
     return {"integrations": list_integrations()}
+
+
+# --- Rollen (Dashboard-Paket St.1) -----------------------------------------
+# Rollen-Dateien pflegt der Mensch (Agenten-Panel → Rollen-Dialog); der
+# MCP-Server bettet sie beim send_task in den Task-Envelope ein. Namensprüfung
+# macht rollen._pfad (dieselbe Strenge wie Agentennamen — Path-Traversal).
+
+class RolleIn(BaseModel):
+    text: str
+
+
+@app.get("/api/rollen")
+async def rollen_liste() -> dict:
+    return {"rollen": rollen.liste_rollen()}
+
+
+@app.get("/api/rollen/{name}")
+async def rolle_lesen(name: str) -> dict:
+    try:
+        text = rollen.roher_text(name)
+    except rollen.RollenFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if text is None:
+        raise HTTPException(404, f"Rolle '{name}' gibt es nicht.")
+    # Geparste Felder best-effort mitliefern — eine von Hand zerschriebene
+    # Datei soll im Dialog trotzdem aufgehen (zum Reparieren).
+    try:
+        geparst = rollen.lade_rolle(name)
+    except rollen.RollenFehler as exc:
+        geparst = {"fehler": str(exc)}
+    return {"name": name, "text": text, "geparst": geparst}
+
+
+@app.put("/api/rollen/{name}")
+async def rolle_speichern(name: str, body: RolleIn) -> dict:
+    try:
+        gespeichert = rollen.speichere_rolle(name, body.text)
+    except rollen.RollenFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"gespeichert": name, **{k: v for k, v in gespeichert.items() if k != "prompt"}}
+
+
+@app.delete("/api/rollen/{name}")
+async def rolle_loeschen(name: str) -> dict:
+    try:
+        weg = rollen.loesche_rolle(name)
+    except rollen.RollenFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not weg:
+        raise HTTPException(404, f"Rolle '{name}' gibt es nicht.")
+    return {"geloescht": name}
 
 
 @app.get("/api/models")

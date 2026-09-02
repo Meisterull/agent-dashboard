@@ -44,7 +44,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import integrations, mcp_scope
+from app import integrations, mcp_scope, rollen
 from app.config import load_agents_full
 from app.files import decode_text
 from app.mailbox import (
@@ -244,6 +244,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             sender: str | None = None,
             project: str | None = None,
             files: list[str] | None = None,
+            rolle: str | None = None,
         ) -> dict:
             """Einen Arbeitsauftrag in die Inbox eines Agenten legen.
 
@@ -252,6 +253,11 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             also IMMER den eigenen Namen angeben (auf einem gebundenen Kanal ist
             er automatisch dein Name; weglassen genügt). Nur diese task-Envelopes
             führt der Watcher auf der Agent-Seite tatsächlich aus.
+
+            `rolle` (optional) gibt dem Lauf eine definierte Rolle (z.B.
+            "review"): ihr Prompt wird an den Lauf angehängt, ihre Rechte können
+            die des Agenten nur EINSCHRÄNKEN, nie erweitern. Verfügbare Rollen
+            liefert list_rollen(); eine unbekannte Rolle ist ein Fehler.
             """
             try:
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
@@ -260,7 +266,17 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             unbekannt = _pruefe_empfaenger(to)
             if unbekannt:
                 return unbekannt
-            _log(kanal, "send_task", to=to, sender=absender, zeichen=len(instruction))
+            # Rolle SERVERSEITIG auflösen und in den Envelope einfrieren — beide
+            # Watcher-Transporte lesen dann dieselben Felder, und eine später
+            # editierte Rollen-Datei ändert keinen schon eingereihten Task.
+            rollen_felder: dict = {}
+            if rolle:
+                try:
+                    rollen_felder = rollen.rolle_fuer_task(rolle)
+                except rollen.RollenFehler as exc:
+                    return {"error": str(exc)}
+            _log(kanal, "send_task", to=to, sender=absender, rolle=rolle,
+                 zeichen=len(instruction))
             task = Task(
                 task_id=new_id("task"),
                 agent=to,
@@ -268,9 +284,20 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 project=project,
                 files=files or [],
                 sender=absender,
+                **rollen_felder,
             )
             Mailbox(MAILBOX_ROOT, to).put_task(task)
-            return {"id": task.task_id, "to": to, "status": "pending"}
+            return {"id": task.task_id, "to": to, "status": "pending",
+                    **({"rolle": rolle} if rolle else {})}
+
+    if on("list_rollen"):
+        @werkzeug
+        def list_rollen() -> list[dict]:
+            """Verfügbare Rollen für send_task(rolle=…) — Name, Beschreibung
+            und ob sie Rechte einschränkt. Rollen pflegt der Mensch im
+            Dashboard (Agenten-Panel → Rollen)."""
+            _log(kanal, "list_rollen")
+            return rollen.liste_rollen()
 
     if on("create_task"):
         @werkzeug
@@ -358,6 +385,15 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 "status": "running",
                 "project": env.get("project"),
                 "files": env.get("files") or [],
+                # Rollen-Felder (Dashboard-Paket St.1): der Watcher rechnet
+                # daraus die Schnittmenge mit seinen Agenten-Rechten und hängt
+                # den Rollen-Prompt an den Lauf. Der inbox()-Weg liefert sie
+                # NICHT (normalize_envelope trägt nur den Namen) — dieser
+                # claim ist die verbindliche Quelle.
+                "rolle": env.get("rolle"),
+                "rollen_prompt": env.get("rollen_prompt"),
+                "rollen_permission_mode": env.get("rollen_permission_mode"),
+                "rollen_tools": env.get("rollen_tools"),
             }
 
     if on("complete_task"):
