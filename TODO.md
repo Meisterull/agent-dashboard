@@ -244,13 +244,13 @@ Der Deploy (`docker compose up -d --build`) bringt zusätzlich die Automatik-Iss
 - [ ] Anmelden: Sessions bleiben gültig (`SESSION_SECRET` ist gesetzt), das
       Passwort-Fallback wurde nur gehärtet.
 
-**Terminal (Handy, Fixes vom 10.09.2026 — termVerbindung.js):**
-- [ ] Tab Chat → Terminal und zurück, Tastatur auf/zu im Chat: Claude-Code-Ausgabe
+**Terminal (Handy, Fixes vom 10.09.2026 — termVerbindung.js) — ERLEDIGT, Live-Test am Handy bestanden (Sebastian, 10.09.2026):**
+- [x] Tab Chat → Terminal und zurück, Tastatur auf/zu im Chat: Claude-Code-Ausgabe
       darf NICHT mehr in Siebener-Häppchen kommen (vorher: 7-Spalten-resize aus dem
       ausgeblendeten Panel).
-- [ ] Flugmodus ~20 s an, tippen, Flugmodus aus: Badge „Verbindung …" erscheint,
+- [x] Flugmodus ~20 s an, tippen, Flugmodus aus: Badge „Verbindung …" erscheint,
       nach dem Reattach kommt das Getippte bei der Shell an.
-- [ ] Handy sperren, 2 min warten, entsperren: binnen ~10 s wieder verbunden, ohne
+- [x] Handy sperren, 2 min warten, entsperren: binnen ~10 s wieder verbunden, ohne
       dass man etwas drücken muss.
 
 **Terminal (die zwei HOCH-Frontend-Befunde):**
