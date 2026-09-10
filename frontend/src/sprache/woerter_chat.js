@@ -68,6 +68,8 @@ export default {
   "{0} Rückfrage zwischen Agenten": "{0} question between agents",
   "{0} Rückfragen zwischen Agenten": "{0} questions between agents",
   "Orchestrator-Fehler": "Orchestrator error",
+  "Keine Antwort vom Server nach {0} s — Netz prüfen; der Text bleibt in der Eingabe.":
+    "No answer from the server after {0} s — check the network; your text stays in the input.",
   "Stream abgerissen — der Orchestrator arbeitet weiter; die Antwort erscheint danach im Verlauf (Session neu öffnen).":
     "Stream interrupted — the orchestrator keeps working; the reply will appear in the history afterwards (reopen the session).",
   "Geteilte Dateien konnten nicht hochgeladen werden — bitte im Chat neu anhängen.":

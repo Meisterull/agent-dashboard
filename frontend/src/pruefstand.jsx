@@ -14,6 +14,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { fittenOhneSprung, wischScrollen } from "./termScroll";
+import { istSichtbar } from "./termVerbindung";
 import Workspace from "./components/Workspace";
 import "./index.css";
 
@@ -120,8 +121,20 @@ if (welches === "terminal") {
     // Code, der auch produktiv läuft, nicht eine Nachbildung.
     if (!new URLSearchParams(location.search).has("roh")) wischScrollen(term);
     window.__term = term;
-    window.__fit = () => fittenOhneSprung(term, () => fit.fit());
+    // Sichtbarkeits-Wächter wie in Terminal.jsx (termVerbindung.js, Befund 1):
+    // ausgeblendet wird nicht gefittet — der Test versteckt den Host per
+    // display:none und prüft, dass die Spalten stehen bleiben.
+    const host = document.getElementById("termhost");
+    window.__fit = () => {
+      if (!istSichtbar(host)) return false;
+      fittenOhneSprung(term, () => fit.fit());
+      return true;
+    };
     window.__fitRoh = () => fit.fit();
+    window.__fitVorschlag = () => fit.proposeDimensions(); // was das FitAddon roh messen würde
+    window.__verstecken = (ja) => {
+      host.parentElement.style.display = ja ? "none" : "";
+    };
   }, 0);
 } else if (welches === "keybar") {
   // Die Leiste allein, mit allen Knöpfen wie im Terminal — geprüft wird, ob

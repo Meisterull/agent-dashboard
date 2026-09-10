@@ -20,7 +20,11 @@ export default {
 
   // Terminal.jsx — Systemmeldungen im Terminal-Puffer
   "[Sitzung in anderem Fenster übernommen]": "[session taken over in another window]",
-  "[getrennt — neuer Versuch in {0}s]": "[disconnected — retrying in {0}s]",
+
+  // Terminal.jsx — Verbindungs-Badge (termVerbindung.js)
+  "Verbindung unterbrochen — neuer Versuch in {0}s": "Connection lost — retrying in {0}s",
+  "Verbindung eingeschlafen — verbinde neu…": "Connection went silent — reconnecting…",
+  "Getipptes wird nachgeliefert": "Typed input will be delivered",
 
   // Terminal.jsx — Übernahme-Badge
   "Sitzung in einem anderen Fenster übernommen": "Session taken over in another window",

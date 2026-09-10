@@ -6,11 +6,13 @@ Reine Standardlib: asyncssh wird nicht gebraucht — die Session wird mit
 Attrappen für conn/proc gebaut. Abgedeckt (T8): strip_ansi, _buffer_append
 inklusive BUFFER_LIMIT, und die Replay-Logik beim Reattach (N10: Snapshot
 statt laufendem Index, keine unsterbliche Session nach fehlgeschlagenem
-Replay).
+Replay). Dazu der Kontrollkanal (Ping → binäres Pong) und der Wächter gegen
+Zwergen-Maße beim resize (10.09.2026).
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -40,12 +42,25 @@ class TestStripAnsi(unittest.TestCase):
         self.assertEqual(strip_ansi("\x1b(Bnormal"), "normal")
 
 
+class _FakeStdin:
+    def __init__(self) -> None:
+        self.geschrieben: list[str] = []
+
+    def write(self, data: str) -> None:
+        self.geschrieben.append(data)
+
+
 class _FakeProc:
     def __init__(self) -> None:
         self.terminated = False
+        self.groessen: list[tuple[int, int]] = []
+        self.stdin = _FakeStdin()
 
     def terminate(self) -> None:
         self.terminated = True
+
+    def change_terminal_size(self, cols: int, rows: int) -> None:
+        self.groessen.append((cols, rows))
 
 
 class _FakeConn:
@@ -60,12 +75,15 @@ class _FakeWs:
     """WebSocket-Attrappe: sammelt Ausgaben, kann beim Senden scheitern."""
 
     def __init__(self, sid: str = "main", fehler_ab: int | None = None,
-                 beim_senden=None) -> None:
+                 beim_senden=None, eingehend: tuple[str, ...] = ()) -> None:
         self.query_params = {"sid": sid}
         self.gesendet: list[str] = []
+        self.gesendet_bytes: list[bytes] = []
         self.fehler_ab = fehler_ab
         self.beim_senden = beim_senden
         self.geschlossen: list[int | None] = []
+        # Nachrichten vom Client, der Reihe nach; danach "Client weg"
+        self.eingehend = list(eingehend)
 
     async def accept(self) -> None:
         pass
@@ -77,7 +95,12 @@ class _FakeWs:
         if self.beim_senden:
             self.beim_senden(len(self.gesendet))
 
+    async def send_bytes(self, data: bytes) -> None:
+        self.gesendet_bytes.append(data)
+
     async def receive_text(self) -> str:
+        if self.eingehend:
+            return self.eingehend.pop(0)
         raise ConnectionResetError("Client weg")
 
     async def close(self, code: int | None = None) -> None:
@@ -169,6 +192,40 @@ class TestReattachReplay(unittest.TestCase):
             self.assertEqual(neu.gesendet, ["x"])
 
         asyncio.run(szenario())
+
+
+class TestKontrollkanal(unittest.TestCase):
+    """Ping/Pong und der Wächter gegen Zwergen-Maße (10.09.2026)."""
+
+    def tearDown(self) -> None:
+        ssh_bridge._sessions.clear()
+
+    def _lauf(self, *nachrichten: dict) -> tuple[_FakeWs, _Session]:
+        sess = _session()
+        ws = _FakeWs(eingehend=tuple(json.dumps(n) for n in nachrichten))
+        asyncio.run(ssh_bridge.bridge(ws, "erp"))
+        return ws, sess
+
+    def test_ping_bekommt_binaeres_pong(self):
+        """Pong als Binär-Frame: Text-Frames sind Terminal-Ausgabe, das
+        Frontend schreibt sie ungesehen ins xterm."""
+        ws, _ = self._lauf({"type": "ping"})
+        self.assertEqual(ws.gesendet_bytes, [ssh_bridge.PONG])
+        self.assertEqual(ws.gesendet, [])
+
+    def test_zwergen_masse_werden_ignoriert(self):
+        """7×4 kommt vom FitAddon eines ausgeblendeten Panels, nie von einem
+        Bildschirm — an die Shell geht nur, was ein Mensch sehen könnte."""
+        _, sess = self._lauf(
+            {"type": "resize", "cols": 7, "rows": 4},
+            {"type": "resize", "cols": 45, "rows": 2},
+            {"type": "resize", "cols": 45, "rows": 30},
+        )
+        self.assertEqual(sess.proc.groessen, [(45, 30)])
+
+    def test_daten_gehen_weiter_an_stdin(self):
+        _, sess = self._lauf({"type": "data", "data": "ls\r"})
+        self.assertEqual(sess.proc.stdin.geschrieben, ["ls\r"])
 
 
 if __name__ == "__main__":

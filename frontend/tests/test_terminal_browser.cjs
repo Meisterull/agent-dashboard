@@ -1,4 +1,5 @@
-/* Terminal am Handy: Verlauf wischen und Größenwechsel (Tastatur auf/zu).
+/* Terminal am Handy: Verlauf wischen, Größenwechsel (Tastatur auf/zu) und
+ * der Sichtbarkeits-Wächter (kein Fit bei display:none, termVerbindung.js).
  *
  * Beides ist xterm-eigenes Verhalten, das mit dem Finger nicht funktioniert:
  * Wischgesten rasten auf Zeilenkanten zurück (ein Wisch über 300 px bewegte
@@ -48,6 +49,34 @@ const pruefe = (was, ok, zusatz = "") => {
   };
 
   const zeilenHoehe = 300 / 17; // ~17 px pro Zeile → ein 300-px-Wisch ≈ 17 Zeilen
+
+  console.log("Ausgeblendetes Panel (display:none) darf die Spalten nicht ändern:");
+  {
+    // Befund vom 10.09.2026: bei display:none liest das FitAddon die Breite
+    // „100%" als 100 px und schlägt eine Handvoll Spalten vor — die gingen
+    // bis dahin als resize an die Shell (Siebener-Häppchen im Verlauf).
+    const { page } = await messen(ZIEL);
+    const vorher = await page.evaluate(() => window.__term.cols);
+    const versteckt = await page.evaluate(() => {
+      window.__verstecken(true);
+      const gefittet = window.__fit();
+      return { gefittet, cols: window.__term.cols, roh: window.__fitVorschlag() };
+    });
+    pruefe(`Terminal hat vorher eine echte Breite (${vorher} Spalten)`, vorher >= 20);
+    pruefe(
+      "Gegenprobe: das FitAddon selbst würde ausgeblendet Zwergen-Maße vorschlagen",
+      versteckt.roh && versteckt.roh.cols < 20,
+      JSON.stringify(versteckt.roh),
+    );
+    pruefe("Wächter überspringt das Fit", versteckt.gefittet === false);
+    pruefe(`Spalten bleiben bei ${vorher}`, versteckt.cols === vorher);
+    const zurueck = await page.evaluate(() => {
+      window.__verstecken(false);
+      return { gefittet: window.__fit(), cols: window.__term.cols };
+    });
+    pruefe("sichtbar: Fit läuft wieder", zurueck.gefittet === true && zurueck.cols === vorher);
+    await page.close();
+  }
 
   console.log("Ohne Gegenmaßnahme (xterm pur):");
   {

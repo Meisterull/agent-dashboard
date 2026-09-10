@@ -263,12 +263,38 @@ export const cancelChatStream = (streamId) =>
 // eigener Parser (Events sind durch Leerzeilen getrennt, ": ping" sind
 // Heartbeats). onStart liefert die stream_id (für den Abbrechen-Knopf),
 // onTool jeden Tool-Call live.
+//
+// Frist nur für die ANTWORT-KOPFZEILEN: fetch hat keinen eigenen Timeout, und
+// bei schlechtem Netz hing der Versand minutenlang — `loading` blieb wahr,
+// der Senden-Knopf gesperrt, „ich kann nicht mehr weiterschreiben"
+// (10.09.2026). Sobald der Server antwortet (das start-Event kommt sofort),
+// darf der Strom selbst beliebig lange laufen; abgebrochen wird er nur über
+// den Knopf (cancelChatStream).
+const ANTWORT_FRIST_S = 30;
+
 export async function streamChat(message, sessionId, { onStart, onTool } = {}) {
-  const res = await fetch("/api/chat/stream", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId }),
-  });
+  const abbruch = new AbortController();
+  const frist = setTimeout(() => abbruch.abort(), ANTWORT_FRIST_S * 1000);
+  let res;
+  try {
+    res = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message, session_id: sessionId }),
+      signal: abbruch.signal,
+    });
+  } catch (e) {
+    if (abbruch.signal.aborted)
+      throw new Error(
+        t(
+          "Keine Antwort vom Server nach {0} s — Netz prüfen; der Text bleibt in der Eingabe.",
+          ANTWORT_FRIST_S,
+        ),
+      );
+    throw e;
+  } finally {
+    clearTimeout(frist);
+  }
   if (!res.ok || !res.body) {
     notifyUnauthorized(res);
     const detail = await res.json().catch(() => ({}));

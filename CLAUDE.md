@@ -121,6 +121,13 @@ frontend/                  React 18 + Vite 6 + Tailwind v4 (komplettes Dashboard
                            Spiegel `ui.sprache` (synchron beim ersten Render);
                            Umschalten in den Settings lädt die Seite neu.
                            NEUE UI-STRINGS immer in t() + Wörterbuch-Eintrag.
+  src/termVerbindung.js    Terminal-Verbindungshygiene (10.09.2026): Sichtbarkeits-
+                           Wächter (kein fit/resize bei display:none — das FitAddon
+                           liest „100%" als 100 px → 7 Spalten an die Shell),
+                           Herzschlag (Ping → binäres Pong; kein Pong → Socket
+                           verwerfen + sofort neu, statt auf ein close zu warten,
+                           das bei totem Netz minutenlang ausbleibt), Warteschlange
+                           für Eingaben während der Trennung
   src/termScroll.js        Wischen + Größenwechsel im Terminal (#35): xterm
                            verliert bei einer Wischgeste das Berührungsziel
                            (DOM-Renderer ersetzt die Zeilen) — Zeiger festhalten
@@ -152,6 +159,7 @@ cd frontend && npm install && npm run dev      # http://localhost:5173 (proxyt /
 cd frontend && npm run build                   # erzeugt dist/ (nginx liefert es aus)
 cd frontend && node tests/test_layout.mjs      # Fensteranordnung, rein rechnerisch (kein Browser)
 cd frontend && node tests/test_woerter.mjs     # Wörterbuch-Konsistenz (Duplikate, Platzhalter)
+cd frontend && node tests/test_verbindung.mjs  # Terminal: Herzschlag, Eingabe-Warteschlange, Zwergen-Maße
 # Im echten Browser (Prüfstand ohne Backend/Login, ?panel=… wählt den Teil) —
 # Aufruf steht im Kopf der Testdatei; Handy-Format + Touch-Emulation:
 #   tests/test_workspace_browser.cjs  Fensteranordnung (#24)
@@ -394,6 +402,11 @@ der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Bl�
   und cp1252 tolerant — nur echte Binärdaten (NUL-Bytes) werden abgelehnt. Das
   `encoding` aus dem Lese-Ergebnis geht beim Speichern mit zurück, die Datei bleibt
   also in ihrer Kodierung (Windows-Agenten-PCs!). Gilt für Workspace UND SFTP.
+- **Terminal + ausgeblendetes Panel:** Workspace.jsx versteckt inaktive Panels mit
+  `hidden` (display:none), und App.jsx feuert nach jedem Tab-Wechsel ein `resize`.
+  Ein xterm darin darf dann NICHT fitten und keine Größe melden — `istSichtbar()`
+  aus termVerbindung.js prüfen (Browser-Test in test_terminal_browser.cjs).
+  Der Server verwirft resize < 20×3 zusätzlich (`ssh_bridge.MIN_COLS/MIN_ROWS`).
 - **Fensteranordnung** (`frontend/src/workspaceLayout.js`): `standardLayout(ids)` rechnet
   die Standardanordnung über ALLE vorhandenen Panels — nie wieder feste Plätze für
   eine bekannte Handvoll Ids, sonst hat das nächste dynamische Fenster keinen Platz

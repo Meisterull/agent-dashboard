@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import KeyBar from "./KeyBar";
 import { tastaturOffen, tastaturSchliessen } from "../viewport";
 import { fittenOhneSprung, wischScrollen } from "../termScroll";
+import { Herzschlag, Warteschlange, istSichtbar, plausibleGroesse } from "../termVerbindung";
 import { encodeKey, encodeChar } from "../keys";
 import { getSshBuffer } from "../api";
 import { t } from "../sprache";
@@ -34,6 +35,12 @@ import { t } from "../sprache";
 // den Puffer als frei markierbaren Text an — der einzige Weg auf Touch-Geräten.
 // Im Alt-Screen kommt buffer.normal mit dazu; den vollen Sitzungsverlauf
 // liefert der serverseitige Replay-Puffer (GET /api/ssh/{name}/buffer).
+//
+// Verbindungs-Hygiene (10.09.2026, termVerbindung.js): ausgeblendet wird
+// weder gefittet noch eine Größe gemeldet (sonst 7 Spalten an die Shell);
+// ein Herzschlag erkennt eingeschlafene Sockets, die bei schlechtem Netz
+// nie ein close melden; Eingaben während der Trennung warten in einer
+// Schlange und werden nach dem Reattach nachgeliefert.
 
 export const DEFAULT_SID = "main";
 
@@ -114,6 +121,12 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   // geht es nur über den Knopf "Wieder verbinden".
   const [takenOver, setTakenOver] = useState(false);
   const reconnectRef = useRef(null); // vom Effect gesetzt: erzwungener Reconnect
+  // Verbindungs-Hinweis als Badge; null = alles gut. Früher stand
+  // "[getrennt — neuer Versuch …]" als Text im Terminal: unter einer TUI im
+  // Alt-Screen unsichtbar, und der reset() beim Reattach wischte es ohnehin.
+  const [hinweis, setHinweis] = useState(null);
+  const warteRef = useRef(new Warteschlange()); // Eingaben während der Trennung
+  const herzRef = useRef(null); // Herzschlag der laufenden Verbindung
   const [mods, setMods] = useState({ ctrl: false, alt: false, shift: false });
   const modsRef = useRef(mods);
   modsRef.current = mods;
@@ -125,10 +138,16 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   const clearMods = () => setMods({ ctrl: false, alt: false, shift: false });
   const toggleMod = (name) => setMods((m) => ({ ...m, [name]: !m[name] }));
 
+  // Eingabe zur Shell — oder in die Warteschlange, solange die Verbindung
+  // neu aufgebaut wird (termVerbindung.js). Nichts geht mehr still verloren.
   const sendRaw = (data) => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN)
+    if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "data", data }));
+      herzRef.current?.gesendet();
+    } else {
+      warteRef.current.push(data);
+    }
   };
 
   const handleKey = (key, fixed = {}) => {
@@ -187,8 +206,12 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(ref.current);
-    fit.fit();
+    const termEl = ref.current;
+    const sichtbar = () => istSichtbar(termEl);
+    term.open(termEl);
+    // Ausgeblendet (display:none) misst das FitAddon Unsinn — dann bleibt es
+    // bei 80×24, bis das Panel vorne liegt (termVerbindung.js, Befund 1).
+    if (sichtbar()) fit.fit();
     termRef.current = term;
 
     // Wischen im Verlauf: xterm rastet jede Wischgeste auf Zeilenkanten
@@ -242,7 +265,6 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       const text = term.getSelection();
       if (text) copyText(text, term);
     };
-    const termEl = ref.current;
     termEl.addEventListener("mousedown", onTermMouseDown);
     document.addEventListener("mouseup", handleMouseUp);
     term.attachCustomKeyEventHandler((e) => {
@@ -269,29 +291,60 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     // Panel-Layout), blieb der Blick am Handy sonst ganz oben hängen.
     let replayBis = 0;
 
+    // Nie die Maße eines ausgeblendeten Panels melden — das waren die
+    // 7 Spalten aus dem Screenshot (termVerbindung.js, Befund 1). Liegt das
+    // Panel wieder vorne, feuert App.jsx ein resize → onResize meldet dann.
     const sendResize = (ws) => {
-      if (ws.readyState === WebSocket.OPEN)
+      if (
+        ws.readyState === WebSocket.OPEN &&
+        sichtbar() &&
+        plausibleGroesse(term.cols, term.rows)
+      )
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     };
 
+    // Herzschlag (Befund 2): Ping bei Funkstille; bleibt das Pong aus, wird
+    // die Verbindung verworfen und sofort neu aufgebaut — statt auf ein
+    // close zu warten, das bei totem Netz minutenlang ausbleibt.
+    const herz = new Herzschlag({
+      sendePing: () => {
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: "ping" }));
+      },
+      tot: () => neuVerbinden(),
+    });
+    herzRef.current = herz;
+
     const connect = () => {
       if (gone) return;
+      clearTimeout(retryTimer);
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
       const ws = new WebSocket(
         `${proto}://${window.location.host}/ws/ssh/${encodeURIComponent(name)}?sid=${encodeURIComponent(sid)}`,
       );
+      // Binärframes sind der Kontrollkanal (Pong), Textframes Terminal-Ausgabe.
+      ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
       ws.onopen = () => {
         retry = 0;
+        setHinweis(null);
+        herz.neueVerbindung();
         // Der Server spielt beim Reattach den KOMPLETTEN Sitzungspuffer nach
         // (ssh_bridge.bridge). Ohne Leeren stünde der Verlauf nach jedem
         // Netz-Blip doppelt/dreifach im Terminal.
         term.reset();
         sendResize(ws);
         replayBis = Date.now() + 1500;
+        // Während der Trennung Getipptes am Stück nachliefern (Befund 3) —
+        // die Shell lief weiter, es kommt hinter dem Replay dort an.
+        const nachtrag = warteRef.current.leeren();
+        if (nachtrag) ws.send(JSON.stringify({ type: "data", data: nachtrag }));
       };
       ws.onmessage = (ev) => {
+        herz.empfangen();
+        if (typeof ev.data !== "string") return; // Pong — nichts fürs Terminal
         if (Date.now() < replayBis) term.write(ev.data, () => term.scrollToBottom());
         else term.write(ev.data);
       };
@@ -317,13 +370,36 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         // Netz weg / Handy gesperrt → automatisch neu verbinden
         const delay = Math.min(1000 * 2 ** retry, 10000);
         retry += 1;
-        term.write(
-          "\r\n" + t("[getrennt — neuer Versuch in {0}s]", Math.round(delay / 1000)) + "\r\n",
+        setHinweis(
+          t("Verbindung unterbrochen — neuer Versuch in {0}s", Math.round(delay / 1000)),
         );
         retryTimer = setTimeout(connect, delay);
       };
     };
+
+    // Verbindung für tot erklären und sofort neu aufbauen. wsRef wird vorher
+    // geleert: das (irgendwann) kommende close des alten Sockets darf keinen
+    // zweiten Reconnect anstoßen, und Eingaben landen ab jetzt in der Schlange.
+    const neuVerbinden = () => {
+      if (gone || stolen) return;
+      const alt = wsRef.current;
+      wsRef.current = null;
+      try {
+        alt?.close();
+      } catch {
+        /* egal */
+      }
+      setHinweis(t("Verbindung eingeschlafen — verbinde neu…"));
+      connect();
+    };
     connect();
+
+    // Takt des Herzschlags. Im Hintergrund kein Urteil (Chrome drosselt Timer
+    // dort ohnehin) — beim Zurückkommen fragt onVisible sofort nach.
+    const herzTimer = setInterval(() => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) herz.pruefen();
+    }, 5000);
 
     // Expliziter Reattach über den Knopf "Wieder verbinden" — der einzige Weg
     // zurück, nachdem ein anderes Fenster die Sitzung übernommen hat.
@@ -348,27 +424,32 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         out = encodeChar(data, m);
         setMods({ ctrl: false, alt: false, shift: false });
       }
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN)
-        ws.send(JSON.stringify({ type: "data", data: out }));
+      sendRaw(out);
     });
 
-    // Zurück in die App (Handy entsperrt): sofort neu verbinden statt warten
+    // Zurück in die App (Handy entsperrt): sofort neu verbinden statt warten.
+    // Steht der Socket noch auf OPEN, weiß niemand, ob er das Sperren
+    // überlebt hat — sofort anpingen statt erst nach 15 s Funkstille.
     const onVisible = () => {
-      if (
-        !document.hidden &&
-        !gone &&
-        !stolen && // übernommene Sitzung NICHT von selbst zurückholen
-        (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED)
-      ) {
+      if (document.hidden || gone || stolen) return; // übernommene Sitzung NICHT von selbst zurückholen
+      const ws = wsRef.current;
+      if (!ws || ws.readyState === WebSocket.CLOSED) {
         clearTimeout(retryTimer);
         retry = 0;
         connect();
+      } else if (ws.readyState === WebSocket.OPEN) {
+        herz.sofort();
       }
     };
     document.addEventListener("visibilitychange", onVisible);
+    // Netz ist zurück (Flugmodus aus, WLAN wieder da): nicht den Backoff
+    // abwarten — dieselbe Prüfung wie beim Zurückkommen in die App.
+    window.addEventListener("online", onVisible);
 
     const onResize = () => {
+      // Ausgeblendet (display:none) sind die Maße Messmüll — nicht fitten,
+      // nichts melden (termVerbindung.js, Befund 1).
+      if (!sichtbar()) return;
       // Die Tastatur auf- oder zuzuklappen ändert die Zeilenzahl, und xterm
       // setzt den Blick dabei ans Ende. Wer gerade im Verlauf zurückgeblättert
       // hat, verlor damit jedes Mal seine Stelle — auf dem Handy passiert das
@@ -392,6 +473,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     return () => {
       gone = true;
       clearTimeout(retryTimer);
+      clearInterval(herzTimer);
+      herzRef.current = null;
+      setHinweis(null);
       fitRef.current = null;
       termRef.current = null;
       reconnectRef.current = null;
@@ -404,6 +488,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", onVisible);
       try {
         wsRef.current?.close();
       } catch {
@@ -495,6 +580,11 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
             >
               {t("Wieder verbinden")}
             </button>
+          </div>
+        )}
+        {hinweis && !takenOver && !copyView && (
+          <div className="pointer-events-none absolute left-1/2 top-2 z-10 max-w-[92%] -translate-x-1/2 rounded border border-amber-600 bg-slate-900/90 px-2 py-1 text-center text-[11px] text-amber-300">
+            {hinweis} · {t("Getipptes wird nachgeliefert")}
           </div>
         )}
         {mouseCaptured && !copyView && (

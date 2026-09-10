@@ -1,7 +1,12 @@
 """WebSocket ↔ SSH-Bridge mit persistenten Sessions (xterm.js).
 
-Frontend -> Server: JSON {type:"data",data} | {type:"resize",cols,rows} | {type:"kill"}.
-Server -> Frontend: rohe Terminal-Ausgabe als Text.
+Frontend -> Server: JSON {type:"data",data} | {type:"resize",cols,rows} | {type:"kill"}
+                    | {type:"ping"}.
+Server -> Frontend: rohe Terminal-Ausgabe als TEXT-Frames; BINÄR-Frames sind
+der Kontrollkanal (heute nur b"pong" als Antwort auf ping). Das Frontend
+schickt bei Funkstille ein Ping und verwirft die Verbindung, wenn das Pong
+ausbleibt — bei schlechtem Netz meldet ein WebSocket oft minutenlang KEIN
+close, während Tastendrücke schon ins Leere gehen (10.09.2026).
 
 Die SSH-Session lebt unabhängig vom WebSocket: bricht die Verbindung ab
 (Handy gesperrt, Netzwechsel) oder wird das Fenster geschlossen, läuft die
@@ -34,6 +39,8 @@ from app.ssh_connect import connect_ssh
 # Beenden oder Shell-Exit räumen auf). Env: SSH_GRACE_SECONDS.
 GRACE_SECONDS = int(os.getenv("SSH_GRACE_SECONDS", "86400"))
 BUFFER_LIMIT = 256 * 1024    # Replay-Puffer pro Session
+MIN_COLS, MIN_ROWS = 20, 3   # kleinere resize-Maße sind Messmüll, nicht Bildschirme
+PONG = b"pong"               # Binär-Frame: Antwort auf {type:"ping"}
 
 
 class _Session:
@@ -249,9 +256,16 @@ async def bridge(websocket, agent_name: str) -> None:
             if mtype == "data":
                 sess.proc.stdin.write(msg.get("data", ""))
             elif mtype == "resize":
-                sess.proc.change_terminal_size(
-                    int(msg.get("cols", 80)), int(msg.get("rows", 24))
-                )
+                cols, rows = int(msg.get("cols", 80)), int(msg.get("rows", 24))
+                # Maße unter MIN_COLS×MIN_ROWS sind nie ein echter Bildschirm,
+                # sondern der Messfehler eines ausgeblendeten Panels: das
+                # FitAddon liest bei display:none die Breite "100%" als 100 px
+                # und meldete so 7 Spalten — die Shell brach danach jede Zeile
+                # in Siebener-Häppchen um, dauerhaft sichtbar im Replay.
+                if cols >= MIN_COLS and rows >= MIN_ROWS:
+                    sess.proc.change_terminal_size(cols, rows)
+            elif mtype == "ping":
+                await websocket.send_bytes(PONG)
             elif mtype == "kill":
                 await _kill(sess, notify=False)
                 break
