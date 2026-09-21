@@ -187,6 +187,17 @@ class Task:
     # Geplanter Task (Paket St.2): vor diesem Zeitpunkt (ISO-8601, lokale
     # Serverzeit) liefert kein claim ihn aus — die Inbox ist der Wartepuffer.
     nicht_vor: Optional[str] = None
+    # Vorgang (Issue #37): Folge-Aufträge mit demselben `thread` setzen beim
+    # Empfänger dieselbe claude-Sitzung fort — der Watcher bildet daraus den
+    # Schlüssel seines Sitzungsbuchs.
+    thread: Optional[str] = None
+    # Wanduhr-Deckel dieses Laufs in Sekunden (Issue #38). Kann den Wert des
+    # Agenten (agents.yaml `automatik_timeout`) nur SENKEN.
+    timeout: Optional[int] = None
+    # Automatik-Weckruf (Issue #36, app/weckruf.py): dieser Task wurde vom
+    # Server aus ungelesenen Nachrichten gebündelt; `weck_ids` = ihre IDs.
+    weckruf: bool = False
+    weck_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -207,6 +218,17 @@ def merged_instruction(env: dict[str, Any]) -> str:
         teile.append(f'[Antwort auf deine Rückfrage "{n.get("frage", "")}": '
                      f'{n.get("antwort", "")}]')
     return "\n\n".join(t for t in teile if t)
+
+
+def _timeout_hinweis(agent: str, task_id: str, lauf: dict[str, Any] | None) -> str:
+    lauf = lauf or {}
+    text = (f"{agent}: Task {task_id} abgebrochen — {lauf.get('timeout')}. "
+            f"Bereits geleistete Arbeit liegt womöglich uncommittet auf dem Rechner.")
+    if lauf.get("session_id"):
+        text += (f" Stand übernehmen: claude --resume {lauf['session_id']}"
+                 + (" — oder den Task erneut anstoßen, er setzt die Sitzung fort."
+                    if lauf.get("fortsetzbar") else "."))
+    return text
 
 
 def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
@@ -239,6 +261,12 @@ def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
         "rolle": env.get("rolle"),
         # Geplant-Badge (St.2): „läuft nicht vor …".
         "nicht_vor": env.get("nicht_vor"),
+        # Vorgang (Issue #37) — der Datei-unabhängige Weg zum Watcher.
+        "thread": env.get("thread"),
+        # Automatik-Weckruf (Issue #36): vom Server gebündelter Auftrag aus
+        # ungelesenen Nachrichten; `weckt: False` = darf nie wecken.
+        "weckruf": bool(env.get("weckruf")),
+        "weckt": env.get("weckt", True),
     }
 
 
@@ -260,13 +288,23 @@ def _sortier_schluessel(env: dict[str, Any], pfad: Path) -> tuple[str, str]:
 
 
 def _alter_sekunden(env: dict[str, Any], pfad: Path) -> float:
-    """Wie lange liegt dieser Envelope schon in Arbeit? (claimed_at, sonst mtime)"""
-    stamp = env.get("claimed_at")
-    if stamp:
+    """Wie lange liegt dieser Envelope schon OHNE Lebenszeichen in Arbeit?
+
+    Maßgeblich ist der jüngste Stempel aus `zuletzt_aktiv` (Issue #42: der
+    Bearbeiter hat sich per claim_task(erneut=True) gemeldet) und
+    `claimed_at`; ohne beide die mtime."""
+    juengster: float | None = None
+    for feld in ("zuletzt_aktiv", "claimed_at"):
+        stamp = env.get(feld)
+        if not stamp:
+            continue
         try:
-            return max(0.0, time.time() - datetime.fromisoformat(str(stamp)).timestamp())
+            wert = datetime.fromisoformat(str(stamp)).timestamp()
         except ValueError:
-            pass
+            continue
+        juengster = wert if juengster is None else max(juengster, wert)
+    if juengster is not None:
+        return max(0.0, time.time() - juengster)
     try:
         return max(0.0, time.time() - pfad.stat().st_mtime)
     except OSError:
@@ -535,7 +573,48 @@ class Mailbox:
                 return None
             if not erneut:
                 raise AlreadyClaimed(task_id, laufend.get("claimed_at"))
+            # Lebenszeichen (Issue #42): der EIGENE Bearbeiter meldet sich —
+            # der Watcher tut das alle paar Minuten, solange sein Lauf
+            # arbeitet. Für die Pflege ist der Task damit nicht verwaist.
+            laufend["zuletzt_aktiv"] = _now()
+            try:
+                atomic_write_json(dst, laufend)
+            except OSError:
+                pass  # Stempel ist Schutz, kein Grund den Aufruf scheitern zu lassen
             return laufend
+
+    # --- Lebenszeichen des Agenten (Issue #42) -------------------------------
+
+    AKTIV_TAKT = 60.0  # höchstens so oft wird die Marke wirklich neu geschrieben
+
+    def lebenszeichen(self) -> None:
+        """Marke „dieser Agent arbeitet gerade" auffrischen.
+
+        Eine INTERAKTIVE Sitzung beansprucht einen Task und arbeitet dann
+        stundenlang daran (Rückfragen an den Auftraggeber, Entscheidungen) —
+        ohne dass der Envelope sich je wieder ändert. Die Pflege hielt ihn
+        nach 3 h für verwaist und reihte ihn zurück; eine eingeschaltete
+        Automatik hätte ihn parallel ein zweites Mal ausgeführt. Jede echte
+        MCP-Aktivität des Agenten frischt deshalb diese Marke auf (der
+        MCP-Server ruft das; das Leerlauf-Pollen des Watchers zählt NICHT —
+        sonst hielte ein neu gestarteter Watcher den Task seines abgestürzten
+        Vorgängers für immer am Leben)."""
+        marke = self.base / ".aktiv"
+        try:
+            if time.time() - marke.stat().st_mtime < self.AKTIV_TAKT:
+                return
+        except OSError:
+            pass
+        try:
+            marke.touch()
+        except OSError:
+            pass
+
+    def sekunden_seit_lebenszeichen(self) -> float | None:
+        try:
+            return max(0.0, time.time() - (self.base / ".aktiv").stat().st_mtime)
+        except OSError:
+            return None
 
     # --- Rückfragen während eines Tasks (Issue #17) --------------------------
 
@@ -684,6 +763,7 @@ class Mailbox:
     def write_response(
         self, task_id: str, result: str, status: str = "done", log: str = "",
         verbrauch: dict[str, Any] | None = None,
+        lauf: dict[str, Any] | None = None,
     ) -> Path:
         """Task abschließen: Response schreiben, zustellen, Task abräumen.
 
@@ -693,11 +773,12 @@ class Mailbox:
         Outbox.
         """
         with self._lock():
-            return self._write_response(task_id, result, status, log, verbrauch)
+            return self._write_response(task_id, result, status, log, verbrauch, lauf)
 
     def _write_response(
         self, task_id: str, result: str, status: str = "done", log: str = "",
         verbrauch: dict[str, Any] | None = None,
+        lauf: dict[str, Any] | None = None,
     ) -> Path:
         task_id = _sichere_id(task_id, "Task-ID")  # P0-1
         if status not in VALID_STATUS:
@@ -732,6 +813,12 @@ class Mailbox:
         }
         if verbrauch:
             response["verbrauch"] = dict(verbrauch)
+        # Lauf-Daten des Watchers (Issues #37–#39): Sitzung zum Übernehmen
+        # (`claude --resume <session_id>`), Timeout-Grund, verweigerte Aufrufe.
+        # Das Panel kennzeichnet damit „done mit Einschränkungen" und
+        # „abgebrochen, fortsetzbar", statt dass es nur im log-Freitext steht.
+        if lauf:
+            response["lauf"] = dict(lauf)
         # Fehlschlag: Aufgabenbeschreibung mit in die Antwort nehmen — der
         # Auftraggeber muss nachvollziehen können, WORUM es ging (Issue #15).
         if status == "error" and task_env is not None:
@@ -754,10 +841,32 @@ class Mailbox:
             }
             if "instruction" in response:
                 envelope["instruction"] = response["instruction"]
+            if task_env.get("weckruf"):
+                # Schleifenschutz (Issue #36): das Ergebnis eines WECKRUFS darf
+                # den Absender nicht seinerseits wecken — sonst spielten zwei
+                # Automatik-Agenten endlos Ping-Pong mit Abschlussmeldungen.
+                # Wer eine Reaktion will, schickt send_message/send_task.
+                envelope["weckt"] = False
+            if (lauf or {}).get("timeout"):
+                # Issue #38: der Timeout-Grund gehört in die Meldung an den
+                # Auftraggeber (und in die Push-Zeile), nicht nur ins log.
+                envelope["hinweis"] = _timeout_hinweis(self.agent, task_id, lauf)
             try:
                 Mailbox(self.root, to).post(envelope)
             except (ValueError, OSError):
                 pass  # Zustellung ist best-effort; die Outbox-Response bleibt
+        # Timeout-Abbruch ist eine Benachrichtigung wert (Issue #38): kam der
+        # Auftrag von einem anderen AGENTEN, erführe der Mensch sonst nichts —
+        # und die Arbeit liegt womöglich uncommittet auf der Box. (Kam er vom
+        # Orchestrator, meldet sich schon die Response samt `hinweis`.)
+        if task_env is not None and (lauf or {}).get("timeout") and to != ORCHESTRATOR:
+            try:
+                Mailbox(self.root, ORCHESTRATOR).post({
+                    "kind": "message", "sender": self.agent, "weckt": False,
+                    "text": _timeout_hinweis(self.agent, task_id, lauf),
+                })
+            except (ValueError, OSError):
+                pass
         # Erledigten Task abräumen — aus BEIDEN möglichen Ablagen: .processing/
         # (beansprucht) UND inbox/ (nie beansprucht, z.B. interaktiver Agent
         # ohne claim_task). Sonst würde der Task trotz Antwort weiter geliefert.
@@ -898,6 +1007,11 @@ class Mailbox:
         """
         requeued: list[str] = []
         aufgegeben: list[str] = []
+        # Issue #42: meldet sich der Agent noch (interaktive Sitzung arbeitet,
+        # fragt nach, schreibt Nachrichten), ist KEIN Task von ihm verwaist.
+        seit = self.sekunden_seit_lebenszeichen()
+        if seit is not None and seit < max_alter:
+            return {"requeued": [], "aufgegeben": []}
         with self._lock():
             for p, env in _lese_ordner(self.processing):
                 if env.get("kind", "task") != "task":
@@ -914,6 +1028,7 @@ class Mailbox:
                 env["requeues"] = versuche
                 env["status"] = "pending"
                 env.pop("claimed_at", None)
+                env.pop("zuletzt_aktiv", None)
                 atomic_write_json(p, env)
                 try:
                     os.replace(p, self.inbox / p.name)
@@ -923,6 +1038,20 @@ class Mailbox:
         # Aufgeben heißt abschließen — außerhalb der Schleife, weil
         # write_response denselben Lock nimmt (bei uns re-entrant, aber die
         # Ordner-Iteration soll nicht unter der Hand verändert werden).
+        # Nicht mehr lautlos (Issue #42): der Agent erfährt, dass sein Task
+        # wieder in der Warteschlange liegt. `weckt: False` — die Notiz selbst
+        # darf keinen Automatik-Lauf auslösen (Issue #36).
+        for task_id in requeued:
+            try:
+                self.post({
+                    "kind": "message", "sender": ORCHESTRATOR, "weckt": False,
+                    "text": (f"[Pflege] Dein Task {task_id} lag {max_alter / 3600:.0f} h "
+                             f"ohne Lebenszeichen in Arbeit und wurde zurück in deine "
+                             f"Inbox gereiht. Arbeitest du noch daran: "
+                             f"claim_task('{task_id}') erneut aufrufen."),
+                })
+            except (ValueError, OSError):
+                pass
         for task_id in aufgegeben:
             self.write_response(
                 task_id,

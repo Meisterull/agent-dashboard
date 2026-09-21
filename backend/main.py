@@ -70,6 +70,7 @@ Start (lokal):  cd backend && uvicorn main:app --host 127.0.0.1 --port 5000
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -128,9 +129,18 @@ async def _automatik_start() -> None:
 
 # Mailbox-Pflege: wie lange darf ein Task in .processing/ liegen, bevor er als
 # verwaist gilt (Watcher gestorben), und wie lange bleiben Archiv/Outbox liegen.
-# WICHTIG: STALE_TASK_ALTER muss deutlich über dem CLAUDE_TIMEOUT des Watchers
-# liegen (dort 1800 s), sonst wird ein noch laufender Task ein zweites Mal
-# eingereiht und doppelt ausgeführt. 3 h = 6-facher Sicherheitsabstand.
+# WICHTIG: STALE_TASK_ALTER muss über dem Wanduhr-Deckel des Watchers liegen
+# (seit Issue #38 Default 7200 s, je Agent `automatik_timeout`), sonst würde
+# ein noch laufender Task ein zweites Mal eingereiht. Zusätzlich zählt seit
+# Issue #42 nicht mehr die reine Claim-Zeit, sondern das letzte LEBENSZEICHEN:
+# der Watcher meldet sich alle 10 min per claim_task(erneut=True), jede echte
+# MCP-Aktivität einer interaktiven Sitzung frischt die Agenten-Marke auf.
+def _log_zeit() -> str:
+    """Zeitstempel für Hintergrund-Logzeilen (Issue #40)."""
+    from datetime import datetime as _dt
+    return _dt.now().astimezone().isoformat(timespec="seconds")
+
+
 PFLEGE_INTERVALL = float(os.environ.get("MAILBOX_PFLEGE_INTERVALL", "900"))
 STALE_TASK_ALTER = float(os.environ.get("MAILBOX_STALE_ALTER", "10800"))  # 3 h
 ARCHIV_TAGE = float(os.environ.get("MAILBOX_ARCHIV_TAGE", "30"))
@@ -158,11 +168,11 @@ async def _mailbox_pflege_schleife() -> None:
                 INBOX_TAGE
             )
         except Exception as exc:  # noqa: BLE001 — Pflege darf die API nie killen
-            print(f"[pflege] Fehler: {exc}", flush=True)
+            print(f"{_log_zeit()} [pflege] Fehler: {exc}", flush=True)
             continue
         if bericht["requeued"] or bericht["aufgegeben"] or bericht["geloescht"]:
             print(
-                f"[pflege] wieder eingereiht: {bericht['requeued'] or '-'}; "
+                f"{_log_zeit()} [pflege] wieder eingereiht: {bericht['requeued'] or '-'}; "
                 f"aufgegeben: {bericht['aufgegeben'] or '-'}; "
                 f"alte Ablagen gelöscht: {bericht['geloescht']}",
                 flush=True,
@@ -394,12 +404,64 @@ def _lese_outbox(ordner: Path, tage: float = 8.0) -> list[dict[str, Any]]:
     return out
 
 
+# Polling-Last (Issue #41): das Panel fragt alle 8 s je Agent. Gemessen lieferte
+# EIN Agent dabei jedes Mal 171 KB — unverändert, Poll für Poll, ~100 MB/h je
+# offenem Tab (am Handy über VPN: Datenvolumen und Akku). Zwei Hebel:
+#   1. Die Liste trägt lange Texte nur noch gekürzt (`gekuerzt: true`); den
+#      vollen Eintrag holt das Panel beim Aufklappen (/outbox/{task_id}).
+#   2. ETag: unveränderter Stand → 304 ohne Körper. Der Browser-Cache gibt dem
+#      fetch() dann transparent die letzte Antwort.
+TASKS_TEXT_DECKEL = int(os.environ.get("TASKS_TEXT_DECKEL", "600"))
+_LANGE_FELDER = ("result", "log", "instruction")
+
+
+def _kuerze_eintrag(eintrag: dict[str, Any]) -> dict[str, Any]:
+    gekuerzt = False
+    out = dict(eintrag)
+    for feld in _LANGE_FELDER:
+        wert = out.get(feld)
+        if isinstance(wert, str) and len(wert) > TASKS_TEXT_DECKEL:
+            out[feld] = wert[:TASKS_TEXT_DECKEL] + "…"
+            gekuerzt = True
+    if gekuerzt:
+        out["gekuerzt"] = True
+    return out
+
+
+def _etag_antwort(request: Request, daten: Any) -> Response:
+    roh = json.dumps(daten, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    etag = '"' + hashlib.sha256(roh).hexdigest()[:32] + '"'
+    kopf = {"ETag": etag, "Cache-Control": "no-cache"}
+    # nginx macht beim Komprimieren aus starken schwache ETags (W/"…") — beim
+    # Vergleich zählt nur der Wert; mehrere Kandidaten kommen kommagetrennt.
+    bekannt = {teil.strip().removeprefix("W/")
+               for teil in (request.headers.get("if-none-match") or "").split(",")}
+    if etag in bekannt:
+        return Response(status_code=304, headers=kopf)
+    return Response(roh, media_type="application/json", headers=kopf)
+
+
 @app.get("/api/agents/{name}/tasks")
-async def agent_tasks(name: str) -> dict:
+async def agent_tasks(name: str, request: Request) -> Response:
     base = _agent_base(name)
     # to_thread (Review P2): der 8-s-Poll je Agent parste Inbox + komplette
     # Outbox synchron im Event-Loop — Terminals ruckelten mit.
-    return await asyncio.to_thread(_agent_tasks_sync, name, base)
+    daten = await asyncio.to_thread(_agent_tasks_sync, name, base)
+    return _etag_antwort(request, daten)
+
+
+@app.get("/api/agents/{name}/outbox/{task_id}")
+async def agent_outbox_eintrag(name: str, task_id: str) -> dict:
+    """Eine Antwort UNGEKÜRZT — das Panel lädt sie beim Aufklappen nach
+    (Issue #41), statt alle Ergebnistexte mit jedem Poll zu übertragen."""
+    base = _agent_base(name)
+    task_id = _geprüfte_id(task_id, "Task-ID")
+    pfad = base / "outbox" / f"{task_id}-response.json"
+    try:
+        return await asyncio.to_thread(
+            lambda: json.loads(pfad.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(404, f"Antwort zu {task_id} nicht gefunden.") from None
 
 
 def _agent_tasks_sync(name: str, base: Path) -> dict:
@@ -425,8 +487,10 @@ def _agent_tasks_sync(name: str, base: Path) -> dict:
     outbox = _lese_outbox(base / "outbox")
     return {
         "agent": name,
-        "inbox": inbox + claimed,
-        "outbox": outbox,
+        "inbox": [_kuerze_eintrag(e) for e in inbox + claimed],
+        # Der Verbrauch unten rechnet auf der UNGEKÜRZTEN Outbox — gekürzt
+        # wird nur, was über die Leitung geht.
+        "outbox": [_kuerze_eintrag(e) for e in outbox],
         "messages": messages,
         # Verbrauchszähler (St.3): aus der OHNEHIN gelesenen Outbox gerechnet —
         # kein zweiter Poll, kein Doppel-I/O. Schwelle aus den Settings.

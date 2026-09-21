@@ -1,7 +1,63 @@
 # TODO — Review 16.08.2026
 
-Vollreview mit 4 parallelen Agenten (Backend-Kern, SSH/Remote, Frontend, Infra/Security),
-Duplikate zusammengeführt. H1+H2 wurden zusätzlich von Hand am Code verifiziert.
+## Stand 21.09.2026: Issues #36–#42 + Tablet-Scrollen — committet, Public-Sync, Issues geschlossen; Live-Tests offen
+
+Anlass: Automatik brauchte spürbar mehr Tokens und arbeitete schlechter als
+„schau mal Inbox" in einer offenen Sitzung. Dazu sieben Issues aus dem
+Echtbetrieb (alle 21.09.) und ein Touch-Befund am Tablet.
+
+| Issue | Was | Wo |
+|---|---|---|
+| #37 | Sitzung je Verzeichnis+Rolle per `--resume` fortsetzen, optional `thread` je Vorgang, `session_id` in der Antwort | `scripts/agent_watcher.py` (`run_claude_sitzung`, Sitzungsbuch), `send_task(thread=…)` |
+| #38 | Leerlauf-Wächter (15 min) + Wanduhr (2 h) statt fester 30 min, je Agent/Task einstellbar, Frist im Hinweis, Timeout = fortsetzbar + Meldung | Watcher, `auto_watcher.py` (`_zeit_flags`, Stop-Frist je Agent), `mailbox.py` |
+| #39 | Verweigerung nennt den Befehl + passenden Hinweis; Panel „mit Einschränkungen" | Watcher (`verweigerungs_log`), `AgentsPanel.jsx` |
+| #36 | Weckruf: Post je Absender → ein Task, `automatik_weckt`, Schleifenschutz, Panel-Hinweis | `app/weckruf.py`, Manager-Reconcile |
+| #40 | Zeitstempel, `ergebnis=fehler:` bei Fehler-Rückgaben, Integrations-Timeout mit Ausweg + Serien-Meldung | `mcp_server.py`, `integrations.py` |
+| #41 | Task-Liste gekürzt + ETag/304, Einzelabruf, stiller Watcher-Poll + Backoff, nginx-Log ohne Erfolgs-Polls, uvicorn ohne Access-Log | `main.py`, nginx-Vorlage, `supervisord.conf` |
+| #42 | Verwaist = 3 h ohne Lebenszeichen (Watcher-Herzschlag + `.aktiv`), Notiz beim Rückreihen | `mailbox.py`, `mcp_server.py` |
+| — | Tablet: Wisch in Claude Code → Mausrad-Ereignis | `frontend/src/termScroll.js` |
+
+Verifiziert: `python -m tests.run_alle` → **22 Module grün** (neu:
+`test_issues_36_42.py`, dazu ~30 Tests in `test_agent_watcher.py`/
+`test_auto_watcher.py`); Browsertests Terminal/Agenten/Tastenleiste grün
+(Agenten-Test deckt die neuen Anzeigen ab); im Wegwerf-Container aus dem
+Projekt-Image: echte FastAPI-App (ETag/304, Kürzung, Einzelabruf), echtes
+mcp-SDK 1.29.1 (Schemas, unbekannte Argumente werden ignoriert), echte
+nginx-Konfiguration (`nginx -t` + Log-Filter mit echten Anfragen); dazu drei
+echte Läufe mit dem Claude-Binary 2.1.270 (Fortsetzen, unbekannte Sitzung,
+provozierte Verweigerung).
+
+**Bewusst anders als im Issue vorgeschlagen:**
+- #37: Schlüssel ist Verzeichnis+Rolle (wie im Handbetrieb EINE Sitzung je Box),
+  nicht Absender+project — sonst kennte ein Weckruf-Lauf die Vorarbeit nicht.
+  `thread` trennt, wenn man es will.
+- #36: kein Sonderweg im Watcher; der Server macht aus der Post einen Task.
+  `answer` weckt nicht (die Antwort auf eine Task-Rückfrage stößt den
+  geparkten Task ohnehin an).
+- #42: kein `claimed_by`; Lebenszeichen decken beide Fälle ab.
+- #38: `.failed` bleibt der Ablageort, „fortsetzbar" steht in `lauf` — ein
+  neuer Status hätte jede Stelle berührt, die VALID_STATUS kennt.
+
+**Offen (Betrieb):**
+- [ ] Deploy per `scripts/deploy.sh` am 21.09. auf Sebastians Ansage gestartet —
+      Ergebnis in `deploy.log` gegenprüfen („DEPLOY OK"). Der Watcher wird beim
+      nächsten Automatik-Start von selbst neu auf den Agenten-PC gelegt
+      (Hash-Vergleich).
+- [ ] Tablet: in Claude Code mit dem Finger durch den Verlauf wischen.
+      Zu schnell/langsam → Schrittweite in `radSenden` (heute ein Rad-Ereignis
+      je Zeile Fingerweg, wie Termux).
+- [ ] Automatik: zwei Tasks nacheinander → im Log „setzt Sitzung fort (Task 2 …)";
+      Task mit Rückfrage → nach der Antwort „derselbe Task geht … weiter".
+- [ ] `automatik_weckt: [task, message, response]` bei EINEM Agenten einschalten
+      und eine Nachricht schicken → Weckruf-Task erscheint binnen ~15 s.
+- [ ] Nach ein paar Tagen Verbrauch vergleichen: Antworten tragen
+      `lauf.sitzung` (neu/fortgesetzt) und `lauf.kontext`.
+- [ ] Agent `server` (agents_ui.yaml) hat weiter weder `workdir` noch
+      `permission_mode`/`allowed_tools` — headless werden Freigaben abgelehnt.
+- [x] Commit + Public-Sync (format-patch/git am) + Issues #36–#42 kommentiert und
+      geschlossen (21.09., auf Ansage).
+- [ ] Nicht gebaut: Wiederanlauf-Knopf für `.failed`-Tasks im Panel (heute nur
+      per erneutem Auftrag) — wäre der natürliche Partner zu „fortsetzbar".
 
 ## Stand 16.08.2026, abends: ALLE Befunde umgesetzt — noch NICHT deployt
 

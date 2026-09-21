@@ -113,7 +113,10 @@ def lies_snapshot(root: Path) -> dict[str, dict[str, Any]]:
             antworten[env_id] = {
                 "sender": env.get("sender") or "?",
                 "status": env.get("status") or "done",
-                "text": str(env.get("text") or ""),
+                # `hinweis` (Issue #38) schlägt den Ergebnistext: bei einem
+                # Timeout-Abbruch zählt in der Push-Zeile der Grund, nicht
+                # der Anfang des Fortschrittsprotokolls.
+                "text": str(env.get("hinweis") or env.get("text") or ""),
             }
         elif kind == "message":
             nachrichten[env_id] = {

@@ -137,12 +137,13 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `orchestrator.py` | CLI-Variante des Orchestrators (Chat im Terminal) |
 | `app/orchestrator_core.py` | Gemeinsamer Kern: `mcp_session()` + `run_turn()`. CLI **und** API nutzen ihn |
 | `app/llm.py` | Provider-neutrale LLM-Schicht (ein Loop, Backends **ollama** + **anthropic**) |
-| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox` (FIFO nach `created_at`), `claim_tasks`/`claim_task` (nur Tasks, **exklusiv**: ein laufender Task wirft `AlreadyClaimed`), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `beantworte_frage` (die eine Antwort-Primitive für Dashboard und MCP), `schliesse_frage`/`verwerfe_frage` (Rückfrage ohne Antwort beenden — der nur auf sie wartende Task scheitert mit Klartext), `requeue_stale`/`aufraeumen`/`pflege` (verwaiste Tasks zurück in die Warteschlange, alte Ablagen rotieren), `normalize_envelope`. Read-Modify-Write läuft unter einem Datei-Lock je Mailbox |
+| `app/mailbox.py` | Atomare Mailbox v2: Envelopes (task/message/question/answer/response), `post`, `read_inbox` (FIFO nach `created_at`), `claim_tasks`/`claim_task` (nur Tasks, **exklusiv**: ein laufender Task wirft `AlreadyClaimed`), `write_response` (rettet `sender` als `to`, legt das Ergebnis als `response` in die Inbox des Auftraggebers, räumt inbox **und** .processing), `mark_read` (Archiv), `beantworte_frage` (die eine Antwort-Primitive für Dashboard und MCP), `schliesse_frage`/`verwerfe_frage` (Rückfrage ohne Antwort beenden — der nur auf sie wartende Task scheitert mit Klartext), `requeue_stale`/`aufraeumen`/`pflege` (verwaiste Tasks zurück in die Warteschlange — verwaist heißt 3 h **ohne Lebenszeichen**: der Watcher meldet sich alle 10 min per `claim_task(erneut=True)`, jede echte MCP-Aktivität des Agenten frischt `<mailbox>/.aktiv` auf; der Agent bekommt beim Rückreihen eine Notiz; alte Ablagen rotieren), `normalize_envelope`. Read-Modify-Write läuft unter einem Datei-Lock je Mailbox |
 | `app/files.py` | Pfad-sichere Datei-Ops für Dateibaum und Editor: `list_dir`, `read_file`, `write_file`, `make_dir`, `rename`, `delete`, `save_upload`, `file_path` (Download) — alles über `_safe` gegen Path-Traversal gehärtet; `GESPERRT` hält `keys/`, `ssl/` und `chat.db` aus dem Panel |
 | `app/config.py` | Settings (`settings.json`) + Verbindungen (`agents.yaml`, ohne Credentials) |
 | `app/integrations.py` | Config-getriebene HTTP-Integrationen (`integrations.yaml`, generisch) |
 | `app/mcp_scope.py` | Kanal-Identität + Tool-Allowlists je Agent (Port-Vergabe, Port-Map, `resolve_ident`) |
-| `app/auto_watcher.py` | Automatikmodus: hält pro Agent einen Remote-Watcher per SSH (`/api/automatik*`) |
+| `app/auto_watcher.py` | Automatikmodus: hält pro Agent einen Remote-Watcher per SSH (`/api/automatik*`), stößt im Reconcile-Takt die Weckrufe an |
+| `app/weckruf.py` | Automatik-Weckruf: bündelt ungelesene Nachrichten/Ergebnisse/Rückfragen je Absender zu einem Task (`automatik_weckt`), mit Schleifenschutz |
 | `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
 | `app/remote_files.py` | SFTP-Datei-Ops auf den Agenten-PCs (`/api/remote/…`) |
 | `app/ssh_connect.py` | zentraler SSH-Connect mit Host-Key-Pinning (TOFU, `known_hosts`) |
@@ -285,6 +286,46 @@ zu laufen. Vor dem ersten Task prüft der Watcher
 die Umgebung (Binary, Arbeitsverzeichnis) und hält bei Serien sofortiger
 Fehlschläge an, statt die Warteschlange zu verbrauchen.
 
+**Sitzung fortsetzen:** Der Watcher startet nicht mehr für jeden Task einen
+frischen, gedächtnislosen Claude-Lauf, sondern führt je Arbeitsverzeichnis und
+Rolle eine Sitzung weiter (`claude --resume`). Der zweite Task kennt das Projekt
+und die Vorgeschichte schon — das spart den Startkontext, die erneute
+Orientierung im Code und nach einer Rückfrage den kompletten zweiten Lauf. Eine
+neue Sitzung beginnt von selbst nach 12 Stunden Pause, ab 150 000 Tokens Kontext
+oder nach 25 Tasks, außerdem nach einem fehlgeschlagenen Lauf (nicht nach einem
+Timeout — dort bleibt der Stand in der Sitzung und der erneut angestoßene Task
+macht weiter). Wer Folge-Aufträge ausdrücklich an einen Vorgang binden will,
+gibt bei `send_task` einen `thread` mit: gleicher thread = gleiche Sitzung,
+auch nach Tagen. Im Automatik-Log steht je Task „neue Sitzung (…)" oder „setzt
+Sitzung fort (…)". Jede Antwort trägt die Lauf-Daten (`lauf`): Sitzung,
+Kontextgröße und die `session_id` — im Panel aufgeklappt als
+`claude --resume <id>`, damit ein Mensch denselben Faden im Terminal übernehmen
+kann. Optional je Agent in `agents.yaml`: `resume: false` (jeder Task wieder
+frisch), `resume_max_pause` (Sekunden) und `resume_max_kontext` (Tokens). Das
+Sitzungsbuch liegt auf dem Agenten-PC unter
+`~/.agent-dashboard/<agent>.sitzungen.json`; löschen setzt es gefahrlos zurück.
+
+**Zeitgrenzen:** Ein Lauf wird abgebrochen, wenn 15 Minuten lang kein
+Lebenszeichen kommt (hängt), spätestens aber nach 2 Stunden Gesamtdauer. Je
+Agent in `agents.yaml`: `automatik_leerlauf` und `automatik_timeout` (Sekunden;
+Leerlauf `0` schaltet den Wächter ab). Ein einzelner Auftrag kann seine Grenze
+mit `send_task(timeout=…)` senken, nie erhöhen. Der Lauf erfährt seine Frist
+vorab. Nach einem Abbruch steht im Panel „abgebrochen · fortsetzbar", der
+Auftraggeber bekommt den Grund, und der Mensch eine Benachrichtigung.
+
+**Auf Nachrichten reagieren:** Von sich aus führt die Automatik nur Aufträge
+(`task`) aus. Mit `automatik_weckt: [task, message, response, question]` in
+`agents.yaml` wecken auch Nachrichten, Ergebnisse delegierter Aufträge und
+Rückfragen den Agenten: das Dashboard bündelt ungelesene Post je Absender zu
+einem Auftrag. Jeder Eintrag weckt höchstens einmal; mehr als sechs Weckrufe je
+Absender und Stunde werden angehalten und dem Menschen gemeldet
+(`WECK_MAX_JE_STUNDE`). Ist die Option aus und es liegt Post, sagt das Panel:
+„n ungelesene Einträge — die Automatik reagiert darauf nicht".
+
+**Verweigerte Werkzeuge:** Lehnt Claude Code einen Aufruf ab, nennt das Log den
+Befehl und ob das Werkzeug gar nicht, nur eingeschränkt oder pauschal
+freigegeben war; die Antwort ist im Panel mit „mit Einschränkungen" markiert.
+
 Stellt der Agent während eines Tasks eine Rückfrage (`ask`), wird der Task
 beim Abschluss **geparkt** statt als erledigt gemeldet: er bleibt als „wartet
 auf Antwort" (needs_confirm) sichtbar und läuft nach der Antwort automatisch
@@ -356,7 +397,8 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `GET` | `/api/connections` | SSH-Verbindungen aus `agents.yaml` (ohne Credentials) |
 | `GET` | `/api/settings` | editierbare UI-Settings |
 | `PUT` | `/api/settings` | Settings speichern (Whitelist) |
-| `GET` | `/api/automatik` | Automatikmodus: Not-Aus + gewünschter/echter Status je Agent |
+| `GET` | `/api/agents/{name}/outbox/{task_id}` | Eine Antwort ungekürzt (die Task-Liste trägt lange Texte nur angeschnitten, `gekuerzt: true`; Liste antwortet mit ETag/304) |
+| `GET` | `/api/automatik` | Automatikmodus: Not-Aus + gewünschter/echter Status je Agent, dazu `weckt`/`ungeweckt` |
 | `POST` | `/api/automatik/{name}` | Body `{an}` — Automatik eines Agenten an/aus (aus = sanft) |
 | `POST` | `/api/automatik/notaus` | Body `{an}` — globaler Not-Aus (an = alle sofort hart stoppen) |
 | `GET` | `/api/ssh/sessions` | laufende Terminal-Sessions (`name`, `sid`, `attached`, `age`, `idle`) |

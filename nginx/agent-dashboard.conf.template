@@ -8,6 +8,19 @@ map $http_upgrade $ext_connection {
     ""      "";
 }
 
+# Issue #41: ~98 % des Container-Logs waren Poll-Anfragen des Panels (alle 8 s
+# je offenem Tab, je Agent) — die interessanten [mcp]/[automatik]-Zeilen
+# rotierten nach wenigen Tagen aus dem 100-MB-Deckel. Poll-Endpunkte und der
+# Healthcheck erscheinen deshalb nur noch im Access-Log, wenn sie SCHEITERN.
+map "$request_method:$request_uri" $ist_poll {
+    default 0;
+    ~^GET:/api/(health|automatik|agents|questions|ssh/sessions)(\?|/|$) 1;
+}
+map "$ist_poll:$status" $ins_log {
+    default 1;
+    ~^1:[23] 0;
+}
+
 # Brute-Force-Bremse fürs Login (M17). limit_req_zone MUSS auf http-Ebene
 # stehen; genutzt wird sie unten nur in "location = /api/auth/login".
 # Die 0.8-s-Verzögerung im Backend wirkt nur pro Request und hält parallele
@@ -53,7 +66,8 @@ server {
     ssl_prefer_server_ciphers off;
 
     # M20: siehe Kommentar im :80-Block — Logs ausschließlich nach stdout/stderr.
-    access_log /dev/stdout;
+    # `if=` (Issue #41): erfolgreiche Poll-Anfragen bleiben draußen, s. map oben.
+    access_log /dev/stdout combined if=$ins_log;
     error_log  /dev/stderr;
 
     # HSTS bleibt bewusst AUS (Bewertung zu N19). Es gilt pro HOSTNAME, NICHT

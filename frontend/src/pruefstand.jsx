@@ -65,6 +65,24 @@ const nachrichten = [
   },
 ];
 window.__posts = [];
+// Antwort mit Lauf-Daten des Watchers (Issues #37–#39): verweigerter Aufruf,
+// Timeout, Sitzung zum Übernehmen — und in der Liste nur angeschnitten (#41).
+const antwortMitLauf = {
+  task_id: "task-9",
+  status: "error",
+  result: "angeschnitten…",
+  gekuerzt: true,
+  log: "[watcher] Timeout: 900s ohne Lebenszeichen",
+  responded_at: new Date().toISOString(),
+  lauf: {
+    sitzung: "fortgesetzt",
+    session_id: "9a2d20b8-b893-43c0-8867-a80963446b17",
+    kontext: 84000,
+    timeout: "Timeout: 900s ohne Lebenszeichen",
+    fortsetzbar: true,
+    verweigert: [{ tool: "Bash", eingabe: "cat /etc/shadow" }],
+  },
+};
 
 function fetchDoppel(url, opt = {}) {
   const json = (data) =>
@@ -82,12 +100,26 @@ function fetchDoppel(url, opt = {}) {
   if (url === "/api/rollen") return json({ rollen: [] });
   if (url === "/api/zeitplaene") return json({ plaene: [] });
   if (url === "/api/agents") return json({ agents: ["PMNB029", "erp"] });
-  if (url === "/api/automatik") return json({ notaus: false, agents: {} });
+  // Automatik an, reagiert aber nur auf Tasks → die zwei Nachrichten oben
+  // bleiben liegen, und das Panel muss es sagen (Issue #36).
+  if (url === "/api/automatik")
+    return json({
+      notaus: false,
+      agents: {
+        PMNB029: {
+          gewuenscht: true, startbar: true, status: "an", detail: "", seit: null,
+          log: [], gesperrt: false, weckt: ["task"], ungeweckt: 2,
+        },
+      },
+    });
+  // Einzelabruf der ungekürzten Antwort (Issue #41)
+  if (url.startsWith("/api/agents/PMNB029/outbox/task-9"))
+    return json({ ...antwortMitLauf, result: "VOLLER TEXT der Antwort", gekuerzt: undefined });
   if (url.startsWith("/api/agents/PMNB029/tasks"))
     return json({
       agent: "PMNB029",
       inbox: [{ task_id: "task-1", status: "pending", instruction: "bau das" }],
-      outbox: [],
+      outbox: [antwortMitLauf],
       messages: nachrichten,
     });
   if (url.startsWith("/api/agents/erp/tasks"))

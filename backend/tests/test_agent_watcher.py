@@ -11,6 +11,10 @@ Abgedeckt (T5/T6 der Review-Liste):
     inbox_tasks (FIFO nach created_at, N1), instanz_lock (H2)
   * baue_claude_cmd: instruction immer hinter "--" (Issue #20 — das
     variadische --allowed-tools verschluckt sie sonst)
+  * Sitzung fortsetzen (21.09.2026): Sitzungsbuch als reine Funktionen
+    (Grenzen, geparkter Task, kaputtes Buch) und run_claude_sitzung gegen das
+    gefakte Binary (--resume, Kurz-Hinweis, Rückfall auf frisch ohne
+    Doppellauf, Vergessen nach Fehler, Rolle, abgeschaltet)
 """
 from __future__ import annotations
 
@@ -87,6 +91,35 @@ elif szenario.startswith("haengt"):
     ev({"type": "assistant", "message": {"content": [
         {"type": "text", "text": "arbeite lange"}]}})
     time.sleep(120)
+elif "sitzung" in szenario:
+    # Sitzungs-Szenarien (--resume): jeden Aufruf protokollieren, damit der
+    # Test Kommandozeile UND Prompt je Lauf prüfen kann.
+    argv = sys.argv[1:]
+    alt = argv[argv.index("--resume") + 1] if "--resume" in argv else None
+    with open("aufrufe.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"resume": alt, "prompt": szenario}) + "\n")
+    if alt and alt.startswith("verloren"):
+        # Wie das echte Binary (nachgemessen mit 2.1.270): result-Fehler, der
+        # die UNBEKANNTE ID zurückechot, keine Assistant-Nachricht, rc 1.
+        ev({"type": "result", "subtype": "error_during_execution",
+            "is_error": True, "num_turns": 0, "session_id": alt})
+        sys.stderr.write("No conversation found with session ID: " + alt + "\n")
+        sys.exit(1)
+    sid = alt or "sitzung-neu-0001"
+    ev({"type": "system", "subtype": "init", "session_id": sid})
+    ev({"type": "assistant", "parent_tool_use_id": "sub1",
+        "message": {"content": [], "usage": {"input_tokens": 999999}}})
+    ev({"type": "assistant", "message": {
+        "content": [{"type": "text", "text": "arbeite"}],
+        "usage": {"input_tokens": 10, "cache_read_input_tokens": 40000,
+                  "cache_creation_input_tokens": 2000, "output_tokens": 90}}})
+    if "haengen" in szenario:
+        time.sleep(120)  # Timeout-/Leerlauf-Tests: der Wächter muss zuschlagen
+    if "scheitert" in szenario:
+        ev({"type": "result", "result": "kaputt", "is_error": True, "session_id": sid})
+    else:
+        ev({"type": "result", "result": "OK " + sid, "is_error": False,
+            "session_id": sid, "usage": {"input_tokens": 10, "output_tokens": 90}})
 else:
     ev({"type": "result", "result": "unbekanntes Szenario", "is_error": True})
 '''
@@ -383,6 +416,292 @@ class TestReineFunktionen(unittest.TestCase):
             zweite.close()
         finally:
             aw.lock_pfad = original
+
+
+class TestSitzungsbuch(unittest.TestCase):
+    """Reine Funktionen rund ums Fortsetzen der claude-Sitzung (21.09.2026)."""
+
+    def buch(self, **sitzung):
+        basis = {"session_id": "sitz-0001-aaaa", "zuletzt": 1000.0,
+                 "kontext": 60_000, "tasks": 2}
+        basis.update(sitzung)
+        return {"sitzungen": {"/w|": basis}, "tasks": {}}
+
+    def test_frische_sitzung_wird_fortgesetzt(self):
+        sid, grund = aw.sitzung_waehlen(self.buch(), "/w|", "t9", 1000.0 + 600)
+        self.assertEqual(sid, "sitz-0001-aaaa")
+        self.assertIn("Task 3", grund)
+
+    def test_grenzen_pause_kontext_tasks(self):
+        for buch, jetzt in (
+            (self.buch(), 1000.0 + aw.RESUME_MAX_PAUSE + 1),
+            (self.buch(kontext=aw.RESUME_MAX_KONTEXT + 1), 1001.0),
+            (self.buch(tasks=aw.RESUME_MAX_TASKS), 1001.0),
+        ):
+            sid, grund = aw.sitzung_waehlen(buch, "/w|", "t9", jetzt)
+            self.assertIsNone(sid, grund)
+            self.assertTrue(grund)
+
+    def test_anderes_verzeichnis_oder_rolle_beginnt_neu(self):
+        self.assertIsNone(aw.sitzung_waehlen(self.buch(), "/anders|", "t9", 1001.0)[0])
+        self.assertIsNone(aw.sitzung_waehlen(self.buch(), "/w|pruefer", "t9", 1001.0)[0])
+        self.assertNotEqual(aw.sitzungs_schluessel(Path("/w"), None),
+                            aw.sitzungs_schluessel(Path("/w"), "pruefer"))
+
+    def test_geparkter_task_findet_seine_sitzung_trotz_grenzen(self):
+        """Nach einer Rückfrage (Issue #17) läuft dieselbe task_id erneut —
+        dort zählt das Gedächtnis mehr als Pause und Kontextgrenze."""
+        buch = self.buch(kontext=aw.RESUME_MAX_KONTEXT * 2)
+        buch["tasks"]["t-park"] = {"session_id": "sitz-park-0007", "zeit": 1000.0}
+        sid, _ = aw.sitzung_waehlen(buch, "/w|", "t-park", 1000.0 + 3 * 86400)
+        self.assertEqual(sid, "sitz-park-0007")
+        sid, _ = aw.sitzung_waehlen(buch, "/w|", "t-park",
+                                    1000.0 + aw.RESUME_TASK_MERKDAUER + 1)
+        self.assertIsNone(sid)
+
+    def test_kaputtes_buch_wirft_nicht(self):
+        buch = {"sitzungen": {"/w|": {"session_id": "sitz-0001-aaaa",
+                                      "zuletzt": "gestern", "kontext": None,
+                                      "tasks": float("inf")}},
+                "tasks": {"t1": "quatsch"}}
+        # echte Uhrzeit: "gestern" zählt als 0 → Pause riesig → neue Sitzung
+        sid, _ = aw.sitzung_waehlen(buch, "/w|", "t1", time.time())
+        self.assertIsNone(sid)
+
+    def test_merken_zaehlt_hoch_und_raeumt_auf(self):
+        buch = self.buch()
+        buch["tasks"]["uralt"] = {"session_id": "x", "zeit": 0.0}
+        jetzt = aw.RESUME_TASK_MERKDAUER + 5000.0
+        buch["sitzungen"]["/w|"]["zuletzt"] = jetzt - 10
+        aw.sitzung_merken(buch, "/w|", "t3", "sitz-0001-aaaa", 70_000, jetzt)
+        self.assertEqual(buch["sitzungen"]["/w|"]["tasks"], 3)
+        self.assertEqual(buch["sitzungen"]["/w|"]["kontext"], 70_000)
+        self.assertIn("t3", buch["tasks"])
+        self.assertNotIn("uralt", buch["tasks"])
+        # andere Sitzungs-ID = Zähler beginnt neu
+        aw.sitzung_merken(buch, "/w|", "t4", "sitz-0002-bbbb", 5, jetzt)
+        self.assertEqual(buch["sitzungen"]["/w|"]["tasks"], 1)
+
+    def test_mitschreiben_ignoriert_fehler_id_und_subagenten(self):
+        lauf: dict = {}
+        aw.lauf_mitschreiben(lauf, {"type": "result", "is_error": True,
+                                    "session_id": "verloren-0001"})
+        self.assertEqual(lauf, {})
+        aw.lauf_mitschreiben(lauf, {"type": "assistant", "parent_tool_use_id": "s",
+                                    "message": {"usage": {"input_tokens": 9}}})
+        self.assertEqual(lauf, {})
+        aw.lauf_mitschreiben(lauf, {"type": "assistant", "message": {
+            "usage": {"input_tokens": 5, "cache_read_input_tokens": 100,
+                      "output_tokens": 7}}})
+        self.assertEqual(lauf, {"arbeit": True, "kontext": 112})
+
+    def test_resume_id_nur_geprueft_auf_die_kommandozeile(self):
+        cmd = aw.baue_claude_cmd("claude", resume_id="9a2d20b8-b893-43c0-8867-a80963446b17")
+        self.assertEqual(cmd[cmd.index("--resume") + 1],
+                         "9a2d20b8-b893-43c0-8867-a80963446b17")
+        for boese in ("x & calc.exe", "--dangerously-skip-permissions", "kurz", ""):
+            self.assertNotIn("--resume", aw.baue_claude_cmd("claude", resume_id=boese))
+
+
+class TestVerweigerungUndFristen(unittest.TestCase):
+    def test_pauschal_freigegeben_nennt_befehl_statt_falschem_rat(self):
+        """Issue #39: `Bash` WAR freigegeben — der alte Hinweis „allowed_tools
+        setzen" führte in die Irre, und der abgelehnte Befehl fehlte ganz."""
+        text = aw.verweigerungs_log(
+            [{"tool": "Bash", "eingabe": "cat /etc/shadow"}], "Bash,mcp__dashboard")
+        self.assertIn("Berechtigung verweigert: Bash: cat /etc/shadow", text)
+        self.assertIn("trotzdem abgelehnt", text)
+        self.assertNotIn("nicht freigegeben", text)
+
+    def test_nicht_oder_nur_teilweise_freigegeben(self):
+        text = aw.verweigerungs_log([{"tool": "Write", "eingabe": "/x"}], "Bash")
+        self.assertIn("Write ist nicht freigegeben", text)
+        text = aw.verweigerungs_log([{"tool": "Bash", "eingabe": "rm -rf x"}],
+                                    "Bash(git:*),Edit")
+        self.assertIn("nur eingeschränkt freigegeben (Bash(git:*))", text)
+
+    def test_run_claude_liefert_befehl_der_verweigerung(self):
+        tmp = Path(tempfile.mkdtemp(prefix="watcher-verw-"))
+        try:
+            lauf: dict = {}
+            _, log, _ = aw.run_claude(_fake_claude(tmp), "verweigert", tmp, False,
+                                      allowed_tools="Bash", lauf_out=lauf)
+            self.assertIn("Berechtigung verweigert: Bash: rm -rf /", log)
+            self.assertIn({"tool": "Bash", "eingabe": "rm -rf /"}, lauf["verweigert"])
+            self.assertIn("Write ist nicht freigegeben", log)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_task_timeout_kann_nur_senken(self):
+        self.assertEqual(aw.wirksamer_timeout(3600, None), 3600)
+        self.assertEqual(aw.wirksamer_timeout(3600, 600), 600)
+        self.assertEqual(aw.wirksamer_timeout(3600, 99999), 3600)
+        self.assertEqual(aw.wirksamer_timeout(None, "quatsch"), aw.CLAUDE_TIMEOUT)
+
+
+class TestLaufMitSitzung(unittest.TestCase):
+    """run_claude_sitzung gegen das gefakte Binary: Fortsetzen, Rückfall auf
+    frisch, Vergessen nach Fehler, Kurz-Hinweis."""
+
+    AN = {"an": True, "max_pause": aw.RESUME_MAX_PAUSE,
+          "max_kontext": aw.RESUME_MAX_KONTEXT}
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="watcher-sitzung-"))
+        self.claude = _fake_claude(self.tmp)
+        self._pfad = aw.sitzungs_pfad
+        aw.sitzungs_pfad = lambda agent: self.tmp / "buch" / f"{agent}.sitzungen.json"
+        aw.HART.clear()
+        aw.STOP.clear()
+
+    def tearDown(self) -> None:
+        aw.sitzungs_pfad = self._pfad
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def lauf(self, task_id, text="sitzung", resume=None, rolle=None, hint=False,
+             verbrauch=None, meldungen=None, meta=None, **mehr):
+        return aw.run_claude_sitzung(
+            self.AN if resume is None else resume, "erp", task_id, self.claude,
+            text, self.tmp, False,
+            meldungen.append if meldungen is not None else None,
+            None, None, None, rolle, verbrauch, hint, lauf_meta=meta, **mehr)
+
+    def aufrufe(self):
+        datei = self.tmp / "aufrufe.jsonl"
+        if not datei.exists():
+            return []
+        return [json.loads(z) for z in datei.read_text(encoding="utf-8").splitlines()]
+
+    def test_zweiter_task_setzt_die_sitzung_fort(self):
+        v2, m1, m2, meldungen = {}, {}, {}, []
+        r1, _, rc1 = self.lauf("t1", meta=m1, meldungen=meldungen)
+        r2, _, rc2 = self.lauf("t2", verbrauch=v2, meta=m2, meldungen=meldungen)
+        self.assertEqual((rc1, rc2), (0, 0))
+        self.assertEqual([a["resume"] for a in self.aufrufe()], [None, "sitzung-neu-0001"])
+        self.assertEqual((m1["sitzung"], m2["sitzung"]), ("neu", "fortgesetzt"))
+        # session_id steht in der Antwort: ein Mensch kann den Faden mit
+        # `claude --resume <id>` im Terminal übernehmen (Issue #37)
+        self.assertEqual(m2["session_id"], "sitzung-neu-0001")
+        # Kontext = letzte HAUPT-Anfrage; die Subagenten-Nachricht zählt nicht
+        self.assertEqual(m2["kontext"], 42_100)
+        # der Verbrauchszähler bekommt NUR seine Token-Felder
+        self.assertEqual(v2, {"input_tokens": 10, "output_tokens": 90})
+        buch = aw.lade_sitzungen("erp")
+        eintrag = buch["sitzungen"][aw.sitzungs_schluessel(self.tmp, None)]
+        self.assertEqual((eintrag["session_id"], eintrag["tasks"]), ("sitzung-neu-0001", 2))
+        self.assertTrue(any("neue Sitzung" in m for m in meldungen), meldungen)
+        self.assertTrue(any("setzt Sitzung fort" in m for m in meldungen), meldungen)
+
+    def test_kurzer_hinweis_nur_beim_fortsetzen(self):
+        self.lauf("t1", hint=True)
+        self.lauf("t2", hint=True)
+        erster, zweiter = (a["prompt"] for a in self.aufrufe())
+        self.assertIn("Prüfe zu Beginn deine Inbox", erster)
+        self.assertNotIn("Prüfe zu Beginn deine Inbox", zweiter)
+        self.assertIn("Neuer Auftrag in derselben Sitzung", zweiter)
+        self.assertTrue(zweiter.endswith("sitzung"))
+
+    def test_verlorene_sitzung_faellt_auf_frisch_zurueck(self):
+        schluessel = aw.sitzungs_schluessel(self.tmp, None)
+        aw.speichere_sitzungen("erp", {"sitzungen": {schluessel: {
+            "session_id": "verloren-0001", "zuletzt": time.time(),
+            "kontext": 10, "tasks": 1}}, "tasks": {}})
+        meta, meldungen = {}, []
+        result, _, rc = self.lauf("t1", meta=meta, meldungen=meldungen)
+        self.assertEqual(rc, 0)
+        self.assertEqual(result, "OK sitzung-neu-0001")
+        self.assertEqual([a["resume"] for a in self.aufrufe()], ["verloren-0001", None])
+        self.assertEqual(meta["sitzung"], "neu")
+        self.assertEqual(meta["session_id"], "sitzung-neu-0001")  # nie die verlorene
+        self.assertTrue(any("nicht fortsetzbar" in m for m in meldungen), meldungen)
+        buch = aw.lade_sitzungen("erp")
+        self.assertEqual(buch["sitzungen"][schluessel]["session_id"], "sitzung-neu-0001")
+
+    def test_fehler_nach_echter_arbeit_laeuft_nicht_doppelt(self):
+        self.lauf("t1")
+        _, _, rc = self.lauf("t2", text="sitzung scheitert")
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(self.aufrufe()), 2, "gescheiterter Lauf wurde wiederholt")
+        # …und der nächste Task beginnt sauber in einer neuen Sitzung
+        self.assertEqual(aw.lade_sitzungen("erp")["sitzungen"], {})
+        self.lauf("t3")
+        self.assertIsNone(self.aufrufe()[-1]["resume"])
+
+    def test_geparkter_task_setzt_seine_eigene_sitzung_fort(self):
+        self.lauf("t-park")
+        buch = aw.lade_sitzungen("erp")
+        # inzwischen lief ein anderer Task in einer anderen Sitzung weiter
+        buch["sitzungen"][aw.sitzungs_schluessel(self.tmp, None)]["session_id"] = "sitzung-andere-02"
+        aw.speichere_sitzungen("erp", buch)
+        self.lauf("t-park")
+        self.assertEqual(self.aufrufe()[-1]["resume"], "sitzung-neu-0001")
+
+    def test_rolle_bekommt_eigene_sitzung(self):
+        self.lauf("t1")
+        self.lauf("t2", rolle="pruefer")
+        self.assertEqual([a["resume"] for a in self.aufrufe()], [None, None])
+
+    def test_abgeschaltet_bleibt_alles_wie_frueher(self):
+        aus = {"an": False}
+        meta = {}
+        self.lauf("t1", resume=aus, meta=meta)
+        self.lauf("t2", resume=aus)
+        self.assertEqual([a["resume"] for a in self.aufrufe()], [None, None])
+        self.assertNotIn("sitzung", meta)
+        self.assertEqual(meta["session_id"], "sitzung-neu-0001")  # zum Übernehmen
+        self.assertFalse((self.tmp / "buch").exists())
+
+    def test_thread_bekommt_eigenen_faden_und_laengere_pause(self):
+        """Issue #37: `thread` im Task = eigener Vorgang. Folge-Aufträge finden
+        ihr Gedächtnis auch nach Tagen wieder; Aufträge ohne thread teilen sich
+        weiter die Sitzung des Verzeichnisses."""
+        self.lauf("t1", thread="Startseite Aufgaben")
+        self.lauf("t2")                                   # ohne thread: eigener Schlüssel
+        meta = {}
+        self.lauf("t3", thread="Startseite Aufgaben", meta=meta)
+        self.assertEqual([a["resume"] for a in self.aufrufe()],
+                         [None, None, "sitzung-neu-0001"])
+        self.assertEqual(meta["thread"], "Startseite-Aufgaben")
+        # drei Tage Pause: ohne thread neu, mit thread weiter
+        buch = aw.lade_sitzungen("erp")
+        for eintrag in buch["sitzungen"].values():
+            eintrag["zuletzt"] -= 3 * 86400
+        buch["tasks"] = {}
+        aw.speichere_sitzungen("erp", buch)
+        self.lauf("t4")
+        self.lauf("t5", thread="Startseite Aufgaben")
+        self.assertEqual([a["resume"] for a in self.aufrufe()][-2:],
+                         [None, "sitzung-neu-0001"])
+
+    def test_timeout_behaelt_die_sitzung_zum_fortsetzen(self):
+        """Issue #38: ein Timeout trifft einen ARBEITENDEN Lauf — sein Stand
+        steht im Transkript. Der erneute Anstoß desselben Tasks setzt genau
+        dort fort, und die Antwort nennt die Sitzung zum Übernehmen."""
+        meta = {}
+        _, log, rc = self.lauf("t1", text="sitzung haengen", meta=meta, timeout=1.0)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("Gesamtdauer", meta["timeout"])
+        self.assertTrue(meta["fortsetzbar"])
+        self.assertIn("claude --resume sitzung-neu-0001", log)
+        self.lauf("t1")
+        self.assertEqual(self.aufrufe()[-1]["resume"], "sitzung-neu-0001")
+
+    def test_leerlauf_waechter_bricht_stille_ab_nicht_arbeit(self):
+        """Issue #38: abgebrochen wird, wer SCHWEIGT — nicht, wer lange arbeitet."""
+        meta = {}
+        start = time.monotonic()
+        _, log, rc = self.lauf("t1", text="sitzung haengen", meta=meta,
+                               timeout=600.0, leerlauf=1.0)
+        self.assertLess(time.monotonic() - start, 30)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("ohne Lebenszeichen", meta["timeout"])
+        self.assertIn("ohne Lebenszeichen", log)
+
+    def test_frist_steht_im_hinweis(self):
+        self.lauf("t1", hint=True, timeout=1800.0, leerlauf=600.0)
+        prompt = self.aufrufe()[0]["prompt"]
+        self.assertIn("nach 30 min Gesamtdauer", prompt)
+        self.assertIn("10 min ohne jede Aktivität", prompt)
 
 
 if __name__ == "__main__":

@@ -178,6 +178,20 @@ export default {
   "5 h: {0} Tok": "5 h: {0} tok",
   "Schwelle erreicht — geplante Tasks pausieren":
     "threshold reached — scheduled tasks pause",
+  // Lauf-Daten an der Antwort (Issues #36–#39)
+  "abgebrochen · fortsetzbar": "aborted · resumable",
+  "abgebrochen": "aborted",
+  "mit Einschränkungen": "with restrictions",
+  "einzelne Werkzeug-Aufrufe wurden verweigert": "some tool calls were denied",
+  "Lauf hat die vorherige Claude-Sitzung fortgesetzt":
+    "run resumed the previous Claude session",
+  "verweigert": "denied",
+  "Sitzung übernehmen": "Take over session",
+  "Kontext {0}": "context {0}",
+  "Vorgang {0}": "thread {0}",
+  "{0} ungelesene Einträge — die Automatik reagiert darauf nicht":
+    "{0} unread entries — automation does not react to them",
+  "reagiert auf: {0}": "reacts to: {0}",
   "Leerer Text wird nicht gespeichert — zum Entfernen die Rolle löschen.":
     "Empty text is not saved — delete the role to remove it.",
 };

@@ -148,7 +148,41 @@ def _log(kanal: str, tool: str, **info: object) -> None:
     Bewusst nur Metadaten (Namen/IDs/Längen), keine Inhalte — die Logs sollen
     Fehlersuche ermöglichen, nicht Mailbox-Inhalte duplizieren."""
     kv = " ".join(f"{k}={v}" for k, v in info.items() if v not in (None, "", []))
-    print(f"[mcp] {kanal}: {tool} {kv}".rstrip(), flush=True)
+    # Zeitstempel in der Zeile selbst (Issue #40): ohne ihn ließ sich ein
+    # Ablauf nur über `docker logs -t` rekonstruieren.
+    print(f"{_zeit()} [mcp] {kanal}: {tool} {kv}".rstrip(), flush=True)
+
+
+def _zeit() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def fehler_im_ergebnis(wert: object) -> str | None:
+    """Fehlertext, wenn ein Tool seinen Fehler als WERT zurückgab (Issue #40).
+
+    Die Tools melden Fehler bewusst als {"error": …} statt per Exception —
+    das Modell soll den Text lesen können. Das Log buchte solche Aufrufe aber
+    als `ergebnis=ok`: fünf Integrations-Timeouts in Folge sahen aus wie fünf
+    Erfolge. Listen-Tools (inbox, read_responses) verpacken den Fehler als
+    einziges Listenelement."""
+    if isinstance(wert, list) and len(wert) == 1:
+        wert = wert[0]
+    if isinstance(wert, dict) and wert.get("error"):
+        return str(wert["error"])
+    return None
+
+
+def ist_watcher_poll(tool: str, kwargs: dict, wert: object) -> bool:
+    """Das Leerlauf-Pollen des Automatik-Watchers: inbox(kind="task") ohne
+    Treffer. Es ist weder ein Lebenszeichen (Issue #42) noch eine Logzeile
+    wert (Issue #41: >1.200 Aufrufe in zwei Stunden, je zwei Zeilen — die
+    interessanten Zeilen rotierten nach wenigen Tagen aus dem Log)."""
+    return tool == "inbox" and kwargs.get("kind") == "task" and wert == []
+
+
+# Werkzeuge, die den Bearbeiter nicht als „arbeitet gerade" ausweisen: das
+# Pollen und der Anspruch selbst (claim stempelt den Task ohnehin).
+_KEIN_LEBENSZEICHEN = {"claim_task", "list_agents", "list_integrations", "list_rollen"}
 
 
 # --- Nebenläufigkeit: kein Tool blockiert den Event-Loop (Issue #34) --------
@@ -189,21 +223,42 @@ def _im_thread(fn, kanal: str, pool: ThreadPoolExecutor | None = None):
     async def lauf(**kwargs):
         start = time.monotonic()
         ergebnis = "ok"
+        still = False
         try:
-            return await asyncio.get_running_loop().run_in_executor(
+            wert = await asyncio.get_running_loop().run_in_executor(
                 pool, functools.partial(fn, **kwargs)
             )
+            fehler = fehler_im_ergebnis(wert)
+            if fehler:
+                # Kurz genug für eine Logzeile, ohne Mailbox-Inhalte: es ist
+                # der Fehlertext des Tools, nicht die Nutzlast.
+                ergebnis = "fehler:" + " ".join(fehler.split())[:120]
+            still = ist_watcher_poll(fn.__name__, kwargs, wert)
+            if kanal != "frei" and not still and fn.__name__ not in _KEIN_LEBENSZEICHEN:
+                _lebenszeichen(kanal)
+            return wert
         except BaseException:
             ergebnis = "fehler"
             raise
         finally:
             # Gegenstück zum Start-Log in jedem Tool: erst mit dem Ende sieht
             # man im Log, WELCHER Aufruf wie lange gehangen hat (Issue #34) —
-            # eine Startzeile ohne Endzeile ist der noch laufende.
-            _log(kanal, fn.__name__, fertig=f"{time.monotonic() - start:.1f}s",
-                 ergebnis=ergebnis)
+            # eine Startzeile ohne Endzeile ist der noch laufende. Der leere
+            # Watcher-Poll bleibt still, solange er nicht auffällig lange lief.
+            dauer = time.monotonic() - start
+            if not still or dauer >= 2.0:
+                _log(kanal, fn.__name__, fertig=f"{dauer:.1f}s", ergebnis=ergebnis)
 
     return lauf
+
+
+def _lebenszeichen(agent: str) -> None:
+    """Echte MCP-Aktivität eines gebundenen Kanals = der Agent arbeitet
+    (Issue #42) — die Pflege reiht dann keinen seiner Tasks zurück."""
+    try:
+        Mailbox(MAILBOX_ROOT, agent).lebenszeichen()
+    except (ValueError, OSError):
+        pass
 
 
 def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None) -> None:
@@ -266,6 +321,8 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             files: list[str] | None = None,
             rolle: str | None = None,
             nicht_vor: str | None = None,
+            thread: str | None = None,
+            timeout: int | None = None,
         ) -> dict:
             """Einen Arbeitsauftrag in die Inbox eines Agenten legen.
 
@@ -283,6 +340,16 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             `nicht_vor` (optional, ISO-8601 in lokaler Serverzeit, z.B.
             "2026-09-02T22:00") plant den Task: er bleibt in der Inbox liegen
             und wird erst ab diesem Zeitpunkt ausgeführt.
+
+            `thread` (optional) benennt den VORGANG, zu dem der Auftrag gehört
+            (z.B. "startseite-aufgaben"): arbeitet der Empfänger im
+            Automatikmodus, setzen alle Aufträge mit demselben thread dieselbe
+            Claude-Sitzung fort — eine Nachbesserung kennt dann die Vorarbeit,
+            statt bei null zu beginnen. Für Folge-Aufträge IMMER denselben
+            thread wiederverwenden.
+
+            `timeout` (optional, Sekunden) begrenzt die Laufzeit dieses Auftrags
+            im Automatikmodus; er kann die Grenze des Empfängers nur senken.
             """
             try:
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
@@ -317,8 +384,20 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 if ziel.tzinfo is None:
                     ziel = ziel.astimezone()
                 nicht_vor = ziel.isoformat(timespec="seconds")
+            # thread wird zum Schlüssel im Sitzungsbuch des Watchers — auf ein
+            # harmloses Kürzel bringen statt den Auftrag daran scheitern zu lassen.
+            faden = "-".join("".join(
+                c if (c.isalnum() and c.isascii()) or c in "_.-" else " "
+                for c in str(thread or "")).split())[:64] or None
+            try:
+                frist = int(timeout) if timeout else None
+            except (TypeError, ValueError):
+                return {"error": f"timeout muss eine Zahl (Sekunden) sein, nicht {timeout!r}"}
+            if frist is not None and frist < 60:
+                return {"error": "timeout unter 60 s ergibt keinen sinnvollen Lauf"}
             _log(kanal, "send_task", to=to, sender=absender, rolle=rolle,
-                 nicht_vor=nicht_vor, zeichen=len(instruction))
+                 nicht_vor=nicht_vor, thread=faden, timeout=frist,
+                 zeichen=len(instruction))
             task = Task(
                 task_id=new_id("task"),
                 agent=to,
@@ -327,12 +406,15 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 files=files or [],
                 sender=absender,
                 nicht_vor=nicht_vor,
+                thread=faden,
+                timeout=frist,
                 **rollen_felder,
             )
             Mailbox(MAILBOX_ROOT, to).put_task(task)
             return {"id": task.task_id, "to": to, "status": "pending",
                     **({"rolle": rolle} if rolle else {}),
-                    **({"nicht_vor": nicht_vor} if nicht_vor else {})}
+                    **({"nicht_vor": nicht_vor} if nicht_vor else {}),
+                    **({"thread": faden} if faden else {})}
 
     if on("list_rollen"):
         @werkzeug
@@ -439,6 +521,10 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 "status": "running",
                 "project": env.get("project"),
                 "files": env.get("files") or [],
+                # Vorgang + Laufzeit-Deckel (Issues #37/#38) — der Watcher
+                # wählt daraus seine Sitzung bzw. senkt seinen Timeout.
+                "thread": env.get("thread"),
+                "timeout": env.get("timeout"),
                 # Rollen-Felder (Dashboard-Paket St.1): der Watcher rechnet
                 # daraus die Schnittmenge mit seinen Agenten-Rechten und hängt
                 # den Rollen-Prompt an den Lauf. Der inbox()-Weg liefert sie
@@ -459,6 +545,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             log: str = "",
             agent: str | None = None,
             verbrauch: dict | None = None,
+            lauf: dict | None = None,
         ) -> dict:
             """Einen bearbeiteten Task abschließen — das Gegenstück zu send_task.
 
@@ -508,8 +595,11 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             _log(kanal, "complete_task", agent=wer, task=task_id, status=status, zeichen=len(result))
             # `verbrauch` (St.3): usage/Kosten des Laufs — der Watcher liefert
             # sie mit, der Zähler aggregiert sie aus der Outbox. Optional.
+            # `lauf` (Issues #37–#39): Sitzung, Timeout-Grund, verweigerte
+            # Aufrufe — liefert nur der Watcher; ein Modell lässt es weg.
             box.write_response(task_id, result, status, log,
-                               verbrauch if isinstance(verbrauch, dict) else None)
+                               verbrauch if isinstance(verbrauch, dict) else None,
+                               lauf if isinstance(lauf, dict) else None)
             return {"task_id": task_id, "agent": wer, "status": status}
 
     # --- Agent-↔-Agent-Kommunikation ----------------------------------------
@@ -637,8 +727,13 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 wer = ident(agent, "agent")
             except ScopeError as exc:
                 return [{"error": str(exc)}]
-            _log(kanal, "inbox", agent=wer, kind=kind)
-            return [normalize_envelope(e) for e in Mailbox(MAILBOX_ROOT, wer).read_inbox(kind)]
+            gefunden = [normalize_envelope(e)
+                        for e in Mailbox(MAILBOX_ROOT, wer).read_inbox(kind)]
+            # Der leere Watcher-Poll (kind="task", nichts da) bleibt still
+            # (Issue #41) — alles andere steht wie bisher im Kanal-Log.
+            if not ist_watcher_poll("inbox", {"kind": kind}, gefunden):
+                _log(kanal, "inbox", agent=wer, kind=kind, anzahl=len(gefunden))
+            return gefunden
 
     if on("mark_read"):
         @werkzeug
@@ -707,6 +802,17 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             try:
                 return integrations.call_integration(name, method, path, body)
             except integrations.IntegrationError as exc:
+                # Serie von Timeouts (Issue #40): einmal den Menschen rufen —
+                # als Nachricht in die Orchestrator-Inbox (= Panel + Push).
+                warnung = integrations.timeout_warnung(name)
+                if warnung:
+                    _log(kanal, "call_integration", warnung="timeout-serie", name=name)
+                    try:
+                        Mailbox(MAILBOX_ROOT, "orchestrator").post({
+                            "kind": "message", "sender": identity or "orchestrator",
+                            "weckt": False, "text": warnung})
+                    except (ValueError, OSError):
+                        pass
                 return {"error": str(exc)}
 
 

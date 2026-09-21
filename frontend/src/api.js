@@ -38,6 +38,12 @@ export const logout = () => jsend("/api/auth/logout", "POST");
 export const getAgents = () => jget("/api/agents");
 export const getTasks = (name) =>
   jget(`/api/agents/${encodeURIComponent(name)}/tasks`);
+// Eine Antwort ungekürzt (Issue #41): die Liste trägt lange Texte nur noch
+// angeschnitten, der volle Eintrag kommt beim Aufklappen.
+export const getOutboxEintrag = (name, taskId) =>
+  jget(
+    `/api/agents/${encodeURIComponent(name)}/outbox/${encodeURIComponent(taskId)}`,
+  );
 export const closeTask = (agent, taskId, status = "done", result = "") =>
   jsend(
     `/api/tasks/${encodeURIComponent(agent)}/${encodeURIComponent(taskId)}/close`,

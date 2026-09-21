@@ -24,6 +24,10 @@ Pro Agent läuft nur EIN Watcher je PC: eine Lock-Datei
 (~/.agent-dashboard/<agent>.lock) verhindert, dass ein zweiter Start denselben
 Task ein zweites Mal ausführt.
 
+Gedächtnis zwischen Tasks: je Arbeitsverzeichnis + Rolle wird EINE claude-
+Sitzung per --resume fortgesetzt (Buch: ~/.agent-dashboard/<agent>.sitzungen.json),
+statt jeden Task frisch zu starten — siehe run_claude_sitzung. Aus: --no-resume.
+
 Test ohne echtes Claude-Code:  --dry-run  (echoed die instruction zurück).
 
     python3 agent_watcher.py --agent frontend \
@@ -75,6 +79,32 @@ ABLIEFER_PAUSE = 10.0
 FEHLER_SCHWELLE = 3       # so viele schnelle Fehlschläge in Folge → Stopp
 SCHNELL_SEKUNDEN = 20.0   # "schnell" = Lauf endete früher als das
 _schnelle_fehler = 0
+
+# Sitzung fortsetzen (21.09.2026): Bis dahin startete JEDER Task einen frischen
+# `claude --print` ohne Gedächtnis — Startkontext, Projekt-Orientierung und bei
+# Rückfragen sogar der komplette Lauf fielen je Task neu an. Jetzt führt der
+# Watcher je Arbeitsverzeichnis + Rolle EINE Sitzung per `--resume` weiter, bis
+# eine der Grenzen greift; dann beginnt eine neue. Abschaltbar je Agent
+# (agents.yaml `resume: false` → --no-resume).
+RESUME_MAX_PAUSE = 12 * 3600.0       # s seit dem letzten Lauf: ein Arbeitstag.
+#   Länger als die Cache-Lebensdauer ist Absicht: eine kalte Fortsetzung kostet
+#   etwa so viel wie Neustart + Neu-Orientierung, behält aber das Gedächtnis.
+RESUME_MAX_KONTEXT = 150_000         # Tokens: darüber ist ein Neustart billiger
+RESUME_MAX_TASKS = 25                # Deckel gegen endlos wachsende Sitzungen
+RESUME_TASK_MERKDAUER = 7 * 86400.0  # so lange findet ein geparkter Task seine Sitzung
+RESUME_TASK_MERKZAHL = 100
+RESUME_SITZUNG_VERFALL = 30 * 86400.0  # claude räumt Transkripte nach ~30 Tagen ab
+# Ein benannter Vorgang (`thread` im Task, Issue #37) darf länger ruhen: wer
+# nach drei Tagen „Punkt d fehlt noch" schickt, meint denselben Faden.
+RESUME_THREAD_MAX_PAUSE = 7 * 86400.0
+THREAD_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+# Lebenszeichen an den Server, solange ein Lauf arbeitet (Issue #42): die
+# Pflege reiht Tasks zurück, die zu lange OHNE Lebenszeichen in Arbeit liegen.
+HERZSCHLAG = 600.0
+# Leerlauf-Backoff des Pollens (Issue #41): 5 s → 30 s, nach Arbeit wieder kurz.
+POLL_MAX = 30.0
+SESSION_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{7,63}$")
 
 # Muss zur Allowlist in app/mailbox.py passen — sender wird in Pfade gejoint.
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -149,6 +179,33 @@ def mcp_hint(agent: str) -> str:
     )
 
 
+def frist_hinweis(timeout: "float | None", leerlauf: "float | None") -> str:
+    """Issue #38: Der Watcher kann nichts in einen laufenden Lauf hineinrufen —
+    also erfährt der Lauf seine Frist vorab und sichert früh."""
+    deckel = float(timeout) if timeout and timeout > 0 else CLAUDE_TIMEOUT
+    ruhe = CLAUDE_LEERLAUF if leerlauf is None else max(0.0, float(leerlauf))
+    return (
+        f"[Zeitrahmen] Dieser Lauf wird nach {deckel / 60:.0f} min Gesamtdauer hart "
+        f"beendet" + (f", ebenso nach {ruhe / 60:.0f} min ohne jede Aktivität"
+                      if ruhe else "")
+        + ". Sichere Zwischenstände früh (z.B. Commit auf einen Branch), statt "
+          "alles ans Ende zu legen.\n\n"
+    )
+
+
+def mcp_hint_kurz(agent: str) -> str:
+    """Hinweis für einen Folge-Auftrag in einer FORTGESETZTEN Sitzung: die
+    Regeln stehen dort schon im Verlauf. Vor allem entfällt die Pflichtrunde
+    „prüfe zu Beginn deine Inbox" — sie kostete je Task eine Werkzeugrunde mit
+    vollem Kontext."""
+    return (
+        f"[Kontext] Neuer Auftrag in derselben Sitzung — du bist weiter der "
+        f"Agent '{agent}', die Dashboard-Regeln von oben gelten. Deine Inbox "
+        f"musst du nur erneut prüfen, wenn du auf eine Antwort oder ein "
+        f"Ergebnis wartest.\n\n"
+    )
+
+
 def finde_claude(hint: str) -> str | None:
     """Claude-Binary auflösen (Issue #14).
 
@@ -216,7 +273,17 @@ def fehlerserie(status: str, dauer: float) -> bool:
     return _schnelle_fehler >= FEHLER_SCHWELLE
 
 
-CLAUDE_TIMEOUT = 1800.0  # Sekunden je Task-Lauf
+# Zeitgrenzen eines Laufs (Issue #38). Bis 09/2026 galt ein fester 1800-s-
+# Wanduhr-Deckel — er traf im Echtbetrieb einen Lauf, der durchgehend
+# arbeitete. Ein hängender Lauf verrät sich aber nicht durch seine Dauer,
+# sondern durch STILLE: deshalb bricht zuerst der Leerlauf-Wächter ab (so
+# lange kam kein stream-json-Event), die Wanduhr ist nur noch ein großzügiger
+# zweiter Riegel. Beides je Agent einstellbar (--timeout/--leerlauf), ein Task
+# darf den Deckel per `timeout` nur SENKEN.
+CLAUDE_TIMEOUT = 7200.0   # Sekunden Gesamtdauer je Task-Lauf (Wanduhr)
+CLAUDE_LEERLAUF = 900.0   # Sekunden ohne jedes Event; 0 = Leerlauf-Wächter aus
+#   15 min: claudes eigene Bash-Grenze liegt bei höchstens 10 min — längere
+#   Stille gibt es praktisch nur, wenn wirklich etwas hängt.
 
 
 def beende_prozessgruppe(proc) -> None:
@@ -369,6 +436,20 @@ def tool_hinweis(block: dict) -> str:
     return ""
 
 
+def tool_eingabe(block: dict) -> str:
+    """Wie tool_hinweis, aber der BEFEHL vor der Beschreibung (Issue #39): bei
+    einer Verweigerung zählt, was genau abgelehnt wurde — nicht, wie das
+    Modell es genannt hat."""
+    inp = block.get("input")
+    if not isinstance(inp, dict):
+        return ""
+    for key in ("command", "file_path", "path", "pattern", "url", "query",
+                "prompt", "description"):
+        if inp.get(key):
+            return str(inp[key])
+    return ""
+
+
 def tool_result_text(block: dict) -> str:
     """Text eines tool_result-Blocks (content ist String oder Block-Liste)."""
     inhalt = block.get("content")
@@ -382,7 +463,8 @@ def tool_result_text(block: dict) -> str:
 def baue_claude_cmd(claude_bin: str,
                     permission_mode: str | None = None,
                     allowed_tools: str | None = None,
-                    append_system_prompt: str | None = None) -> list[str]:
+                    append_system_prompt: str | None = None,
+                    resume_id: str | None = None) -> list[str]:
     """Kommandozeile für einen headless-Lauf — die instruction kommt über STDIN.
 
     Review P1-3 (löst zugleich das alte Issue #20 gründlicher): Auf Windows
@@ -401,6 +483,11 @@ def baue_claude_cmd(claude_bin: str,
         cmd += ["--allowed-tools", allowed_tools]
     if append_system_prompt:
         cmd += ["--append-system-prompt", append_system_prompt]
+    # Sitzung fortsetzen. Die ID stammt aus unserer eigenen Buch-Datei, wird
+    # aber trotzdem geprüft: auf Windows parst cmd.exe die Argumentzeile
+    # erneut (P1-3) — dort darf nichts Freies hinein.
+    if resume_id and SESSION_ID_RE.match(resume_id):
+        cmd += ["--resume", resume_id]
     return cmd
 
 
@@ -469,8 +556,20 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                fortschritt=None, permission_mode: str | None = None,
                allowed_tools: str | None = None,
                append_system_prompt: str | None = None,
-               verbrauch_out: dict | None = None) -> tuple[str, str, int]:
+               verbrauch_out: dict | None = None,
+               resume_id: str | None = None,
+               lauf_out: dict | None = None,
+               timeout: float | None = None,
+               leerlauf: float | None = None) -> tuple[str, str, int]:
     """Gibt (result, log, returncode) zurück.
+
+    `timeout`/`leerlauf` (Issue #38): Wanduhr-Deckel und Leerlauf-Grenze in
+    Sekunden; None = Modul-Default, leerlauf=0 schaltet den Wächter ab.
+
+    `resume_id` setzt eine frühere Sitzung fort (`--resume`); `lauf_out`
+    bekommt, was das Sitzungsbuch braucht (session_id, kontext, arbeit —
+    siehe lauf_mitschreiben). Beides wie verbrauch_out als dict statt im
+    Rückgabewert, damit die bestehenden Entpackstellen unberührt bleiben.
 
     Headless Claude-Code mit --output-format stream-json (Issue #18): die
     Events werden zeilenweise gelesen und als knappe Fortschrittsmeldungen an
@@ -498,7 +597,7 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
     cmd = baue_claude_cmd(claude_bin, permission_mode, allowed_tools,
-                          append_system_prompt)
+                          append_system_prompt, resume_id)
     try:
         proc = subprocess.Popen(
             cmd,
@@ -560,23 +659,50 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     leser = threading.Thread(target=_stderr_lesen, daemon=True)
     leser.start()
     abgelaufen = threading.Event()
+    lauf_ende = threading.Event()
+    abbruch_grund: list[str] = []
+    deckel = float(timeout) if timeout and timeout > 0 else CLAUDE_TIMEOUT
+    ruhe = CLAUDE_LEERLAUF if leerlauf is None else max(0.0, float(leerlauf))
+    start_zeit = time.monotonic()
+    letztes_event = [start_zeit]  # von der Lese-Schleife aufgefrischt
 
-    def _abbrechen() -> None:
-        abgelaufen.set()
-        beende_prozessgruppe(proc)  # POSIX killpg / Windows taskkill /T (M13)
+    def _waechter() -> None:
+        """Zwei Riegel (Issue #38): Stille und Gesamtdauer. Pollt, statt einen
+        Timer neu zu stellen — der Leerlauf-Zeitpunkt wandert mit jedem Event."""
+        while not lauf_ende.wait(0.5):
+            jetzt = time.monotonic()
+            if jetzt - start_zeit >= deckel:
+                abbruch_grund.append(f"Timeout nach {deckel:.0f}s Gesamtdauer")
+            elif ruhe and jetzt - letztes_event[0] >= ruhe:
+                abbruch_grund.append(f"Timeout: {ruhe:.0f}s ohne Lebenszeichen "
+                                     f"(Lauf hing nach {jetzt - start_zeit:.0f}s)")
+            else:
+                continue
+            abgelaufen.set()
+            beende_prozessgruppe(proc)  # POSIX killpg / Windows taskkill /T (M13)
+            return
 
-    wecker = threading.Timer(CLAUDE_TIMEOUT, _abbrechen)
-    wecker.start()
+    threading.Thread(target=_waechter, daemon=True).start()
 
     ergebnis: str | None = None
     fehler_event = False
     texte: list[str] = []  # Assistant-Texte (Fallback-Ergebnis)
     roh: list[str] = []    # Nicht-JSON-Zeilen (Binary ohne stream-json)
     werkzeug_namen: dict[str, str] = {}  # tool_use_id → Tool-Name
+    werkzeug_eingaben: dict[str, str] = {}  # tool_use_id → Befehl/Pfad (Issue #39)
     abgelehnt: list[str] = []            # verweigerte Werkzeuge (Issue #19)
+    verweigert: list[dict] = []          # …mit Befehl, dedupliziert (Issue #39)
+
+    def _verweigerung(name: str, eingabe: str) -> None:
+        if name not in abgelehnt:
+            abgelehnt.append(name)
+        eintrag = {"tool": name, "eingabe": kurz(eingabe or "", 200)}
+        if eintrag not in verweigert and len(verweigert) < 20:
+            verweigert.append(eintrag)
     vollstaendig = False
     try:
         for zeile in proc.stdout:
+            letztes_event[0] = time.monotonic()  # Lebenszeichen (Issue #38)
             zeile = zeile.strip()
             if not zeile:
                 continue
@@ -586,6 +712,8 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                 roh.append(zeile)
                 continue
             typ = ev.get("type")
+            if lauf_out is not None:
+                lauf_mitschreiben(lauf_out, ev)
             if typ == "assistant":
                 nachricht = ev.get("message")
                 bloecke = nachricht.get("content") if isinstance(nachricht, dict) else None
@@ -595,6 +723,7 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                     if block.get("type") == "tool_use":
                         if block.get("id"):
                             werkzeug_namen[block["id"]] = block.get("name", "?")
+                            werkzeug_eingaben[block["id"]] = tool_eingabe(block)
                         melde(kurz(f"→ {block.get('name', '?')} "
                                    f"{tool_hinweis(block)}", 100))
                     elif block.get("type") == "text" and block.get("text"):
@@ -613,9 +742,9 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                     text = tool_result_text(block)
                     if "permission" not in text.lower():
                         continue  # normaler Tool-Fehler, kein Berechtigungs-Thema
-                    name = werkzeug_namen.get(block.get("tool_use_id") or "", "?")
-                    if name not in abgelehnt:
-                        abgelehnt.append(name)
+                    tuid = block.get("tool_use_id") or ""
+                    name = werkzeug_namen.get(tuid, "?")
+                    _verweigerung(name, werkzeug_eingaben.get(tuid, ""))
                     melde(kurz(f"✗ {name} abgelehnt: {text}", 100))
             elif typ == "result":
                 ergebnis = ev.get("result") or ""
@@ -634,12 +763,17 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                     if isinstance(ev.get("total_cost_usd"), (int, float)):
                         verbrauch_out["total_cost_usd"] = float(ev["total_cost_usd"])
                 for d in ev.get("permission_denials") or []:
-                    name = (d.get("tool_name") if isinstance(d, dict) else None) or "?"
-                    if name not in abgelehnt:
-                        abgelehnt.append(name)
+                    if not isinstance(d, dict):
+                        continue
+                    # Issue #39: nicht nur den Namen — der BEFEHL entscheidet,
+                    # ob die Freigabe fehlt oder claude ihn trotzdem ablehnt.
+                    eingabe = werkzeug_eingaben.get(d.get("tool_use_id") or "", "")
+                    if not eingabe and isinstance(d.get("tool_input"), dict):
+                        eingabe = tool_eingabe({"input": d["tool_input"]})
+                    _verweigerung(d.get("tool_name") or "?", eingabe)
         vollstaendig = True
     finally:
-        wecker.cancel()
+        lauf_ende.set()  # Wächter beenden
         # Abbruch auf JEDEM Weg (Not-Aus, Ausnahme in der Schleife, tote
         # Leitung): die Prozessgruppe muss sterben, sonst arbeitet claude
         # unbeaufsichtigt weiter (H3).
@@ -668,18 +802,313 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
         log = (log + "\n[watcher] Not-Aus — Lauf abgebrochen (kill)").strip()
         rc = rc or 143
     if abgelaufen.is_set():
-        log = (log + f"\n[watcher] Timeout nach {CLAUDE_TIMEOUT:.0f}s — "
-                     f"Prozess abgebrochen").strip()
+        grund = abbruch_grund[0] if abbruch_grund else "Timeout"
+        log = (log + f"\n[watcher] {grund} — Prozess abgebrochen").strip()
         rc = rc or 124
+        if lauf_out is not None:
+            lauf_out["timeout"] = grund
     if ergebnis is None:
         ergebnis = "\n".join(texte) or "\n".join(roh)
     if fehler_event and rc == 0:
         rc = 1
     if abgelehnt:
-        log = (log + "\n[watcher] Berechtigung verweigert: " + ", ".join(abgelehnt) +
-               " — permission_mode/allowed_tools in agents.yaml setzen oder auf "
-               "dem Agenten-PC freigeben").strip()
+        log = (log + "\n" + verweigerungs_log(verweigert, allowed_tools)).strip()
+        if lauf_out is not None:
+            lauf_out["verweigert"] = verweigert
     return ergebnis.strip(), log, rc
+
+
+def verweigerungs_log(verweigert: list, allowed_tools: "str | None") -> str:
+    """Log-Text zu verweigerten Werkzeugen (Issue #39): je Aufruf der Befehl,
+    und der Hinweis passend zur Lage. Früher hieß es pauschal „allowed_tools
+    setzen" — auch wenn das Werkzeug längst freigegeben war und claude nur
+    EINEN Aufruf ablehnte; das schickte die Fehlersuche in die falsche Richtung."""
+    frei = _tools_liste(allowed_tools)
+    zeilen, hinweise = [], []
+    for v in verweigert:
+        name, eingabe = str(v.get("tool") or "?"), str(v.get("eingabe") or "")
+        zeilen.append(f"[watcher] Berechtigung verweigert: {name}"
+                      + (f": {eingabe}" if eingabe else ""))
+        if name in frei:
+            h = (f"{name} ist pauschal freigegeben und wurde trotzdem abgelehnt — "
+                 f"claude lehnt einzelne Aufrufe auch dann ab (z.B. Zugriff "
+                 f"außerhalb des Arbeitsverzeichnisses); Befehl siehe oben")
+        elif any(str(f).startswith(name + "(") for f in frei):
+            muster = ", ".join(str(f) for f in frei if str(f).startswith(name + "("))
+            h = f"{name} ist nur eingeschränkt freigegeben ({muster}) — der Aufruf passt nicht dazu"
+        else:
+            h = (f"{name} ist nicht freigegeben — permission_mode/allowed_tools in "
+                 f"agents.yaml setzen oder auf dem Agenten-PC freigeben")
+        if h not in hinweise:
+            hinweise.append(h)
+    return "\n".join(zeilen + ["[watcher] " + h for h in hinweise])
+
+
+# --- Sitzungsbuch: welcher Lauf setzt welche claude-Sitzung fort -------------
+
+_KONTEXT_FELDER = ("input_tokens", "cache_creation_input_tokens",
+                   "cache_read_input_tokens", "output_tokens")
+
+
+def _zahl(wert) -> float:
+    """Zahl aus der Buch-Datei — kaputte Einträge zählen als 0 statt zu werfen."""
+    try:
+        zahl = float(wert)
+    except (TypeError, ValueError):
+        return 0.0
+    return zahl if zahl == zahl and zahl not in (float("inf"), float("-inf")) else 0.0
+
+
+def lauf_mitschreiben(lauf: dict, ev: dict) -> None:
+    """Aus den stream-json-Events mitnehmen, was das Sitzungsbuch braucht:
+
+      session_id  aus dem init-Event bzw. einem ERFOLGREICHEN result-Event
+                  (ein gescheitertes --resume echot die unbekannte ID zurück —
+                  die darf nie im Buch landen),
+      kontext     Eingabe + Ausgabe der LETZTEN Haupt-Anfrage = so groß ist
+                  der Verlauf, den der nächste Lauf mitschleppt,
+      arbeit      es kam mindestens eine Assistant-Nachricht — der Lauf hat
+                  also wirklich begonnen (Gegenteil: --resume scheiterte sofort).
+
+    Subagenten-Nachrichten (parent_tool_use_id) zählen nicht: deren Kontext
+    ist ein eigener und landet nicht im Verlauf der Sitzung."""
+    typ = ev.get("type")
+    if typ == "system":
+        if ev.get("subtype") == "init" and ev.get("session_id"):
+            lauf["session_id"] = str(ev["session_id"])
+    elif typ == "assistant":
+        if ev.get("parent_tool_use_id"):
+            return
+        lauf["arbeit"] = True
+        nachricht = ev.get("message")
+        usage = nachricht.get("usage") if isinstance(nachricht, dict) else None
+        if isinstance(usage, dict):
+            kontext = int(sum(_zahl(usage.get(f)) for f in _KONTEXT_FELDER))
+            if kontext > 0:
+                lauf["kontext"] = kontext
+    elif typ == "result":
+        if ev.get("session_id") and not ev.get("is_error"):
+            lauf["session_id"] = str(ev["session_id"])
+
+
+def sitzungs_pfad(agent: str) -> Path:
+    return Path.home() / ".agent-dashboard" / f"{agent}.sitzungen.json"
+
+
+def lade_sitzungen(agent: str) -> dict:
+    """Buch-Datei lesen; fehlend/kaputt = leeres Buch (dann beginnt eben eine
+    neue Sitzung — nie ein Grund, einen Task scheitern zu lassen)."""
+    try:
+        buch = json.loads(sitzungs_pfad(agent).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        buch = {}
+    if not isinstance(buch, dict):
+        buch = {}
+    for feld in ("sitzungen", "tasks"):
+        if not isinstance(buch.get(feld), dict):
+            buch[feld] = {}
+    return buch
+
+
+def speichere_sitzungen(agent: str, buch: dict) -> None:
+    pfad = sitzungs_pfad(agent)
+    try:
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(pfad, buch)
+    except OSError:
+        pass  # Gedächtnis ist Komfort — ein Schreibfehler kostet keinen Task
+
+
+def thread_name(wert) -> str:
+    """`thread` eines Tasks auf ein harmloses Kürzel bringen (Schlüssel im Buch)."""
+    return THREAD_RE.sub("-", str(wert or "")).strip("-")[:64]
+
+
+def sitzungs_schluessel(task_dir: Path, rolle: "str | None",
+                        thread: "str | None" = None) -> str:
+    """Eine Sitzung je Arbeitsverzeichnis UND Rolle: claude findet Sitzungen
+    nur im Verzeichnis, in dem sie entstanden; und eine Rolle bringt einen
+    eigenen System-Prompt mit — gemischt verwirrte das Modell und Cache.
+
+    Ohne `thread` teilen sich alle Aufträge des Verzeichnisses EINE Sitzung —
+    so wie im Handbetrieb eine offene Claude-Code-Sitzung je Box alles
+    abarbeitet. Ein `thread` (Issue #37) spaltet bewusst einen eigenen Faden
+    ab: Folge-Aufträge desselben Vorgangs finden genau ihr Gedächtnis wieder."""
+    basis = f"{task_dir}|{rolle or ''}"
+    faden = thread_name(thread)
+    return f"{basis}|#{faden}" if faden else basis
+
+
+def sitzung_waehlen(buch: dict, schluessel: str, task_id: str, jetzt: float,
+                    max_pause: float = RESUME_MAX_PAUSE,
+                    max_kontext: int = RESUME_MAX_KONTEXT,
+                    max_tasks: int = RESUME_MAX_TASKS) -> "tuple[str | None, str]":
+    """→ (session_id oder None, Begründung fürs Log). Reine Funktion.
+
+    Vorrang hat der TASK: läuft dieselbe task_id erneut, wurde sie nach einer
+    Rückfrage geparkt (Issue #17) — dann zählt das Gedächtnis mehr als jede
+    Grenze, sonst fiele genau dort die ganze Vorarbeit doppelt an."""
+    eintrag = buch.get("tasks", {}).get(task_id)
+    if (isinstance(eintrag, dict) and eintrag.get("session_id")
+            and jetzt - _zahl(eintrag.get("zeit")) <= RESUME_TASK_MERKDAUER):
+        return str(eintrag["session_id"]), "derselbe Task geht nach der Rückfrage weiter"
+    s = buch.get("sitzungen", {}).get(schluessel)
+    if not isinstance(s, dict) or not s.get("session_id"):
+        return None, "noch keine Sitzung für dieses Verzeichnis"
+    pause = jetzt - _zahl(s.get("zuletzt"))
+    if pause > max_pause:
+        return None, f"letzter Lauf vor {pause / 3600:.1f} h, Grenze {max_pause / 3600:.1f} h"
+    kontext = int(_zahl(s.get("kontext")))
+    if kontext > max_kontext:
+        return None, f"Kontext {kontext // 1000}k über Grenze {int(max_kontext) // 1000}k"
+    anzahl = int(_zahl(s.get("tasks")))
+    if anzahl >= max_tasks:
+        return None, f"schon {anzahl} Tasks in der Sitzung"
+    return str(s["session_id"]), f"Task {anzahl + 1} der Sitzung, Kontext ~{kontext // 1000}k"
+
+
+def sitzung_merken(buch: dict, schluessel: str, task_id: str, session_id: str,
+                   kontext: int, jetzt: float) -> None:
+    vorher = buch["sitzungen"].get(schluessel)
+    anzahl = (int(_zahl(vorher.get("tasks")))
+              if isinstance(vorher, dict) and vorher.get("session_id") == session_id else 0)
+    buch["sitzungen"][schluessel] = {"session_id": session_id, "zuletzt": jetzt,
+                                     "kontext": int(kontext or 0), "tasks": anzahl + 1}
+    buch["tasks"][task_id] = {"session_id": session_id, "zeit": jetzt}
+    # Aufräumen: das Buch darf auf einem Dauerläufer nicht endlos wachsen.
+    frisch = {k: v for k, v in buch["tasks"].items()
+              if isinstance(v, dict) and jetzt - _zahl(v.get("zeit")) <= RESUME_TASK_MERKDAUER}
+    if len(frisch) > RESUME_TASK_MERKZAHL:
+        behalten = sorted(frisch, key=lambda k: _zahl(frisch[k].get("zeit")))[-RESUME_TASK_MERKZAHL:]
+        frisch = {k: frisch[k] for k in behalten}
+    buch["tasks"] = frisch
+    buch["sitzungen"] = {k: v for k, v in buch["sitzungen"].items()
+                         if isinstance(v, dict)
+                         and jetzt - _zahl(v.get("zuletzt")) <= RESUME_SITZUNG_VERFALL}
+
+
+def sitzung_vergessen(buch: dict, schluessel: str, task_id: str) -> None:
+    buch["sitzungen"].pop(schluessel, None)
+    buch["tasks"].pop(task_id, None)
+
+
+def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
+                       claude_bin: str, instruction: str, task_dir: Path,
+                       dry_run: bool, fortschritt=None,
+                       permission_mode: "str | None" = None,
+                       allowed_tools: "str | None" = None,
+                       rollen_prompt: "str | None" = None,
+                       rolle: "str | None" = None,
+                       verbrauch: "dict | None" = None,
+                       with_mcp_hint: bool = False,
+                       thread: "str | None" = None,
+                       timeout: "float | None" = None,
+                       leerlauf: "float | None" = None,
+                       lauf_meta: "dict | None" = None) -> "tuple[str, str, int]":
+    """run_claude mit Gedächtnis: setzt — wenn erlaubt und sinnvoll — die
+    Sitzung dieses Verzeichnisses (bzw. Vorgangs, `thread`) fort, sonst
+    beginnt eine neue.
+
+    `resume` = {"an", "max_pause", "max_kontext"} aus main(); None/aus = jeder
+    Task frisch. Der MCP-Hinweis wird HIER vorangestellt, weil sein Wortlaut
+    davon abhängt: eine fortgesetzte Sitzung kennt die Regeln schon und
+    bekommt nur die Kurzfassung.
+
+    Scheitert das Fortsetzen SOFORT und ohne jede Arbeit (Transkript gelöscht,
+    Sitzung unbekannt), läuft der Task einmal frisch — nie nach echter
+    Arbeit, sonst würde ein halb erledigter Task doppelt ausgeführt.
+
+    `lauf_meta` (Ausgabe) landet als `lauf` in der Antwort des Tasks: Sitzung
+    (neu/fortgesetzt, session_id zum Übernehmen per `claude --resume`),
+    Kontextgröße, Timeout-Grund (Issue #38), verweigerte Aufrufe (Issue #39)."""
+    if verbrauch is None:
+        verbrauch = {}
+    if lauf_meta is None:
+        lauf_meta = {}
+
+    def melde(text: str) -> None:
+        if fortschritt:
+            try:
+                fortschritt(text)
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+
+    frist = frist_hinweis(timeout, leerlauf) if with_mcp_hint else ""
+    voll = (mcp_hint(agent) if with_mcp_hint else "") + frist + instruction
+    lauf: dict = {}
+    aktiv = bool(resume and resume.get("an")) and not dry_run
+    sid = None
+    result, err, rc = "", "", 1
+
+    def starte(prompt: str, resume_id: "str | None") -> "tuple[str, str, int]":
+        return run_claude(claude_bin, prompt, task_dir, dry_run, fortschritt,
+                          permission_mode, allowed_tools, rollen_prompt,
+                          verbrauch_out=verbrauch, resume_id=resume_id,
+                          lauf_out=lauf, timeout=timeout, leerlauf=leerlauf)
+
+    if not aktiv:
+        result, err, rc = starte(voll, None)
+    else:
+        buch = lade_sitzungen(agent)
+        schluessel = sitzungs_schluessel(task_dir, rolle, thread)
+        max_pause = _zahl(resume.get("max_pause")) or RESUME_MAX_PAUSE
+        if thread_name(thread):
+            max_pause = max(max_pause, RESUME_THREAD_MAX_PAUSE)
+        sid, grund = sitzung_waehlen(
+            buch, schluessel, task_id, time.time(), max_pause,
+            int(_zahl(resume.get("max_kontext"))) or RESUME_MAX_KONTEXT)
+        if sid:
+            melde(f"setzt Sitzung fort ({grund})")
+            kurzfassung = ((mcp_hint_kurz(agent) if with_mcp_hint else "")
+                           + frist + instruction)
+            start = time.monotonic()
+            result, err, rc = starte(kurzfassung, sid)
+            if (rc != 0 and not lauf.get("arbeit") and not HART.is_set()
+                    and time.monotonic() - start < SCHNELL_SEKUNDEN):
+                sitzung_vergessen(buch, schluessel, task_id)
+                speichere_sitzungen(agent, buch)
+                grund = "alte Sitzung nicht fortsetzbar: " + kurz(err or result, 120)
+                sid = None
+                lauf.clear()
+                verbrauch.clear()
+        if not sid:
+            melde(f"neue Sitzung ({grund})")
+            result, err, rc = starte(voll, None)
+        # Behalten: Erfolg — und der TIMEOUT (Issue #37/#38): der Lauf hat
+        # gearbeitet, sein Stand steht im Transkript, und wer den Task erneut
+        # anstößt (oder den nächsten schickt), soll genau dort weitermachen.
+        # Vergessen: jeder andere Fehler und der Not-Aus — da beginnt der
+        # nächste Task lieber sauber.
+        behalten = bool(lauf.get("session_id")) and not HART.is_set() and (
+            rc == 0 or bool(lauf.get("timeout")))
+        if behalten:
+            sitzung_merken(buch, schluessel, task_id, lauf["session_id"],
+                           int(lauf.get("kontext") or 0), time.time())
+        else:
+            sitzung_vergessen(buch, schluessel, task_id)
+        speichere_sitzungen(agent, buch)
+        lauf_meta["sitzung"] = "fortgesetzt" if sid else "neu"
+        if behalten and lauf.get("timeout"):
+            lauf_meta["fortsetzbar"] = True
+    for feld in ("session_id", "kontext", "timeout", "verweigert"):
+        if lauf.get(feld):
+            lauf_meta[feld] = lauf[feld]
+    if thread_name(thread):
+        lauf_meta["thread"] = thread_name(thread)
+    if lauf.get("timeout") and lauf.get("session_id"):
+        err = (err + f"\n[watcher] Stand liegt in der Sitzung {lauf['session_id']} — "
+                     f"übernehmen mit: claude --resume {lauf['session_id']}"
+               + (" (der Task setzt sie beim erneuten Anstoßen von selbst fort)"
+                  if lauf_meta.get("fortsetzbar") else "")).strip()
+    return result, err, rc
+
+
+def wirksamer_timeout(agent_timeout: "float | None", task_timeout) -> float:
+    """Wanduhr-Deckel eines Laufs (Issue #38): der Agent-Wert ist die
+    Obergrenze, ein `timeout` im Task darf ihn nur SENKEN."""
+    deckel = float(agent_timeout) if agent_timeout and agent_timeout > 0 else CLAUDE_TIMEOUT
+    wunsch = _zahl(task_timeout)
+    return min(deckel, wunsch) if wunsch > 0 else deckel
 
 
 def fehler_result(result: str, err: str) -> str:
@@ -869,7 +1298,8 @@ class McpClient:
 
 def liefere_ergebnis(client: "McpClient | None", url: str, task_id: str,
                      result: str, status: str, log: str,
-                     verbrauch: dict | None = None
+                     verbrauch: dict | None = None,
+                     lauf: dict | None = None
                      ) -> tuple[object, "McpClient | None", str | None]:
     """complete_task mit eigener Retry-Schleife (M8).
 
@@ -888,6 +1318,9 @@ def liefere_ergebnis(client: "McpClient | None", url: str, task_id: str,
                 "task_id": task_id, "result": result,
                 "status": status, "log": log,
                 **({"verbrauch": verbrauch} if verbrauch else {}),
+                # Lauf-Daten (Sitzung, Timeout, Verweigerungen). Ein älterer
+                # Server ignoriert das unbekannte Argument stillschweigend.
+                **({"lauf": lauf} if lauf else {}),
             })
             if isinstance(antwort, dict) and antwort.get("error"):
                 # Review P2: ein Fehler-Dict (Task per ✕ geschlossen, requeued,
@@ -911,14 +1344,19 @@ def liefere_ergebnis(client: "McpClient | None", url: str, task_id: str,
 def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: float,
              dry_run: bool, with_mcp_hint: bool, once: bool = False,
              permission_mode: str | None = None,
-             allowed_tools: str | None = None) -> int:
+             allowed_tools: str | None = None,
+             resume: dict | None = None,
+             einst: dict | None = None) -> int:
     """Poll-Schleife über MCP: inbox → claim_task → claude → complete_task.
 
     Verbindungsfehler (Tunnel weg, Server-Neustart) werden mit Abstand erneut
     versucht — der Watcher stirbt nicht, solange ihn niemand stoppt."""
     client: McpClient | None = None
     letzter_fehler: str | None = None
+    einst = einst or {}
+    pause = interval  # wächst im Leerlauf bis POLL_MAX (Issue #41)
     while not STOP.is_set():
+        bearbeitet = 0
         try:
             if client is None:
                 client = McpClient(url)
@@ -972,24 +1410,44 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                     sicher_print(f"[{now()}] {agent}: {task_id} — Rolle "
                                  f"{rollen_name or '?'}: kein Agent-Werkzeug in "
                                  f"der Schnittmenge, Lauf nutzt nur Auto-Werkzeuge")
-                if with_mcp_hint:
-                    instruction = mcp_hint(agent) + instruction
+                bearbeitet += 1
+                # Der MCP-Hinweis kommt in run_claude_sitzung dazu — sein Wortlaut
+                # hängt davon ab, ob eine Sitzung fortgesetzt wird.
+                herz = {"zuletzt": time.monotonic()}
+
                 def fortschritt(text: str, _tid: str = task_id) -> None:
                     # Fließt via stdout ins Automatik-Panel (Issue #18); eine
                     # tote Leitung darf den Lauf nicht abbrechen (H3).
                     sicher_print(f"[{now()}] {agent}: {_tid} · {text}")
+                    # Lebenszeichen (Issue #42): solange der Lauf Fortschritt
+                    # meldet, frischt ein erneuter claim den Anspruch auf —
+                    # die Pflege hält den Task dann nicht für verwaist.
+                    if time.monotonic() - herz["zuletzt"] >= HERZSCHLAG:
+                        herz["zuletzt"] = time.monotonic()
+                        try:
+                            if client is not None:
+                                client.call("claim_task", {"task_id": _tid, "erneut": True})
+                        except Exception:  # noqa: BLE001 — nur ein Lebenszeichen
+                            pass
 
                 task_dir, wd_fehler = projekt_workdir(workdir, projekt)
                 start = time.monotonic()
                 verbrauch: dict = {}  # usage/total_cost_usd aus dem result-Event (St.3)
+                lauf_meta: dict = {}  # Sitzung/Timeout/Verweigerungen → Antwort
                 if wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
                     result, err, status = "", wd_fehler, "error"
                 else:
                     try:
-                        result, err, rc = run_claude(claude_bin, instruction, task_dir,
-                                                     dry_run, fortschritt, pm, at,
-                                                     claimed.get("rollen_prompt"),
-                                                     verbrauch_out=verbrauch)
+                        result, err, rc = run_claude_sitzung(
+                            resume, agent, task_id, claude_bin, instruction,
+                            task_dir, dry_run, fortschritt, pm, at,
+                            claimed.get("rollen_prompt"), rollen_name,
+                            verbrauch, with_mcp_hint,
+                            thread=claimed.get("thread") or env.get("thread"),
+                            timeout=wirksamer_timeout(einst.get("timeout"),
+                                                      claimed.get("timeout")),
+                            leerlauf=einst.get("leerlauf"),
+                            lauf_meta=lauf_meta)
                         status = "done" if rc == 0 else "error"
                     except Exception as exc:  # noqa: BLE001 — alles zurückmelden
                         result, err, status = "", repr(exc), "error"
@@ -1000,7 +1458,7 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 # bis zu 30 min Arbeit darf nicht verloren gehen, nur weil der
                 # Tunnel gerade neu verbindet oder inzwischen "stop" kam.
                 fertig, client, liefer_fehler = liefere_ergebnis(
-                    client, url, task_id, result, status, err, verbrauch)
+                    client, url, task_id, result, status, err, verbrauch, lauf_meta)
                 if liefer_fehler:
                     sicher_print(f"[{now()}] {agent}: {task_id} — Ergebnis konnte nicht "
                                  f"abgeliefert werden ({liefer_fehler}); Task bleibt beim "
@@ -1030,7 +1488,11 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 return 1
             STOP.wait(max(interval, 10))
             continue
-        STOP.wait(interval)
+        # Leerlauf-Backoff (Issue #41): ein unbeschäftigter Watcher fragte alle
+        # 5 s — über 1.200 Aufrufe in zwei Stunden, je zwei Logzeilen. Ohne
+        # Arbeit streckt sich der Takt bis POLL_MAX, nach Arbeit ist er kurz.
+        pause = interval if bearbeitet else min(max(pause * 1.5, interval), max(POLL_MAX, interval))
+        STOP.wait(pause)
     sicher_print(f"[{now()}] Watcher beendet.")
     return 0
 
@@ -1090,9 +1552,12 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                  agent: str, claude_bin: str, workdir: Path, dry_run: bool,
                  with_mcp_hint: bool = False,
                  permission_mode: str | None = None,
-                 allowed_tools: str | None = None) -> int:
+                 allowed_tools: str | None = None,
+                 resume: dict | None = None,
+                 einst: dict | None = None) -> int:
     """Gibt die Zahl bearbeiteter Tasks zurück; -1 = Fehlerserie, bitte anhalten."""
     handled = 0
+    einst = einst or {}
     for task_path in inbox_tasks(inbox):
         if STOP.is_set():
             # "stop" (oder Not-Aus) wirkt sofort, nicht erst nach dem ganzen
@@ -1127,6 +1592,7 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         start = time.monotonic()
         status, err = "error", ""
         verbrauch: dict = {}  # usage/total_cost_usd aus dem result-Event (St.3)
+        lauf_meta: dict = {}  # Sitzung/Timeout/Verweigerungen → Antwort
         if task.get("rollen_tools"):
             _pm_probe, _at_probe = wirksame_rechte(
                 permission_mode, allowed_tools,
@@ -1137,9 +1603,7 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                              f"in der Schnittmenge, Lauf nutzt nur Auto-Werkzeuge")
         try:
             task["instruction"]  # fehlende instruction soll wie bisher scheitern
-            instruction = merge_instruction(task)
-            if with_mcp_hint:
-                instruction = mcp_hint(agent) + instruction
+            instruction = merge_instruction(task)  # MCP-Hinweis: run_claude_sitzung
             task_dir, wd_fehler = projekt_workdir(workdir, task.get("project"))
             # Rollen-Felder liegen beim Dateitransport direkt im Envelope;
             # Schnittmenge mit den Agenten-Rechten — nie erweitern (St.1).
@@ -1150,12 +1614,17 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                 err = wd_fehler
                 result = fehler_result("", err)
             else:
-                result, err, rc = run_claude(
-                    claude_bin, instruction, task_dir, dry_run,
+                result, err, rc = run_claude_sitzung(
+                    resume, agent, task_id, claude_bin, instruction,
+                    task_dir, dry_run,
                     lambda text, _tid=task_id: sicher_print(
                         f"[{now()}] {agent}: {_tid} · {text}"),
-                    pm, at, task.get("rollen_prompt"),
-                    verbrauch_out=verbrauch)
+                    pm, at, task.get("rollen_prompt"), task.get("rolle"),
+                    verbrauch, with_mcp_hint,
+                    thread=task.get("thread"),
+                    timeout=wirksamer_timeout(einst.get("timeout"), task.get("timeout")),
+                    leerlauf=einst.get("leerlauf"),
+                    lauf_meta=lauf_meta)
                 status = "done" if rc == 0 else "error"
                 if status == "error":
                     result = fehler_result(result, err)
@@ -1185,6 +1654,8 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                    "responded_at": now()}
         if verbrauch:  # Verbrauchszähler (St.3) liest genau dieses Feld
             antwort["verbrauch"] = verbrauch
+        if lauf_meta:
+            antwort["lauf"] = lauf_meta
         if status == "error" and task.get("instruction"):
             # Fehlschlag: die einzige Kopie der Aufgabenbeschreibung darf
             # nicht verloren gehen (Issue #15).
@@ -1240,6 +1711,21 @@ def main() -> int:
     ap.add_argument("--allowed-tools",
                     help="Komma-getrennte Liste für claude --allowed-tools, "
                          "z.B. 'Edit,Write,Bash(git:*)' (Issue #19)")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="jeden Task in einer frischen claude-Sitzung ausführen "
+                         "(Default: Sitzung je Verzeichnis + Rolle fortsetzen)")
+    ap.add_argument("--resume-max-pause", type=float, default=RESUME_MAX_PAUSE,
+                    help="Sekunden seit dem letzten Lauf, bis zu denen eine "
+                         f"Sitzung fortgesetzt wird (Default {RESUME_MAX_PAUSE:.0f})")
+    ap.add_argument("--resume-max-kontext", type=int, default=RESUME_MAX_KONTEXT,
+                    help="Kontextgröße in Tokens, ab der eine neue Sitzung "
+                         f"beginnt (Default {RESUME_MAX_KONTEXT})")
+    ap.add_argument("--timeout", type=float, default=CLAUDE_TIMEOUT,
+                    help="Wanduhr-Deckel je Lauf in Sekunden "
+                         f"(Default {CLAUDE_TIMEOUT:.0f}; ein Task darf ihn nur senken)")
+    ap.add_argument("--leerlauf", type=float, default=CLAUDE_LEERLAUF,
+                    help="Abbruch nach so vielen Sekunden ohne stream-json-Event "
+                         f"(Default {CLAUDE_LEERLAUF:.0f}; 0 = aus)")
     ap.add_argument("--interval", type=float, default=2.0)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--once", action="store_true", help="einmal durchlaufen und beenden")
@@ -1250,6 +1736,9 @@ def main() -> int:
     if bool(args.root) == bool(args.mcp_url):
         ap.error("genau eines von --root und --mcp-url angeben")
     workdir = Path(args.workdir).resolve()
+    resume = {"an": not args.no_resume, "max_pause": args.resume_max_pause,
+              "max_kontext": args.resume_max_kontext}
+    einst = {"timeout": args.timeout, "leerlauf": args.leerlauf}
 
     # Nur EIN Watcher je Agent und PC (H2) — sonst führen zwei Instanzen
     # denselben Task doppelt aus (z.B. Netz-Flap: der Container startet einen
@@ -1291,12 +1780,13 @@ def main() -> int:
 
     if args.mcp_url:
         print(f"[{now()}] Watcher gestartet für '{args.agent}' "
-              f"(dry_run={args.dry_run}, claude={claude_bin}) — MCP {args.mcp_url}",
-              flush=True)
+              f"(dry_run={args.dry_run}, claude={claude_bin}, "
+              f"sitzung={'fortsetzen' if resume['an'] else 'je Task neu'}) — "
+              f"MCP {args.mcp_url}", flush=True)
         try:
             return mcp_loop(args.mcp_url, args.agent, claude_bin, workdir,
                             args.interval, args.dry_run, args.mcp_hint, args.once,
-                            args.permission_mode, args.allowed_tools)
+                            args.permission_mode, args.allowed_tools, resume, einst)
         except KeyboardInterrupt:
             print("\nWatcher beendet.", flush=True)
             return 0
@@ -1312,7 +1802,7 @@ def main() -> int:
         while not STOP.is_set():
             if process_once(inbox, processing, outbox, args.agent, claude_bin,
                             workdir, args.dry_run, args.mcp_hint,
-                            args.permission_mode, args.allowed_tools) < 0:
+                            args.permission_mode, args.allowed_tools, resume, einst) < 0:
                 return 1
             if args.once:
                 break

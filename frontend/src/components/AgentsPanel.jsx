@@ -8,6 +8,7 @@ import {
   markInboxRead,
   setAutomatik,
   setNotaus,
+  getOutboxEintrag,
 } from "../api";
 import { bestaetigen, melden } from "./Dialog";
 import RollenDialog from "./RollenDialog";
@@ -34,6 +35,67 @@ function StatusBadge({ status }) {
     >
       {t(status)}
     </span>
+  );
+}
+
+// Lauf-Daten des Watchers (Issues #37–#39) sichtbar machen. „done" mit
+// verweigerten Aufrufen sah bisher aus wie ein glatter Erfolg — der Grund
+// stand nur im log-Feld, am Handy praktisch unsichtbar. Ebenso der Timeout:
+// „error" sagte nicht, dass die Arbeit fortsetzbar in einer Sitzung liegt.
+function LaufAbzeichen({ lauf }) {
+  if (!lauf) return null;
+  const gelb =
+    "rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/50 dark:text-amber-200";
+  return (
+    <>
+      {lauf.timeout && (
+        <span className={gelb} title={lauf.timeout}>
+          ⏱ {lauf.fortsetzbar ? t("abgebrochen · fortsetzbar") : t("abgebrochen")}
+        </span>
+      )}
+      {lauf.verweigert?.length > 0 && (
+        <span className={gelb} title={t("einzelne Werkzeug-Aufrufe wurden verweigert")}>
+          ⚠ {t("mit Einschränkungen")}
+        </span>
+      )}
+      {lauf.sitzung === "fortgesetzt" && (
+        <span
+          className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
+          title={t("Lauf hat die vorherige Claude-Sitzung fortgesetzt")}
+        >
+          ↻
+        </span>
+      )}
+    </>
+  );
+}
+
+// Aufgeklappte Einzelheiten eines Laufs: was verweigert wurde, warum
+// abgebrochen wurde, und die Sitzung zum Übernehmen im Terminal.
+function LaufDetails({ lauf, log }) {
+  if (!lauf && !log) return null;
+  return (
+    <div
+      className="mt-1 space-y-1 border-t border-slate-200 pt-1 text-[11px] text-slate-500 dark:border-slate-700 dark:text-slate-400"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {lauf?.timeout && <div>⏱ {lauf.timeout}</div>}
+      {(lauf?.verweigert || []).map((v, i) => (
+        <div key={i} className="break-all">
+          ⚠ {t("verweigert")}: <span className="font-mono">{v.tool}</span>
+          {v.eingabe ? <span className="font-mono"> · {v.eingabe}</span> : null}
+        </div>
+      ))}
+      {lauf?.session_id && (
+        <div className="break-all">
+          {t("Sitzung übernehmen")}:{" "}
+          <span className="select-all font-mono">claude --resume {lauf.session_id}</span>
+          {lauf.kontext ? ` · ${t("Kontext {0}", fmtTok(lauf.kontext))}` : ""}
+          {lauf.thread ? ` · ${t("Vorgang {0}", lauf.thread)}` : ""}
+        </div>
+      )}
+      {log && <pre className="whitespace-pre-wrap break-all font-mono text-[10px]">{log}</pre>}
+    </div>
   );
 }
 
@@ -105,6 +167,8 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
   // nicht erreichbar — auf dem Handy gibt es auch keine Tooltips.
   const [offen, setOffen] = useState(() => new Set()); // "box/task_id"
+  // Ungekürzte Antworten, beim Aufklappen nachgeladen (Issue #41).
+  const [voll, setVoll] = useState({}); // "agent/task_id" -> Response
   const toggleOffen = (key) =>
     setOffen((s) => {
       const n = new Set(s);
@@ -472,6 +536,18 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                 </button>
               )}
             </div>
+            {/* Issue #36: die Automatik führt von sich aus nur Tasks aus. Liegt
+                Post, auf die sie nicht reagiert, sagt das Panel es — sonst
+                wartet man am Handy auf eine Reaktion, die nie kommt. */}
+            {autoInfo.gewuenscht && autoInfo.ungeweckt > 0 && (
+              <div className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                ✉ {t("{0} ungelesene Einträge — die Automatik reagiert darauf nicht", autoInfo.ungeweckt)}{" "}
+                <span className="text-slate-400">
+                  ({t("reagiert auf: {0}", (autoInfo.weckt || ["task"]).join(", "))} ·
+                  agents.yaml: automatik_weckt)
+                </span>
+              </div>
+            )}
             {logOffen && logText && (
               <pre
                 ref={logRef}
@@ -667,27 +743,42 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
               {tasks.outbox.length === 0 ? (
                 <p className="text-slate-400">{t("leer")}</p>
               ) : (
-                tasks.outbox.map((tk) => (
-                  <div
-                    key={tk.task_id}
-                    onClick={() => toggleOffen(`outbox/${tk.task_id}`)}
-                    className="mb-1 cursor-pointer rounded bg-slate-50 p-1.5 dark:bg-slate-800"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono">{tk.task_id}</span>
-                      <StatusBadge status={tk.status} />
-                    </div>
+                tasks.outbox.map((tk) => {
+                  const istOffen = offen.has(`outbox/${tk.task_id}`);
+                  const ganz = voll[`${selected}/${tk.task_id}`];
+                  const zeige = istOffen && ganz ? ganz : tk;
+                  return (
                     <div
-                      className={`${
-                        offen.has(`outbox/${tk.task_id}`)
-                          ? "whitespace-pre-wrap break-words"
-                          : "truncate"
-                      } text-slate-500 dark:text-slate-400`}
+                      key={tk.task_id}
+                      onClick={() => {
+                        toggleOffen(`outbox/${tk.task_id}`);
+                        // Liste trägt lange Texte nur angeschnitten (Issue
+                        // #41) — den vollen Eintrag einmal nachladen.
+                        if (!istOffen && tk.gekuerzt && !ganz)
+                          getOutboxEintrag(selected, tk.task_id)
+                            .then((r) =>
+                              setVoll((v) => ({ ...v, [`${selected}/${tk.task_id}`]: r })),
+                            )
+                            .catch(() => {});
+                      }}
+                      className="mb-1 cursor-pointer rounded bg-slate-50 p-1.5 dark:bg-slate-800"
                     >
-                      {tk.result}
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="min-w-0 flex-1 truncate font-mono">{tk.task_id}</span>
+                        <LaufAbzeichen lauf={tk.lauf} />
+                        <StatusBadge status={tk.status} />
+                      </div>
+                      <div
+                        className={`${
+                          istOffen ? "whitespace-pre-wrap break-words" : "truncate"
+                        } text-slate-500 dark:text-slate-400`}
+                      >
+                        {zeige.result}
+                      </div>
+                      {istOffen && <LaufDetails lauf={zeige.lauf} log={zeige.log} />}
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </>

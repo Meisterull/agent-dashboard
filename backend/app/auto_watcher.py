@@ -37,11 +37,19 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from app import weckruf
 from app.config import load_agents_full, load_settings, save_settings
 
 RECONCILE_INTERVAL = 15   # Sekunden, bis settings-/agents-Änderungen greifen
 RECONNECT_DELAY = 30      # Sekunden zwischen Startversuchen nach Fehler
-STOP_GRACE = int(os.environ.get("AUTO_STOP_GRACE", "1860"))  # > claude-Timeout 1800 s
+# Sanft-Stopp: so lange darf ein laufender Task fertig werden, danach wird hart
+# gestoppt. Muss ÜBER dem Wanduhr-Deckel des Watchers liegen (Issue #38:
+# Default 7200 s, je Agent `automatik_timeout`) — sonst kappt „Aus" einen
+# Lauf, den der Watcher selbst noch arbeiten ließe. Je Agent wird deshalb
+# mindestens dessen Deckel + 60 s gewartet (siehe _Watcher.stop_grace).
+STOP_GRACE = int(os.environ.get("AUTO_STOP_GRACE", "7260"))
+WATCHER_TIMEOUT_DEFAULT = 7200  # = CLAUDE_TIMEOUT in scripts/agent_watcher.py
+MAILBOX_ROOT = Path(os.environ.get("WORKSPACE_DIR", "/workspace")) / "mailboxes"
 # Wartezeit auf das Prozessende nach "kill" (Not-Aus) — danach fällt die
 # Verbindung sowieso. Kurz halten: der Endpunkt wartet mit.
 KILL_GRACE = float(os.environ.get("AUTO_KILL_GRACE", "5"))
@@ -49,6 +57,13 @@ REMOTE_MCP_PORT_DEFAULT = int(os.environ.get("MCP_TUNNEL_REMOTE_PORT",
                                              os.environ.get("MCP_PORT", "9000")))
 REMOTE_SCRIPT = ".agent-dashboard/agent_watcher.py"
 REMOTE_SCRIPT_HASH = REMOTE_SCRIPT + ".sha256"
+
+
+def _zeit() -> str:
+    """Zeitstempel für die [automatik]-Zeilen (Issue #40) — ohne ihn ließ sich
+    ein Ablauf nur über `docker logs -t` rekonstruieren."""
+    from datetime import datetime
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _watcher_script() -> Path:
@@ -126,7 +141,68 @@ def _ssh_cfg(agent: dict[str, Any]) -> dict[str, Any] | None:
         # statt unsichtbar in der Settings-Datei des Agenten-PCs
         "permission_mode": agent.get("permission_mode") or conn.get("permission_mode"),
         "allowed_tools": agent.get("allowed_tools") or conn.get("allowed_tools"),
+        # Sitzung fortsetzen (Default AN): `resume: false` lässt jeden Task
+        # wieder frisch starten; die Grenzen sind optional (Sekunden / Tokens).
+        # Zeitgrenzen des Laufs (Issue #38): Wanduhr-Deckel und Leerlauf in s.
+        "automatik_timeout": _erstes_gesetztes(agent.get("automatik_timeout"),
+                                               conn.get("automatik_timeout")),
+        "automatik_leerlauf": _erstes_gesetztes(agent.get("automatik_leerlauf"),
+                                                conn.get("automatik_leerlauf")),
+        "resume": _erstes_gesetztes(agent.get("resume"), conn.get("resume")),
+        "resume_max_pause": _erstes_gesetztes(agent.get("resume_max_pause"),
+                                              conn.get("resume_max_pause")),
+        "resume_max_kontext": _erstes_gesetztes(agent.get("resume_max_kontext"),
+                                                conn.get("resume_max_kontext")),
     }
+
+
+def _erstes_gesetztes(*werte: Any) -> Any:
+    """Erster Wert, der nicht None ist — `or` verschluckte ein `false`/0."""
+    for w in werte:
+        if w is not None:
+            return w
+    return None
+
+
+def _ganzzahl(wert: Any) -> int | None:
+    try:
+        return int(float(wert))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _zeit_flags(cfg: dict[str, Any]) -> str:
+    """--timeout/--leerlauf aus agents.yaml (Issue #38). Wie bei den
+    resume-Grenzen: nur geprüfte Zahlen erreichen die Remote-Shell.
+    Leerlauf 0 ist gültig (= Wächter aus), ein Timeout unter 60 s nicht."""
+    teile = ""
+    deckel = _ganzzahl(cfg.get("automatik_timeout"))
+    if deckel is not None and deckel >= 60:
+        teile += f" --timeout {deckel}"
+    ruhe = _ganzzahl(cfg.get("automatik_leerlauf"))
+    if ruhe is not None and ruhe >= 0:
+        teile += f" --leerlauf {ruhe}"
+    return teile
+
+
+def _resume_flags(cfg: dict[str, Any]) -> str:
+    """Kommandozeilen-Anteil für das Fortsetzen der Sitzung.
+
+    Zahlen werden HIER zu int gemacht: der Wert kommt aus agents.yaml und
+    landet in einer Remote-Shell — ein Nicht-Zahl-Wert fällt weg statt durch."""
+    teile = ""
+    if cfg.get("resume") is False or str(cfg.get("resume")).strip().lower() in (
+            "false", "nein", "aus", "no", "off", "0"):
+        return " --no-resume"
+    for feld, flag in (("resume_max_pause", "--resume-max-pause"),
+                       ("resume_max_kontext", "--resume-max-kontext")):
+        try:
+            zahl = int(float(cfg.get(feld)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if zahl > 0:
+            teile += f" {flag} {zahl}"
+    return teile
 
 
 class _Watcher:
@@ -147,6 +223,7 @@ class _Watcher:
         # sonst frisst der Manager alle 30 s weiter die Warteschlange (M12).
         self.gesperrt = False
         self.task: asyncio.Task | None = None
+        self.stop_grace = STOP_GRACE     # Sanft-Stopp-Frist dieses Agenten (s.o.)
         self.conn = None                 # asyncssh-Verbindung
         self.proc = None                 # asyncssh-Prozess
 
@@ -205,9 +282,15 @@ class AutoWatcherManager:
             if not name or (agent.get("connection") or {}).get("type") != "ssh":
                 continue
             w = self._watcher.get(name)
+            arten = weckruf.weck_arten(agent)
             agents[name] = {
                 "gewuenscht": bool(gewuenscht.get(name)),
                 "startbar": _ssh_cfg(agent) is not None,
+                # Weckruf (Issue #36): worauf die Automatik außer Tasks
+                # reagiert — und wie viel Post deshalb gerade LIEGEN bleibt.
+                "weckt": ["task", *arten],
+                "ungeweckt": (weckruf.ungeweckt(MAILBOX_ROOT, name, arten)
+                              if gewuenscht.get(name) else 0),
                 **(w.als_dict() if w else {"status": "aus", "detail": "", "seit": None,
                                            "log": [], "gesperrt": False}),
             }
@@ -244,17 +327,43 @@ class AutoWatcherManager:
     # --- Reconcile ----------------------------------------------------------
 
     async def _reconcile_loop(self) -> None:
-        print("[automatik] Manager gestartet", flush=True)
+        print(f"{_zeit()} [automatik] Manager gestartet", flush=True)
         while True:
             try:
                 self._reconcile()
             except Exception as exc:  # noqa: BLE001 — Loop darf nie sterben
-                print(f"[automatik] Reconcile-Fehler: {exc}", flush=True)
+                print(f"{_zeit()} [automatik] Reconcile-Fehler: {exc}", flush=True)
+            try:
+                # Datei-I/O unter Mailbox-Locks — nicht im Event-Loop.
+                await asyncio.to_thread(self._weckrufe)
+            except Exception as exc:  # noqa: BLE001
+                print(f"{_zeit()} [automatik] Weckruf-Fehler: {exc}", flush=True)
             self._weck.clear()
             try:
                 await asyncio.wait_for(self._weck.wait(), timeout=RECONCILE_INTERVAL)
             except asyncio.TimeoutError:
                 pass
+
+    def _weckrufe(self) -> None:
+        """Ungelesene Post zu Weckruf-Tasks bündeln (Issue #36) — nur für
+        Agenten mit eingeschalteter Automatik und `automatik_weckt`."""
+        settings = load_settings()
+        if settings.get("automatik_notaus"):
+            return
+        gewuenscht = settings.get("automatik") or {}
+        for agent in load_agents_full():
+            name = agent.get("name")
+            if not name or not gewuenscht.get(name):
+                continue
+            arten = weckruf.weck_arten(agent)
+            if not arten:
+                continue
+            bericht = weckruf.pruefe(MAILBOX_ROOT, name, arten)
+            for task_id in bericht["geweckt"]:
+                print(f"{_zeit()} [automatik] {name}: Weckruf {task_id} aus ungelesener Post", flush=True)
+            for absender in bericht["gebremst"]:
+                print(f"{_zeit()} [automatik] {name}: Schleifenschutz — Post von {absender} "
+                      f"bleibt liegen (>{weckruf.WECK_MAX_JE_STUNDE}/h)", flush=True)
 
     def _reconcile(self) -> None:
         settings = load_settings()
@@ -301,7 +410,7 @@ class AutoWatcherManager:
                         if not await sftp.isdir(".agent-dashboard"):
                             await sftp.mkdir(".agent-dashboard")
                         if await _script_hochladen(sftp, _watcher_script()):
-                            print(f"[automatik] {name}: agent_watcher.py aktualisiert",
+                            print(f"{_zeit()} [automatik] {name}: agent_watcher.py aktualisiert",
                                   flush=True)
                     cmd = (
                         f"{_quote_cmd(cfg['python'])} -u {REMOTE_SCRIPT} "
@@ -325,10 +434,14 @@ class AutoWatcherManager:
                         if isinstance(tools, (list, tuple)):
                             tools = ",".join(str(t).strip() for t in tools if str(t).strip())
                         cmd += f" --allowed-tools {shlex.quote(str(tools))}"
+                    cmd += _resume_flags(cfg) + _zeit_flags(cfg)
+                    deckel = _ganzzahl(cfg.get("automatik_timeout"))
+                    w.stop_grace = max(STOP_GRACE, (deckel if deckel and deckel >= 60
+                                                    else WATCHER_TIMEOUT_DEFAULT) + 60)
                     proc = await conn.create_process(cmd, stderr=asyncssh.STDOUT)
                     w.proc = proc
                     w.setze("an", "")
-                    print(f"[automatik] {name}: Watcher läuft (MCP :{cfg['mcp_port']})", flush=True)
+                    print(f"{_zeit()} [automatik] {name}: Watcher läuft (MCP :{cfg['mcp_port']})", flush=True)
                     async for zeile in proc.stdout:
                         zeile = zeile.rstrip()
                         if zeile:
@@ -349,13 +462,13 @@ class AutoWatcherManager:
                     w.gesperrt = True
                     w.setze("fehler", (w.detail or "Watcher-Preflight fehlgeschlagen")
                             + " — kein Auto-Neustart, Automatik neu einschalten")
-                    print(f"[automatik] {name}: Watcher mit Fehler beendet (rc=1) — "
+                    print(f"{_zeit()} [automatik] {name}: Watcher mit Fehler beendet (rc=1) — "
                           f"Auto-Neustart ausgesetzt ({w.detail})", flush=True)
                     return
                 # rc=2 (Instanz-Lock, H2) läuft bewusst in den normalen
                 # Reconnect: der andere Watcher endet irgendwann von selbst.
                 w.setze("fehler", w.detail or "Watcher-Prozess beendet")
-                print(f"[automatik] {name}: Prozess endete — Neustart in {RECONNECT_DELAY}s "
+                print(f"{_zeit()} [automatik] {name}: Prozess endete — Neustart in {RECONNECT_DELAY}s "
                       f"({w.detail})", flush=True)
             except asyncio.CancelledError:
                 raise
@@ -365,14 +478,14 @@ class AutoWatcherManager:
                 if w.beenden:
                     break
                 w.setze("fehler", f"{type(exc).__name__}: {exc}")
-                print(f"[automatik] {name}: {w.detail} — Neustart in {RECONNECT_DELAY}s",
+                print(f"{_zeit()} [automatik] {name}: {w.detail} — Neustart in {RECONNECT_DELAY}s",
                       flush=True)
             try:
                 await asyncio.wait_for(self._warte_auf_beenden(w), timeout=RECONNECT_DELAY)
             except asyncio.TimeoutError:
                 pass
         w.setze("aus")
-        print(f"[automatik] {name}: Watcher gestoppt", flush=True)
+        print(f"{_zeit()} [automatik] {name}: Watcher gestoppt", flush=True)
 
     @staticmethod
     async def _warte_auf_beenden(w: _Watcher) -> None:
@@ -392,7 +505,7 @@ class AutoWatcherManager:
             await self._stopp_hart(w)
             return
         try:
-            await asyncio.wait_for(w.proc.wait(), timeout=STOP_GRACE)
+            await asyncio.wait_for(w.proc.wait(), timeout=w.stop_grace)
         except (asyncio.TimeoutError, Exception):  # noqa: BLE001
             await self._stopp_hart(w)
             return

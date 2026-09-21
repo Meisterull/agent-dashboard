@@ -56,6 +56,25 @@ const text = (page) => page.$eval("body", (b) => b.innerText);
   pruefe("Rückfrage erscheint als eigene Art", t.includes("Rückfrage"));
   pruefe("Tasks bleiben eigener Abschnitt", /Inbox \(1\)/.test(t));
 
+  // Lauf-Daten des Watchers (Issues #36–#39, #41): sichtbar OHNE das
+  // log-Feld öffnen zu müssen — am Handy war das praktisch unsichtbar.
+  pruefe("liegengebliebene Post wird gemeldet (#36)",
+    /2 ungelesene Einträge — die Automatik reagiert darauf nicht/.test(t));
+  pruefe("Timeout-Abbruch ist als fortsetzbar gekennzeichnet (#38)",
+    t.includes("abgebrochen · fortsetzbar"));
+  pruefe("verweigerte Aufrufe kennzeichnen die Antwort (#39)", t.includes("mit Einschränkungen"));
+  pruefe("Liste zeigt nur den Anschnitt (#41)", t.includes("angeschnitten…") && !t.includes("VOLLER TEXT"));
+  await page.evaluate(() => {
+    const el = [...document.querySelectorAll("span")].find((s) => s.innerText === "task-9");
+    el.closest("div.cursor-pointer").click();
+  });
+  await page.waitForFunction(() => document.body.innerText.includes("VOLLER TEXT"), { timeout: 5000 });
+  const auf = await text(page);
+  pruefe("Aufklappen lädt den vollen Text nach (#41)", auf.includes("VOLLER TEXT der Antwort"));
+  pruefe("…nennt den verweigerten Befehl (#39)", auf.includes("cat /etc/shadow"));
+  pruefe("…und die Sitzung zum Übernehmen (#37)",
+    auf.includes("claude --resume 9a2d20b8-b893-43c0-8867-a80963446b17"));
+
   // Zähler am Agenten-Kopf: ohne Aufklappen sehen, wo etwas liegt (#33).
   const zaehler = await page.$$eval("button", (bs) =>
     bs

@@ -38,8 +38,9 @@ No SaaS, no telemetry, one hardened Docker container on your own server.
   (prompt + permission subset) and attach one to any task; a role can only
   narrow an agent's permissions, never widen them.
 - **Automatic mode** — per agent, the dashboard keeps a watcher running on the
-  remote machine that works through its inbox on its own; a global emergency
-  stop halts everything at once.
+  remote machine that works through its inbox on its own; follow-up tasks
+  resume the same Claude session instead of starting from zero each time; a
+  global emergency stop halts everything at once.
 - **Real SSH terminals in the browser** — tabs per host, several terminals per
   connection, sessions survive disconnects (reattach later, even from another
   device), swipe-scrolling that actually works on touch screens.

@@ -40,8 +40,9 @@ Docker-Container auf deinem eigenen Server.
   (Prompt + Rechte-Teilmenge) und jedem Task mitgeben; eine Rolle kann die
   Rechte eines Agenten nur einschränken, nie erweitern.
 - **Automatikmodus** — je Agent hält das Dashboard einen Watcher auf dem
-  entfernten Rechner, der die Inbox selbständig abarbeitet; ein globaler
-  Not-Aus stoppt alles auf einmal.
+  entfernten Rechner, der die Inbox selbständig abarbeitet; Folge-Tasks
+  setzen dieselbe Claude-Sitzung fort, statt jedes Mal bei null anzufangen;
+  ein globaler Not-Aus stoppt alles auf einmal.
 - **Echte SSH-Terminals im Browser** — Tabs je Host, mehrere Terminals pro
   Verbindung, Sessions überleben Verbindungsabbrüche (später wieder andocken,
   auch von einem anderen Gerät), Wisch-Scrollen, das auf Touchscreens

@@ -43,6 +43,30 @@ INTEGRATION_TIMEOUT = float(os.environ.get("INTEGRATION_TIMEOUT", "60"))
 CONNECT_TIMEOUT = 15  # Verbindungsaufbau bleibt kurz — toter Host soll schnell scheitern
 
 
+# Timeouts in Folge je Integration (Issue #40). Ab TIMEOUT_WARNUNG_AB meldet
+# `timeout_warnung` dem Aufrufer einmal, dass ein Mensch nachsehen sollte.
+TIMEOUT_WARNUNG_AB = int(os.environ.get("INTEGRATION_TIMEOUT_WARNUNG", "3"))
+_timeouts_in_folge: dict[str, int] = {}
+
+
+def _timeout_serie(name: str, timeout: bool) -> int:
+    if not timeout:
+        _timeouts_in_folge.pop(name, None)
+        return 0
+    _timeouts_in_folge[name] = _timeouts_in_folge.get(name, 0) + 1
+    return _timeouts_in_folge[name]
+
+
+def timeout_warnung(name: str) -> str | None:
+    """Text für eine Meldung an den Menschen — genau EINMAL je Serie, beim
+    Erreichen der Schwelle (nicht bei jedem weiteren Timeout erneut)."""
+    if _timeouts_in_folge.get(name, 0) != TIMEOUT_WARNUNG_AB:
+        return None
+    return (f"Integration '{name}': {TIMEOUT_WARNUNG_AB} Timeouts in Folge. "
+            f"Dauert sie von Natur aus länger, `timeout:` in integrations.yaml "
+            f"erhöhen — sonst die Gegenseite prüfen.")
+
+
 class IntegrationError(Exception):
     """Unbekannte Integration, nicht erlaubte Methode oder ungültiger Pfad."""
 
@@ -104,11 +128,25 @@ def call_integration(
 
     url = cfg["base_url"].rstrip("/") + "/" + path.lstrip("/")
     timeout = httpx.Timeout(float(cfg.get("timeout", INTEGRATION_TIMEOUT)), connect=CONNECT_TIMEOUT)
+    sekunden = float(cfg.get("timeout", INTEGRATION_TIMEOUT))
     try:
         with httpx.Client(timeout=timeout) as client:
             resp = client.request(method, url, headers=headers, json=body if body else None)
+    except httpx.TimeoutException as exc:
+        # Issue #40: „Aufruf fehlgeschlagen: timed out" ließ den Agenten den
+        # Aufruf wiederholen (im Echtbetrieb 7×) — dabei arbeitete die
+        # Gegenseite längst. Der Text nennt deshalb den Ausweg, für den
+        # Agenten UND für den Admin.
+        serie = _timeout_serie(name, True)
+        raise IntegrationError(
+            f"Timeout nach {sekunden:.0f} s — der Vorgang läuft auf der Gegenseite "
+            f"womöglich WEITER. Den Aufruf NICHT wiederholen, sondern dort den Stand "
+            f"prüfen. (Admin: braucht '{name}' von Natur aus länger, `timeout:` für "
+            f"'{name}' in integrations.yaml setzen; {serie}. Timeout in Folge.)"
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         raise IntegrationError(f"Aufruf fehlgeschlagen: {exc}") from exc
+    _timeout_serie(name, False)
 
     voll = resp.text
     gekuerzt = len(voll) > MAX_BODY_CHARS

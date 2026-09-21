@@ -55,6 +55,32 @@ class SshCfgTests(unittest.TestCase):
         self.assertEqual(cfg["workdir"], "/agent")
         self.assertEqual(cfg["claude_bin"], "conn-claude")
 
+    def test_resume_flags(self):
+        """Sitzung fortsetzen ist Default; agents.yaml kann es abschalten oder
+        die Grenzen setzen — Nicht-Zahlen erreichen die Remote-Shell nie."""
+        self.assertEqual(aw._resume_flags(aw._ssh_cfg(self.agent())), "")
+        a = self.agent()
+        a["resume"] = False
+        self.assertEqual(aw._resume_flags(aw._ssh_cfg(a)), " --no-resume")
+        a = self.agent()
+        a.update(resume_max_pause=3600, resume_max_kontext="80000")
+        self.assertEqual(aw._resume_flags(aw._ssh_cfg(a)),
+                         " --resume-max-pause 3600 --resume-max-kontext 80000")
+        a = self.agent()
+        a.update(resume_max_pause="60; rm -rf ~", resume_max_kontext=-5)
+        self.assertEqual(aw._resume_flags(aw._ssh_cfg(a)), "")
+
+    def test_zeit_flags(self):
+        """Issue #38: Wanduhr-Deckel und Leerlauf je Agent — nur geprüfte
+        Zahlen erreichen die Remote-Shell; Leerlauf 0 (= aus) ist gültig."""
+        self.assertEqual(aw._zeit_flags(aw._ssh_cfg(self.agent())), "")
+        a = self.agent()
+        a.update(automatik_timeout=14400, automatik_leerlauf=0)
+        self.assertEqual(aw._zeit_flags(aw._ssh_cfg(a)), " --timeout 14400 --leerlauf 0")
+        a = self.agent()
+        a.update(automatik_timeout="30", automatik_leerlauf="5; reboot")
+        self.assertEqual(aw._zeit_flags(aw._ssh_cfg(a)), "")
+
     def test_nicht_startbar(self):
         self.assertIsNone(aw._ssh_cfg({"name": "a"}))
         self.assertIsNone(aw._ssh_cfg({"connection": {"type": "ssh", "host": "h"}}))

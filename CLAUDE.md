@@ -296,6 +296,80 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   im log der Antwort (permission_denials aus dem result-Event + tool_result-
   Heuristik). Headless beantwortet niemand Freigabe-Fragen — was die Automatik
   dürfen soll, MUSS als Flag mitkommen.
+  **Sitzung fortsetzen (21.09.2026, Default AN):** bis dahin war jeder Task ein
+  frischer `claude --print` ohne Gedächtnis (Startkontext + Projekt-Orientierung
+  je Task neu, nach einer Rückfrage der ganze Lauf doppelt). `run_claude_sitzung`
+  führt jetzt je **Arbeitsverzeichnis + Rolle** eine Sitzung per `--resume`
+  weiter — wie im Handbetrieb EINE offene Claude-Code-Sitzung je Box alles
+  abarbeitet. Ein optionaler `thread` im Task (send_task, Issue #37) spaltet
+  bewusst einen eigenen Faden je Vorgang ab (darf 7 Tage ruhen). Das
+  Sitzungsbuch liegt auf dem Agenten-PC
+  (`~/.agent-dashboard/<agent>.sitzungen.json`: session_id, zuletzt, kontext,
+  tasks + task_id→Sitzung). Neue Sitzung bei Pause > 12 h, Kontext > 150k Tokens
+  oder 25 Tasks; **dieselbe task_id (geparkt nach Rückfrage, #17, oder erneut
+  angestoßen nach Timeout) setzt IMMER ihre eigene Sitzung fort**. Behalten
+  wird die Sitzung nach Erfolg UND nach Timeout (der Lauf hat gearbeitet, sein
+  Stand steht im Transkript); nach jedem anderen Fehler und nach Not-Aus wird
+  sie vergessen. Scheitert `--resume` sofort und ohne Assistant-Nachricht
+  (Transkript weg — das Binary echot dann die unbekannte ID im result-Event,
+  die nie ins Buch darf), läuft der Task EINMAL frisch — nie nach echter
+  Arbeit (kein Doppellauf). Fortgesetzte Läufe bekommen `mcp_hint_kurz` (ohne
+  die Inbox-Pflichtrunde). Je Agent in agents.yaml: `resume: false`,
+  `resume_max_pause` (s), `resume_max_kontext` (Tokens) →
+  `--no-resume`/`--resume-max-*` (Zahlen werden im Manager zu int gemacht,
+  nichts Freies in die Remote-Shell).
+  **Lauf-Daten (`lauf` in der Antwort, Issues #37–#39):** `complete_task(lauf=…)`
+  bzw. `antwort["lauf"]` beim Dateitransport — `sitzung` (neu/fortgesetzt),
+  `session_id` (Mensch übernimmt mit `claude --resume <id>`), `kontext`,
+  `thread`, `timeout` + `fortsetzbar`, `verweigert: [{tool, eingabe}]`. Das
+  Panel macht daraus Abzeichen („abgebrochen · fortsetzbar", „mit
+  Einschränkungen", ↻) und die aufgeklappten Einzelheiten. `verbrauch` bleibt
+  rein Token/Kosten. Ein älterer Server ignoriert das unbekannte Argument
+  (mcp-SDK: kein extra=forbid — nachgeprüft mit 1.29.1).
+  **Zeitgrenzen (Issue #38):** statt des festen 1800-s-Deckels zwei Riegel in
+  `run_claude`: Leerlauf (`CLAUDE_LEERLAUF` 900 s ohne stream-json-Event — ein
+  hängender Lauf verrät sich durch Stille, nicht durch Dauer) und Wanduhr
+  (`CLAUDE_TIMEOUT` 7200 s). Je Agent `automatik_timeout`/`automatik_leerlauf`
+  (agents.yaml → `--timeout`/`--leerlauf`), ein Task darf per `timeout` nur
+  SENKEN (`wirksamer_timeout`). Der Hinweis nennt dem Lauf seine Frist
+  (`frist_hinweis`). Timeout-Abbruch: Grund + `claude --resume` im log, Response
+  trägt `hinweis` (Push-Zeile), bei Agent-Absendern zusätzlich eine Nachricht
+  an den Orchestrator. `STOP_GRACE` des Managers richtet sich je Agent nach
+  dem Deckel (+60 s), sonst kappte „Aus" einen Lauf, den der Watcher noch ließe.
+  **Verweigerungen (Issue #39):** Log nennt den BEFEHL (`tool_eingabe`:
+  command vor description) und einen Hinweis passend zur Lage (pauschal
+  freigegeben und trotzdem abgelehnt / nur Muster freigegeben / nicht
+  freigegeben) — `verweigerungs_log`.
+  **Weckruf (Issue #36, `app/weckruf.py`):** der Watcher führt nur Tasks aus;
+  damit Nachrichten/Ergebnisse/Rückfragen einen Automatik-Agenten wecken,
+  bündelt der SERVER (Manager-Reconcile, alle 15 s, nur bei eingeschalteter
+  Automatik) ungelesene Post je Absender zu EINEM normalen Task (`weckruf:
+  true`, Absender = ursprünglicher Absender → das Ergebnis geht als response
+  zurück). Kein Sonderweg im Watcher: Sitzung, Timeout, Verbrauch, Panel
+  greifen von selbst. agents.yaml `automatik_weckt: [task, message, response,
+  question]`, Default nur task. Jeder Eintrag weckt höchstens einmal
+  (`<mailbox>/.weckruf.json`); Schleifenschutz zweistufig: das Ergebnis eines
+  Weckrufs trägt `weckt: false`, und höchstens `WECK_MAX_JE_STUNDE` (6) je
+  Absender/Stunde — darüber EINE Meldung in die Orchestrator-Inbox. System-
+  Notizen (Pflege, Timeout, Schleifenschutz) tragen ebenfalls `weckt: false`.
+  `/api/automatik` liefert je Agent `weckt` + `ungeweckt` (Panel-Hinweis).
+  **Lebenszeichen (Issue #42):** verwaist = 3 h OHNE Lebenszeichen, nicht 3 h
+  seit dem Claim. Zwei Quellen: der Watcher ruft alle 10 min
+  `claim_task(erneut=True)` (stempelt `zuletzt_aktiv`), und jede echte
+  MCP-Aktivität eines gebundenen Kanals frischt `<mailbox>/.aktiv` auf
+  (`_im_thread` → `Mailbox.lebenszeichen`). Der leere Watcher-Poll
+  `inbox(kind="task")` zählt NICHT — sonst hielte ein neu gestarteter Watcher
+  den Task seines abgestürzten Vorgängers ewig am Leben. Rückreihen schickt
+  dem Agenten eine Notiz.
+  **Log + Polling (Issues #40/#41):** `[mcp]`/`[automatik]`/`[pflege]`-Zeilen
+  tragen Zeitstempel; `ergebnis=fehler:<kurz>` auch bei `{"error": …}` als
+  Rückgabewert (`fehler_im_ergebnis`); der leere Watcher-Poll loggt nicht
+  (`ist_watcher_poll`), der Watcher streckt seinen Takt im Leerlauf 5→30 s;
+  Integrations-Timeout nennt den Ausweg und meldet eine Serie (3) einmal an
+  den Menschen. `/api/agents/{n}/tasks` kürzt lange Texte (`gekuerzt`,
+  Einzelabruf `/api/agents/{n}/outbox/{task_id}`) und antwortet mit ETag/304;
+  nginx loggt erfolgreiche GET-Polls nicht (`map … $ins_log`), uvicorn läuft
+  mit `--no-access-log`.
 - **Agent-↔-Agent (Mailbox v2):** Envelopes haben `kind` (task/message/question/
   answer/response) + `sender`/`to`. MCP-Tools: `send_task`/`send_message`/`ask`/
   `answer`/`inbox`, dazu der Task-Lebenszyklus für MCP-getriebene Agenten:
