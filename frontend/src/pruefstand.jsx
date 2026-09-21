@@ -121,6 +121,10 @@ if (welches === "terminal") {
     // Code, der auch produktiv läuft, nicht eine Nachbildung.
     if (!new URLSearchParams(location.search).has("roh")) wischScrollen(term);
     window.__term = term;
+    // Was xterm an die ANWENDUNG schickt (Maus-Reports, Pfeiltasten): der
+    // TUI-Test liest hier mit, statt eine echte PTY zu brauchen.
+    window.__daten = [];
+    term.onData((d) => window.__daten.push(d));
     // Sichtbarkeits-Wächter wie in Terminal.jsx (termVerbindung.js, Befund 1):
     // ausgeblendet wird nicht gefittet — der Test versteckt den Host per
     // display:none und prüft, dass die Spalten stehen bleiben.

@@ -216,6 +216,8 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
 
     // Wischen im Verlauf: xterm rastet jede Wischgeste auf Zeilenkanten
     // zurück, am Handy kam man damit nicht in den Verlauf (siehe termScroll.js).
+    // Hat eine TUI das Sagen (Claude Code: Alternativpuffer/Maus-Reporting),
+    // reicht dieselbe Geste den Fingerweg als Mausrad an die Anwendung weiter.
     const scrollGeste = wischScrollen(term);
 
     // Hinweis-Badge: schaltet eine TUI Maus-Reporting ein (?1000h/?1006h),

@@ -34,6 +34,19 @@ function zeilenHoehe(term, el) {
  * `.xterm-viewport`, nicht darin. Verloren geht damit nur Pinch-Zoom über dem
  * Terminal, das dort noch nie etwas taugte (xterm rechnet die Spalten nicht
  * neu; dafür gibt es A− / A+ in der Tastenleiste).
+ *
+ * ZWEITE LAGE — eine TUI hat das Sagen (Claude Code, less, vim): Im
+ * Alternativpuffer gibt es keinen Verlauf, und bei Maus-Reporting gehört das
+ * Blättern der Anwendung. Am PC übersetzt xterm dafür das MAUSRAD: in
+ * Maus-Reports (`ESC [ < 64/65 …`) bzw. ohne Maus-Reporting in Pfeiltasten.
+ * Für den Finger gab es diese Übersetzung nicht — nachgemessen schickte ein
+ * Wisch in allen drei Zuständen (Alt+Maus, nur Alt, Maus im Normalpuffer)
+ * NICHTS an die Anwendung, das Rad dagegen schon: „am PC geht Scrollen, am
+ * Tablet nicht". Deshalb wird der Fingerweg hier als Rad-Ereignis an xterm
+ * gereicht, eines je Zeile (so hält es auch Termux). Bewusst über ein
+ * synthetisches `wheel` statt selbst gebauter Escape-Folgen: xterm kennt als
+ * Einziger das aktive Maus-Protokoll (X10/SGR/…) und den Cursor-Tasten-Modus
+ * — und der Finger tut damit garantiert dasselbe wie das Rad.
  */
 export function wischScrollen(term) {
   const wurzel = term.element;
@@ -46,21 +59,47 @@ export function wischScrollen(term) {
   let letzteY = 0;
   let rest = 0; // angefangene Zeile, damit langsames Wischen nicht verhungert
 
-  // Nur eingreifen, wo es echten Verlauf zu sehen gibt. Läuft eine TUI im
-  // Alternativpuffer (Claude Code), gibt es keinen — und beansprucht sie die
-  // Maus, gehören die Ereignisse ihr. Dann bleibt die Geste unangetastet
-  // (für den Verlauf gibt es dort den Kopier-Modus ⎘).
-  const zustaendig = () => {
+  // Wer blättert? "verlauf" = wir, im Scrollback des Normalpuffers.
+  // "rad" = die Anwendung: sie beansprucht die Maus oder läuft im
+  // Alternativpuffer — der Fingerweg geht als Mausrad an xterm (siehe oben).
+  // null = es gibt nichts zu blättern, die Geste bleibt unangetastet.
+  const lage = () => {
     const puffer = term.buffer.active;
-    return (
-      puffer.type === "normal" &&
-      puffer.baseY > 0 &&
-      !wurzel.classList.contains("enable-mouse-events")
-    );
+    if (wurzel.classList.contains("enable-mouse-events") || puffer.type === "alternate") {
+      return "rad";
+    }
+    return puffer.baseY > 0 ? "verlauf" : null;
+  };
+  let modus = null; // Lage beim Aufsetzen des Fingers — gilt für die ganze Geste
+
+  // Fingerweg als Mausrad weiterreichen, ein Ereignis je Zeile: im Maus-Modus
+  // macht xterm aus JEDEM wheel genau einen Report, egal wie groß deltaY ist.
+  const radSenden = (zeilen, e) => {
+    const schirm = wurzel.querySelector(".xterm-screen") || wurzel;
+    const r = schirm.getBoundingClientRect();
+    // Im Schirm bleiben: xterm rechnet die Zelle für den Report aus den
+    // Koordinaten und verwirft Ereignisse, die daneben liegen.
+    const x = Math.min(Math.max(e.clientX, r.left + 1), r.right - 1);
+    const y = Math.min(Math.max(e.clientY, r.top + 1), r.bottom - 1);
+    const richtung = Math.sign(zeilen);
+    for (let i = 0; i < Math.abs(zeilen); i++) {
+      wurzel.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: richtung,
+          deltaMode: WheelEvent.DOM_DELTA_LINE,
+          clientX: x,
+          clientY: y,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    }
   };
 
   const runter = (e) => {
-    if (e.pointerType === "mouse" || !zustaendig()) return;
+    if (e.pointerType === "mouse") return;
+    modus = lage();
+    if (!modus) return;
     zeiger = e.pointerId;
     letzteY = e.clientY;
     rest = 0;
@@ -79,7 +118,9 @@ export function wischScrollen(term) {
     const ganze = Math.trunc(rest);
     if (ganze) {
       rest -= ganze;
-      term.scrollLines(ganze);
+      // Finger nach unten = zurück: negative Zeilen = Rad nach oben (deltaY < 0)
+      if (modus === "verlauf") term.scrollLines(ganze);
+      else radSenden(ganze, e);
     }
   };
 
