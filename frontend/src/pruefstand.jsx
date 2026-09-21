@@ -5,10 +5,12 @@
 //   ?panel=agenten               Agenten-Panel     -> tests/test_agents_browser.cjs
 //   ?panel=keybar                Tastenleiste      -> tests/test_keybar_browser.cjs
 //   ?panel=terminal              xterm + Leiste    -> tests/test_terminal_browser.cjs
+//   ?panel=dateien               Datei-Panel       -> tests/test_dateien_browser.cjs
 //
 // Temporäre Datei — gehört nicht in den Auslieferungs-Build.
 import { createRoot } from "react-dom/client";
 import AgentsPanel from "./components/AgentsPanel";
+import FilesPanel from "./components/FilesPanel";
 import KeyBar from "./components/KeyBar";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -127,6 +129,71 @@ function fetchDoppel(url, opt = {}) {
   return json({});
 }
 
+// --- Datei-Panel: Austausch-Ordner je Maschine ------------------------------
+// Drei Maschinen: erp (Ordner aus), deverp (Ordner an), notebook (Token, kein
+// SSH). Das Doppel führt den Schalter-Zustand mit und schneidet jeden
+// schreibenden Aufruf samt Body mit (window.__aufrufe).
+const austauschStand = {
+  erp: { moeglich: true, aktiv: false, ordner: null, pfad: null },
+  deverp: { moeglich: true, aktiv: true, ordner: "austausch", pfad: "/home/u/austausch" },
+  notebook: { moeglich: false, aktiv: false, ordner: null, pfad: null },
+};
+window.__aufrufe = [];
+
+function fetchDoppelDateien(url, opt = {}) {
+  const json = (data, status = 200) =>
+    Promise.resolve({ ok: status < 400, status, json: async () => data });
+  const methode = opt.method || "GET";
+  const body = opt.body ? JSON.parse(opt.body) : null;
+  if (methode !== "GET") window.__aufrufe.push({ url, methode, body });
+
+  if (url === "/api/connections")
+    return json({ connections: Object.keys(austauschStand).map((name) => ({ name })) });
+  if (url === "/api/austausch" && methode === "GET")
+    return json({
+      maschinen: Object.entries(austauschStand).map(([name, e]) => ({ name, ...e })),
+      max_mb: 200,
+      standard_ordner: "austausch",
+    });
+  if (url === "/api/austausch/senden")
+    return json({
+      von: body.von,
+      an: body.an,
+      zugestellt: [
+        { name: "export.csv", pfad: `/home/u/austausch/von-${body.von}/export.csv`, bytes: 1234 },
+      ],
+      fehler: [],
+      gemeldet: true,
+    });
+  if (url.startsWith("/api/austausch/")) {
+    const name = decodeURIComponent(url.split("/")[3]);
+    if (methode === "DELETE") {
+      austauschStand[name] = { ...austauschStand[name], aktiv: false, ordner: null, pfad: null };
+      return json({ name, aktiv: false });
+    }
+    if ((body.ordner || "").includes(".."))
+      return json({ detail: "»..« ist im Ordner-Pfad nicht erlaubt" }, 400);
+    const ordner = body.ordner || "austausch";
+    austauschStand[name] = { moeglich: true, aktiv: true, ordner, pfad: `/home/u/${ordner}` };
+    return json({ name, aktiv: true, ordner, pfad: `/home/u/${ordner}` });
+  }
+  if (url.startsWith("/api/files")) return json({ path: "", entries: [] });
+  if (url.startsWith("/api/remote/")) {
+    const pfad = new URL(url, location.origin).searchParams.get("path") || "/home/u";
+    if (pfad !== "/home/u") return json({ path: pfad, parent: "/home/u", entries: [] });
+    return json({
+      path: "/home/u",
+      parent: "/home",
+      entries: [
+        { name: "projekt", path: "/home/u/projekt", type: "dir", size: null },
+        { name: "export.csv", path: "/home/u/export.csv", type: "file", size: 1234 },
+        { name: "riesig.iso", path: "/home/u/riesig.iso", type: "file", size: 300 * 1024 * 1024 },
+      ],
+    });
+  }
+  return json({});
+}
+
 const welches = new URLSearchParams(location.search).get("panel");
 if (welches === "terminal") {
   // Echtes xterm in DERSELBEN Schachtelung wie Terminal.jsx (h-full flex-col →
@@ -187,6 +254,13 @@ if (welches === "terminal") {
         onSchrift={() => {}}
         onTastatur={() => {}}
       />
+    </div>,
+  );
+} else if (welches === "dateien") {
+  window.fetch = fetchDoppelDateien;
+  createRoot(document.getElementById("root")).render(
+    <div className="flex h-dvh flex-col">
+      <FilesPanel refreshKey={0} onOpenFile={() => {}} />
     </div>,
   );
 } else if (welches === "agenten") {

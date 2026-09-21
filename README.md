@@ -44,6 +44,10 @@ No SaaS, no telemetry, one hardened Docker container on your own server.
 - **Real SSH terminals in the browser** — tabs per host, several terminals per
   connection, sessions survive disconnects (reattach later, even from another
   device), swipe-scrolling that actually works on touch screens.
+- **File exchange between machines** — switch on an exchange folder per
+  machine; agents (`send_file`) and you (file panel) drop files into another
+  machine's folder. The dashboard copies disk to disk over SFTP, so binaries
+  and large files never pass through an LLM context.
 - **Workspace views** — arrange chat, files, terminals and the agent monitor
   freely and save named layouts.
 - **Agents without SSH** — machines behind NAT (say, a Windows laptop with
@@ -111,6 +115,7 @@ Step-by-step setup, remote agents and troubleshooting: **[START.md](START.md)**.
 | [START.md](START.md) | setup walkthrough: `.env`, config, first run, remote agents |
 | [docs/REFERENZ.md](docs/REFERENZ.md) | full architecture and API reference |
 | [PROJECT.md](PROJECT.md) | design decisions and project history |
+| [skills/](skills/) | Claude Code skills for the agent machines (e.g. `dateiaustausch`: how `send_file` and the exchange folders work) — installed by `scripts/setup_agent_pc.sh` |
 
 The in-depth documentation is currently written in German — translations
 welcome. The code and configuration are English-friendly throughout.

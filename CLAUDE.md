@@ -53,6 +53,11 @@ backend/
                            requeue_stale/aufraeumen/pflege (Wartung, s.u.)
     files.py               pfad-sichere Datei-Ops (Dateibaum, Editor, Up-/Download)
     remote_files.py        SFTP-Datei-Ops auf den Agenten-PCs (/api/remote/…)
+    austausch.py           Austausch-Ordner je Maschine (21.09.2026): kopiert per
+                           SFTP von Maschine A nach <ordner>/von-<A>/ auf B —
+                           am Modell vorbei, also auch Binäres/Großes. Schalter
+                           in settings.json `austausch` (/api/austausch, 📥 im
+                           Datei-Panel), MCP-Tool send_file, 📤 an der Dateizeile
     chat_store.py          SQLite-Persistenz der Chat-Sessions (/workspace/chat.db)
     events.py              Mailbox-Wächter (F4/F10): watchfiles (mtime-Fallback) →
                            SSE-Broadcaster für GET /api/events + Push-Auslöser
@@ -147,7 +152,12 @@ scripts/agent_watcher.py   Remote-Watcher, nur Standardlib. Transporte: --root
                            abgeliefert — auch nach "stop" (30 min Arbeit dürfen
                            nicht an einem Tunnel-Reconnect verloren gehen)
 scripts/setup_agent_pc.sh  auf dem Agenten-PC: Dashboard-MCP in Claude-Code
-                           registrieren (http://127.0.0.1:<mcp_port>/mcp)
+                           registrieren (http://127.0.0.1:<mcp_port>/mcp) und
+                           die Skills aus skills/ nach ~/.claude/skills/ legen
+skills/<name>/SKILL.md     Claude-Code-Skills FÜR DIE AGENTEN (nicht fürs Image):
+                           dateiaustausch = send_file + Austausch-Ordner aus
+                           Agenten- und Menschensicht. Ändert sich das Verhalten
+                           in app/austausch.py, den Skill mitziehen.
 Dockerfile · docker-compose.yml · entrypoint.sh · supervisord.conf · nginx/
 ```
 
@@ -166,6 +176,7 @@ cd frontend && node tests/test_verbindung.mjs  # Terminal: Herzschlag, Eingabe-W
 #   tests/test_agents_browser.cjs     Agenten-Panel: Nachrichten (#33)
 #   tests/test_terminal_browser.cjs   Terminal wischen/Größenwechsel (#35)
 #   tests/test_keybar_browser.cjs     Tastenleiste bleibt wischbar
+#   tests/test_dateien_browser.cjs    Datei-Panel: Austausch-Ordner (📥/📤)
 
 # Backend (braucht: pip install -r backend/requirements.txt + ANTHROPIC_API_KEY)
 cd backend && python -m mcp_server             # Tools, :9000
@@ -404,6 +415,33 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   wartende Task **scheitert mit Klartext** statt still weiterzulaufen — über
   #15 landet er samt instruction in `inbox/.failed/` (Issue #23). Hängen noch
   weitere Fragen an ihm, bleibt er geparkt.
+- **Dateiaustausch zwischen Maschinen (`app/austausch.py`, 21.09.2026):** Das
+  Dashboard ist die Drehscheibe — es liest per SFTP auf Maschine A und schreibt
+  auf Maschine B; kein Byte läuft durch ein Modell oder den Browser. Feste
+  Regeln: Empfang nur mit eingeschaltetem Ordner (settings.json `austausch`,
+  Muster Automatik → geht für agents.yaml- UND UI-Maschinen); Ziel immer
+  `<ordner>/von-<absender>/<reiner Dateiname>`; **nie überschreiben** (-2, -3 …);
+  geschrieben wird in `.<name>.teil`, exklusiv angelegt (`open(…, "xb")` = der
+  Anspruch auf den Namen, auch gegen gleichzeitige Sendungen) und am Ende mit
+  dem NICHT überschreibenden `rename` umbenannt; Abbruch räumt die Teil-Datei
+  weg; nur einzelne Dateien, Deckel `AUSTAUSCH_MAX_MB` (200) und 20 je Aufruf;
+  nur SSH-Maschinen (Token-Maschinen erreicht das Dashboard nicht); Ausschalten
+  löscht nichts. Der Empfänger bekommt eine normale `message` (Feld `austausch`
+  mit den Zielpfaden) — ob sie weckt, regelt `automatik_weckt`. **Zwei
+  Aufrufer, zwei Verbindungswege:** die API nimmt den Verbindungs-Cache
+  (`remote_files.sftp_client`), das MCP-Tool `send_file` läuft in einem Thread
+  des MCP-PROZESSES und baut frische Verbindungen auf (`uebergib_sync` →
+  `asyncio.run`) — der Cache hängt am Event-Loop der API und ist dort tabu.
+  Darum braucht auch `[program:mcp]` in supervisord `HOME="/home/app"`
+  (nachgestellt: ohne scheitert asyncssh an /root/.ssh). Auf gebundenen Kanälen
+  liest `send_file` IMMER von der eigenen Maschine; eigener Threadpool
+  (`MCP_AUSTAUSCH_PARALLEL`), nginx-Location `= /api/austausch/senden` mit
+  1800 s Lesefrist. Wird eine UI-Verbindung gelöscht, fällt ihr Schalter mit —
+  sonst empfinge eine später gleich benannte andere Maschine sofort.
+  Tests: `tests/test_austausch.py` (SFTP-Doppel `tests/sftp_doppel.py`),
+  `tests/test_mcp_send_file.py`, Browser `frontend/tests/test_dateien_browser.cjs`
+  (Prüfstand `?panel=dateien`). Wie es sich für Agenten und Menschen anfühlt,
+  steht im Skill `skills/dateiaustausch/SKILL.md`.
 - **Generisch, nicht workflow-spezifisch:** Integrationen kommen aus `integrations.yaml`
   (`call_integration`-Tool); jedes Zielsystem ist nur eine Konfig-Zeile. Beim Erweitern
   nichts Workflow-Spezifisches im Code hartverdrahten.

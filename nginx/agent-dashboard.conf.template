@@ -136,6 +136,19 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Dateiaustausch Maschine → Maschine (app/austausch.py): der Request kommt
+    # erst zurück, wenn kopiert ist. 200 MB über zwei SFTP-Strecken (WLAN!)
+    # brauchen länger als die 60 s Standard-Lesefrist — nginx meldete sonst
+    # 504, während die Kopie im Hintergrund noch gelingt.
+    location = /api/austausch/senden {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_read_timeout 1800s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # REST-API
     location /api/ {
         proxy_pass http://127.0.0.1:5000;

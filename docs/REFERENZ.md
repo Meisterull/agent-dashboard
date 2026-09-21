@@ -146,6 +146,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `app/weckruf.py` | Automatik-Weckruf: bündelt ungelesene Nachrichten/Ergebnisse/Rückfragen je Absender zu einem Task (`automatik_weckt`), mit Schleifenschutz |
 | `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
 | `app/remote_files.py` | SFTP-Datei-Ops auf den Agenten-PCs (`/api/remote/…`) |
+| `app/austausch.py` | Austausch-Ordner je Maschine: kopiert per SFTP von Maschine A nach `<ordner>/von-<A>/` auf Maschine B (nie überschreiben, `.teil` + Umbenennen, Deckel `AUSTAUSCH_MAX_MB`), Schalter in `settings.json` → `austausch`, Benachrichtigung als `message` (`/api/austausch*`, MCP `send_file`) |
 | `app/ssh_connect.py` | zentraler SSH-Connect mit Host-Key-Pinning (TOFU, `known_hosts`) |
 | `app/mcp_tunnel.py` | Reverse-SSH-Tunnel: gebundene MCP-Kanäle auf die Agenten-PCs |
 | `app/mcp_token.py` | Bearer-Token-Prüfung für den HTTPS-MCP-Kanal (`/mcp/{agent}`, Issue #32) |
@@ -162,6 +163,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 - Task-Lebenszyklus (Agent-Seite): `claim_task(task_id, agent?, erneut?)` (→ "in Arbeit"; ein bereits laufender Task wird **nicht** erneut vergeben — `erneut=True` holt dem eigenen Bearbeiter seinen Auftragstext zurück) · `complete_task(task_id, result, status?, log?, agent?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab; ein wiederholter Aufruf ist kein Fehler (`already: true`), damit eine verlorene Antwort erneut abgeliefert werden kann
 - Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` (archiviert die beantwortete Frage gleich mit) · `inbox(agent, kind?)` · `mark_read(envelope_id, agent?)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder). Empfänger müssen bekannt sein (Mailbox oder `agents.yaml`) — sonst Fehler statt Geister-Mailbox
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
+- Dateiaustausch: `send_file(to, paths, note?, source?)` — Dateien der EIGENEN Maschine in den Austausch-Ordner einer anderen legen (SFTP von Platte zu Platte, der Inhalt läuft nicht durchs Modell; max. 20 Dateien, je `AUSTAUSCH_MAX_MB`); gebundener Kanal: `source` = eigene Maschine (fremde Werte abgelehnt), freier Kanal: `source` Pflicht; Ziel braucht einen eingeschalteten Ordner, nur SSH-Maschinen; Rückgabe `zugestellt`/`fehler` je Datei, der Empfänger bekommt eine `message` mit den Zielpfaden. Nicht in der Grundmenge der Token-Agenten
 - Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)` — Aufruf-Timeout `INTEGRATION_TIMEOUT` (Default 60 s, je Integration per `timeout:`); lange Vorgänge asynchron anstoßen (Job-ID zurück, Status pollen) statt das Timeout hochzudrehen
 
 **Rollen für Task-Läufe** (Dashboard-Paket St.1): Eine Rolle ist eine
@@ -412,6 +414,9 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `POST` | `/api/files/upload` · `/mkdir` · `/rename` | Upload (multipart) · anlegen · umbenennen |
 | `GET` | `/api/files/download` · `/raw` | herunterladen · inline anzeigen/abspielen |
 | `*` | `/api/remote/{name}/…` | dieselben Datei-Ops auf Agenten-PCs via SFTP |
+| `GET` | `/api/austausch` | je Maschine: Austausch möglich (SSH)? an? Ordner + absoluter Pfad; dazu `max_mb` |
+| `PUT`/`DELETE` | `/api/austausch/{name}` | Ordner per SFTP anlegen + Empfang einschalten (`{ordner}`, leer = `austausch`) · ausschalten (löscht nichts auf der Maschine) |
+| `POST` | `/api/austausch/senden` | `{von, an, pfade[], nachricht?}` — Dateien von Maschine zu Maschine; nginx-Lesefrist 1800 s (eigene Location) |
 | `POST`/`DELETE` | `/api/connections` · `/{name}` | Verbindung anlegen (erzeugt Key) · entfernen |
 | `GET` | `/api/connections/{name}/pubkey` | Public Key + fertiges Setup-Kommando |
 | `GET`/`PUT`/`DELETE` | `/api/rollen` · `/{name}` | Rollen fürs Task-Laufen (config/rollen/*.md) |

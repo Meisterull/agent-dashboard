@@ -12,6 +12,8 @@ Tool-Gruppen:
   - Agent-↔-Agent: send_message, ask, answer, inbox, mark_read  (killt das
       Fenster-Wechseln; mark_read archiviert Gelesenes)
   - Projektdateien: write_project_file, read_project_file
+  - Dateiaustausch: send_file  (Maschine → Austausch-Ordner einer anderen, per
+      SFTP am Modell vorbei — app/austausch.py)
   - Integrationen:  list_integrations, call_integration  (config-getrieben, generisch)
 
 Kanäle (Issue #13): Der FREIE Kanal (127.0.0.1:9000, intern — Orchestrator)
@@ -44,7 +46,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import integrations, mcp_scope, rollen
+from app import austausch, integrations, mcp_scope, rollen
 from app.config import load_agents_full
 from app.files import decode_text
 from datetime import datetime
@@ -207,6 +209,13 @@ _KEIN_LEBENSZEICHEN = {"claim_task", "list_agents", "list_integrations", "list_r
 _INTEGRATION_PARALLEL = max(1, int(os.environ.get("MCP_INTEGRATION_PARALLEL", "4")))
 _INTEGRATION_POOL = ThreadPoolExecutor(
     max_workers=_INTEGRATION_PARALLEL, thread_name_prefix="integration"
+)
+
+# Dateiübergaben (send_file) ebenso: eine große Datei über zwei SFTP-Strecken
+# dauert, und sie soll weder die Mailbox-Tools noch die Integrationen bremsen.
+_AUSTAUSCH_POOL = ThreadPoolExecutor(
+    max_workers=max(1, int(os.environ.get("MCP_AUSTAUSCH_PARALLEL", "2"))),
+    thread_name_prefix="austausch",
 )
 
 
@@ -780,6 +789,50 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             _log(kanal, "read_project_file", project=project, pfad=relpath)
             data = _safe(PROJECTS_ROOT, project, relpath).read_bytes()
             return decode_text(data)[0]
+
+    # --- Dateiaustausch zwischen Maschinen ----------------------------------
+
+    if on("send_file"):
+        @werkzeug(pool=_AUSTAUSCH_POOL)
+        def send_file(
+            to: str,
+            paths: list[str] | str,
+            note: str | None = None,
+            source: str | None = None,
+        ) -> dict:
+            """Datei(en) von deiner Maschine in den Austausch-Ordner einer anderen legen.
+
+            Das Dashboard kopiert per SFTP direkt von Platte zu Platte — der
+            Inhalt läuft NICHT durch dich, also auch für Binäres und Großes
+            (PDF, Export, Archiv). Nimm das statt Dateiinhalte in Nachrichten
+            zu kopieren.
+
+            `to` = Empfänger-Maschine; sie braucht einen eingeschalteten
+            Austausch-Ordner (sonst nennt der Fehler die möglichen Empfänger).
+            `paths` = Dateien auf DEINER Maschine, am besten absolute Pfade
+            (relativ und `~/` gelten ab dem Home). Nur einzelne Dateien — einen
+            Ordner vorher packen (zip/tar). `note` = optionaler Begleittext.
+            `source` auf einem gebundenen Kanal weglassen; nur der freie Kanal
+            muss sagen, von welcher Maschine gelesen wird.
+
+            Die Dateien landen unter <Austausch-Ordner>/von-<deine Maschine>/,
+            Vorhandenes wird nie überschrieben (-2, -3 …). Der Empfänger bekommt
+            automatisch eine Nachricht mit den Zielpfaden — kein zusätzliches
+            send_message nötig. Rückgabe: `zugestellt` (mit Zielpfad) und
+            `fehler` je Datei.
+            """
+            try:
+                quelle = ident(source, "source")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            liste = [paths] if isinstance(paths, str) else list(paths or [])
+            _log(kanal, "send_file", to=to, source=quelle, dateien=len(liste))
+            try:
+                return austausch.uebergib_sync(
+                    quelle, liste, to, melder=identity or "orchestrator", nachricht=note
+                )
+            except austausch.AustauschError as exc:
+                return {"error": str(exc)}
 
     # --- Integrationen (config-getrieben, generisch) -------------------------
 

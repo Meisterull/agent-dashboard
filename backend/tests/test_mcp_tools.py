@@ -54,8 +54,14 @@ def _mcp_server_laden(workspace: Path):
     import os
     os.environ["WORKSPACE_DIR"] = str(workspace)
     os.environ["DATA_CONFIG_DIR"] = str(workspace / "config")
+    paket_app = sys.modules.get("app")
     for name in [m for m in list(sys.modules) if m == "mcp_server" or m.startswith("app.")]:
         sys.modules.pop(name, None)
+        # Auch das Attribut am Paket muss weg: `from app import x` fragt zuerst
+        # hasattr(app, "x") und nähme sonst beim zweiten Laden das ALTE Modul
+        # samt altem WORKSPACE_DIR — sys.modules wird dann gar nicht befragt.
+        if paket_app is not None and name.startswith("app."):
+            paket_app.__dict__.pop(name.split(".", 1)[1], None)
     import mcp_server  # noqa: PLC0415 — bewusst nach dem Stub
     return mcp_server
 

@@ -37,7 +37,11 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/remote/{name}/file     (…/file lesen, PUT speichern,
   GET  /api/remote/{name}/download  …/download, …/raw, …/upload,
                                     …/mkdir, …/rename, DELETE …/files)
-  POST /mcp/{agent}                MCP-Kanal über HTTPS (Bearer-Token je Agent)
+  GET  /api/austausch              Austausch-Ordner je Maschine (an? wo?)
+  PUT  /api/austausch/{name}       Ordner anlegen + Empfang einschalten
+  DEL  /api/austausch/{name}       Empfang ausschalten (löscht nichts)
+  POST /api/austausch/senden       Dateien Maschine → Austausch-Ordner einer anderen
+  POST /mcp/{agent}               MCP-Kanal über HTTPS (Bearer-Token je Agent)
   GET  /api/connections            SSH-Verbindungen (ohne Credentials)
   POST /api/connections            neue SSH-Verbindung (+ Key-Erzeugung)
   GET  /api/connections/{name}/pubkey  Public Key + Setup-Kommando
@@ -108,6 +112,8 @@ from app.files import (
     write_file,
 )
 from app.remote_files import RemoteFilesError
+from app import austausch
+from app.austausch import AustauschError
 from app.integrations import list_integrations
 from app.mailbox import AGENT_NAME_RE, ORCHESTRATOR, Mailbox, normalize_envelope
 from app.mailbox import pflege as mailbox_pflege
@@ -1097,6 +1103,78 @@ async def remote_upload(name: str, path: str, files: list[UploadFile] = None) ->
     return {"saved": saved}
 
 
+# --- Austausch-Ordner je Maschine (app/austausch.py) ------------------------
+
+class AustauschOrdnerIn(BaseModel):
+    ordner: str = ""
+
+
+class AustauschSendenIn(BaseModel):
+    von: str
+    an: str
+    pfade: list[str]
+    nachricht: str | None = None
+
+
+@app.get("/api/austausch")
+async def austausch_liste() -> dict:
+    """Je Maschine: geht Austausch (SSH), ist er an, wo liegt der Ordner."""
+    maschinen = await asyncio.to_thread(austausch.uebersicht)
+    return {
+        "maschinen": maschinen,
+        "max_mb": austausch.MAX_MB,
+        "standard_ordner": austausch.STANDARD_ORDNER,
+    }
+
+
+@app.post("/api/austausch/senden")
+async def austausch_senden(body: AustauschSendenIn) -> dict:
+    """Dateien von Maschine `von` in den Austausch-Ordner von `an` legen.
+
+    Läuft über die gecachten SFTP-Verbindungen des Datei-Panels. Am Dashboard
+    sitzt der Mensch — als Absender der Benachrichtigung steht deshalb der
+    Orchestrator, die Herkunfts-Maschine nennt der Text.
+    """
+    try:
+        ergebnis = await austausch.uebergib(
+            body.von,
+            body.pfade,
+            body.an,
+            melder=ORCHESTRATOR,
+            nachricht=body.nachricht,
+            verbinde=remote_files.sftp_client,
+        )
+    except AustauschError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    if not ergebnis["zugestellt"]:
+        # Fürs Modell ist der Fehler ein Rückgabewert, fürs Panel ein Status:
+        # ein 200 mit leerer Zustellung sähe dort wie ein Erfolg aus.
+        raise HTTPException(400, ergebnis.get("error") or "keine Datei zugestellt")
+    return ergebnis
+
+
+@app.put("/api/austausch/{name}")
+async def austausch_einschalten(name: str, body: AustauschOrdnerIn) -> dict:
+    """Ordner auf der Maschine anlegen (SFTP) und den Empfang einschalten."""
+    try:
+        return await austausch.richte_ein(name, body.ordner, remote_files.sftp_client)
+    except AustauschError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.delete("/api/austausch/{name}")
+async def austausch_ausschalten(name: str) -> dict:
+    """Nur der Schalter — Ordner und Dateien bleiben auf der Maschine."""
+    try:
+        return await asyncio.to_thread(austausch.schalte_aus, name)
+    except AustauschError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 # --- Verbindungen / Settings ----------------------------------------------
 
 @app.get("/api/connections")
@@ -1189,6 +1267,13 @@ async def connection_delete(name: str) -> dict:
         p = KEYS_DIR / f"{name}{suffix}"
         if p.exists():
             p.unlink()
+    # Der Austausch-Schalter hängt am NAMEN: bliebe er stehen, empfinge eine
+    # später gleich benannte (andere!) Maschine sofort Dateien, ohne dass
+    # jemand den Ordner dort eingeschaltet hätte.
+    try:
+        austausch.schalte_aus(name)
+    except AustauschError:
+        pass
     return {"deleted": name}
 
 

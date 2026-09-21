@@ -1,5 +1,52 @@
 # TODO — Review 16.08.2026
 
+## Stand 21.09.2026 (nachmittags): Austausch-Ordner je Maschine — committet, Public-Sync, Deploy gestartet; Live-Tests offen
+
+Wunsch aus dem Betrieb: je Maschine ein Ordner, in den andere Maschinen Dateien
+legen können. Per /ausfragen abgenommen (alle Weichen = Empfehlung): Ordner
+liegt AUF der Maschine, Dashboard kopiert per SFTP von Maschine zu Maschine;
+Agenten (`send_file`) + Mensch (Datei-Panel 📥/📤); alle an alle mit Ordner;
+nur SSH-Maschinen; Unterordner `von-<absender>`; Mailbox-Nachricht mit Pfad;
+nur einzelne Dateien. Einzelheiten: CLAUDE.md → „Dateiaustausch zwischen
+Maschinen".
+
+Verifiziert: `python -m tests.run_alle` → **24 Module grün** (neu
+`test_austausch.py` 27 Tests gegen ein SFTP-Doppel, `test_mcp_send_file.py`);
+`npm run build` + `test_woerter.mjs` grün; Browsertest
+`test_dateien_browser.cjs` grün (Handy-Format); ECHTER SFTP-Durchstich im
+laufenden Container ohne Deploy (Code unter /tmp, Konfig-Kopie, Wegwerf-
+Mailbox): werkstatt → server, 50 MB in 0,7 s, Prüfsummen gleich, -2/-3 auch
+bei gleichzeitigen Sendungen, keine `.teil`-Reste, Produktiv-Settings/-Mailbox
+unberührt. Nachgestellt: mit `HOME=/root` (so läuft `[program:mcp]` bisher)
+scheitert asyncssh an `/root/.ssh` → `environment=HOME=…` in supervisord.conf.
+
+Dazu der Skill `skills/dateiaustausch/SKILL.md` (Senden, Empfangen, Fehlerbilder,
+Bedienung im Datei-Panel, Fehlersuche) — `scripts/setup_agent_pc.sh` legt ihn
+auf Agenten-PCs nach `~/.claude/skills/`; auf dem Heim-Server ist er installiert.
+
+Nebenbei gefixt: `_mcp_server_laden` (Test-Helfer) ließ beim zweiten Laden die
+Paket-Attribute von `app` stehen → `from app import x` lieferte das ALTE Modul.
+
+**Offen — nach dem Deploy (Image-Rebuild nötig: Backend, Frontend, nginx,
+supervisord):**
+- [ ] Datei-Panel → Tab `server` → 📥 → einschalten; Ordner `~/austausch` ist da
+- [ ] Tab `werkstatt` → Datei → 📤 → an `server`; Datei liegt unter
+      `~/austausch/von-werkstatt/`, im Agenten-Panel von `server` steht die Nachricht
+- [ ] Agent per Auftrag: „schick mit send_file die Datei X an <maschine>" —
+      Log zeigt `[mcp] <agent>: send_file …` und `ergebnis=ok` (beweist den
+      HOME-Fix im MCP-Prozess)
+- [ ] Firmen-Instanz: zwei wirklich getrennte Hosts, davon ein WINDOWS-Ziel
+      (Pfad-Schreibweise `/C:/…`, `rename` auf Windows-OpenSSH) — zu Hause
+      nicht prüfbar, beide Agenten sind derselbe Rechner
+- [ ] große Datei übers WLAN: bleibt der Dialog geduldig (nginx 1800 s)?
+- [ ] Firmen-Instanz: Skill auf die Agenten-PCs bringen (`setup_agent_pc.sh`
+      aus einem Checkout, oder `skills/dateiaustausch/` von Hand nach
+      `~/.claude/skills/`)
+
+Nicht gebaut (bewusst, Stufe 1): Token-Maschinen, ganze Ordner, Anhänge an
+`send_task`, Erlaubnisliste je Maschine, automatisches Aufräumen, Workspace
+als Quelle.
+
 ## Stand 21.09.2026: Issues #36–#42 + Tablet-Scrollen — committet, Public-Sync, Issues geschlossen; Live-Tests offen
 
 Anlass: Automatik brauchte spürbar mehr Tokens und arbeitete schlechter als

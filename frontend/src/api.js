@@ -167,6 +167,17 @@ export async function uploadFiles(source, path, fileList) {
   }
   return res.json();
 }
+// Austausch-Ordner je Maschine (backend/app/austausch.py): wer einen hat,
+// empfängt Dateien anderer Maschinen unter <ordner>/von-<absender>/. Das
+// Kopieren läuft serverseitig per SFTP von Maschine zu Maschine.
+export const getAustausch = () => jget("/api/austausch");
+export const setAustausch = (name, ordner) =>
+  jsend(`/api/austausch/${encodeURIComponent(name)}`, "PUT", { ordner });
+export const deleteAustausch = (name) =>
+  jsend(`/api/austausch/${encodeURIComponent(name)}`, "DELETE");
+export const sendeDateien = (von, an, pfade, nachricht) =>
+  jsend("/api/austausch/senden", "POST", { von, an, pfade, nachricht });
+
 export const getSshBuffer = (name, sid) =>
   jget(
     `/api/ssh/${encodeURIComponent(name)}/buffer?sid=${encodeURIComponent(sid)}`,

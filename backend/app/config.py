@@ -61,6 +61,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Tasks des Agenten pausiert. 0 = aus. Eine selbst gewählte Bremse —
     # die echten Abo-Limits sind headless nicht abfragbar.
     "verbrauch_schwelle_5h": 0,
+    # Austausch-Ordner je Maschine (app/austausch.py): {name: {ordner, pfad}}.
+    # Wer hier steht, empfängt Dateien anderer Maschinen unter
+    # <ordner>/von-<absender>/. Gepflegt über /api/austausch (Datei-Panel 📥),
+    # nicht das Settings-Formular — wie die Automatik-Schalter.
+    "austausch": {},
 }
 
 # Editierbare Felder (Whitelist) — verhindert, dass das UI beliebige Keys setzt.

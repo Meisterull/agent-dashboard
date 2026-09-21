@@ -50,7 +50,12 @@ Agent-↔-Agent (damit niemand von Hand zwischen Fenstern vermitteln muss):
 - `inbox(agent, kind?)` — sehen, was einem Agenten geschickt wurde.
 
 Projektdateien: `write_project_file` / `read_project_file` — gemeinsamer \
-Austauschordner der Agenten unter /workspace/projects/<projekt>.
+Austauschordner der Agenten unter /workspace/projects/<projekt> (nur Text).
+Dateien zwischen Maschinen: `send_file(to, paths, note?, source)` — kopiert \
+Dateien per SFTP von Maschine `source` in den Austausch-Ordner von `to` \
+(auch Binäres/Großes, der Inhalt läuft nicht durch dich); der Empfänger \
+bekommt automatisch eine Nachricht mit dem Zielpfad. Agenten rufen das Tool \
+auch selbst auf — sag ihnen das im Auftrag, statt Dateiinhalte zu zitieren.
 Integrationen: `list_integrations`, dann `call_integration(name, method, path, \
 body?)` für in integrations.yaml konfigurierte HTTP-Endpunkte.
 

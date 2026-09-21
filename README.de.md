@@ -47,6 +47,11 @@ Docker-Container auf deinem eigenen Server.
   Verbindung, Sessions überleben Verbindungsabbrüche (später wieder andocken,
   auch von einem anderen Gerät), Wisch-Scrollen, das auf Touchscreens
   wirklich funktioniert.
+- **Dateiaustausch zwischen Maschinen** — je Maschine lässt sich ein
+  Austausch-Ordner einschalten; Agenten (`send_file`) und du (Datei-Panel)
+  legen Dateien in den Ordner einer anderen Maschine. Das Dashboard kopiert
+  per SFTP von Platte zu Platte — Binäres und Großes läuft nie durch einen
+  LLM-Kontext.
 - **Arbeitsflächen-Ansichten** — Chat, Dateien, Terminals und Agenten-Monitor
   frei anordnen und als benannte Layouts speichern.
 - **Agenten ohne SSH** — Rechner hinter NAT (etwa ein Windows-Notebook mit
@@ -117,6 +122,7 @@ Schritt-für-Schritt-Anleitung, Remote-Agenten und Troubleshooting:
 | [START.md](START.md) | Setup Schritt für Schritt: `.env`, Konfig, erster Lauf, Remote-Agenten |
 | [docs/REFERENZ.md](docs/REFERENZ.md) | vollständige Architektur- und API-Referenz |
 | [PROJECT.md](PROJECT.md) | Designentscheidungen und Projektgeschichte |
+| [skills/](skills/) | Claude-Code-Skills für die Agenten-PCs (z. B. `dateiaustausch`: wie `send_file` und die Austausch-Ordner funktionieren) — installiert von `scripts/setup_agent_pc.sh` |
 
 ## Sicherheitsmodell in einem Absatz
 

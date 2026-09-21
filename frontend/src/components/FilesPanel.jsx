@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
 import MediaModal, { medienArt } from "./MediaModal";
+import { AustauschDialog, SendenDialog } from "./AustauschDialog";
 import {
+  getAustausch,
   getConnections,
   getFiles,
   getRemoteFiles,
@@ -95,13 +97,24 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   const [localKey, setLocalKey] = useState(0); // ↻-Button: Listing neu laden
   const [dlg, setDlg] = useState(null); // Anlegen/Umbenennen/Löschen-Dialog
   const [medien, setMedien] = useState(null); // Bild-/PDF-/Audio-Vorschau
+  // Austausch-Ordner je Maschine: Übersicht vom Server + die zwei Dialoge
+  const [austausch, setAustausch] = useState({ maschinen: [] });
+  const [austauschDlg, setAustauschDlg] = useState(false);
+  const [senden, setSenden] = useState(null); // Datei, die verschickt werden soll
   const inputRef = useRef(null);
 
+  const ladeAustausch = () =>
+    getAustausch()
+      .then(setAustausch)
+      .catch(() => setAustausch({ maschinen: [] }));
+
   useEffect(() => {
-    const load = () =>
+    const load = () => {
       getConnections()
         .then((d) => setConnections(d.connections.map((c) => c.name)))
         .catch(() => setConnections([]));
+      ladeAustausch();
+    };
     load();
     window.addEventListener("connections:changed", load);
     return () => window.removeEventListener("connections:changed", load);
@@ -124,6 +137,12 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
     setSource(s);
     setPath("");
   };
+
+  const eigenerAustausch = austausch.maschinen.find((m) => m.name === source);
+  // Empfangen kann, wer den Ordner an hat — nur nicht die Maschine selbst.
+  const sendeZiele = austausch.maschinen
+    .filter((m) => m.aktiv && m.name !== source)
+    .map((m) => m.name);
 
   // Eine Ebene hoch: Workspace über den relativen Pfad, remote via API-parent
   const parent =
@@ -218,6 +237,25 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {dlg && <FileDialog dlg={dlg} onClose={() => setDlg(null)} />}
+      {austauschDlg && source !== "ws" && (
+        <AustauschDialog
+          maschine={source}
+          eintrag={eigenerAustausch}
+          standardOrdner={austausch.standard_ordner}
+          onClose={() => setAustauschDlg(false)}
+          onGeaendert={ladeAustausch}
+          onOeffnen={(pfad) => setPath(pfad)}
+        />
+      )}
+      {senden && (
+        <SendenDialog
+          von={source}
+          datei={senden}
+          ziele={sendeZiele}
+          maxMb={austausch.max_mb}
+          onClose={() => setSenden(null)}
+        />
+      )}
       {medien && (
         <MediaModal
           art={medien.art}
@@ -277,6 +315,23 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
         >
           ↻
         </button>
+        {source !== "ws" && (
+          <button
+            onClick={() => setAustauschDlg(true)}
+            title={
+              eigenerAustausch?.aktiv
+                ? t("Austausch-Ordner (eingeschaltet)")
+                : t("Austausch-Ordner einrichten")
+            }
+            className={`shrink-0 rounded border px-1.5 py-0.5 ${
+              eigenerAustausch?.aktiv
+                ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950"
+                : "border-slate-300 opacity-60 hover:opacity-100 dark:border-slate-600"
+            }`}
+          >
+            📥
+          </button>
+        )}
         <button
           onClick={onNewFile}
           disabled={busy || !data}
@@ -351,6 +406,15 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
                 >
                   ⤓
                 </a>
+              )}
+              {e.type === "file" && source !== "ws" && (
+                <button
+                  onClick={() => setSenden({ path: e.path, name: e.name, size: e.size })}
+                  title={t("an eine andere Maschine senden")}
+                  className="shrink-0 rounded px-1 py-0.5 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+                >
+                  📤
+                </button>
               )}
               <button
                 onClick={() => onRename(e)}
