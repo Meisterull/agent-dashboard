@@ -185,6 +185,8 @@ export default {
   "einzelne Werkzeug-Aufrufe wurden verweigert": "some tool calls were denied",
   "Lauf hat die vorherige Claude-Sitzung fortgesetzt":
     "run resumed the previous Claude session",
+  "Sitzung fortgesetzt": "session continued",
+  "neue Sitzung": "new session",
   "verweigert": "denied",
   "Sitzung übernehmen": "Take over session",
   "Kontext {0}": "context {0}",

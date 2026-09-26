@@ -583,11 +583,22 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             # Ergebnis erneut ab. Der Task ist dann schon abgeräumt — das als
             # Erfolg melden, statt ihn 5 Retrys lang gegen eine Wand laufen zu
             # lassen und am Ende fälschlich "nicht abgeliefert" zu loggen.
+            # Issue #43: schließt das Claude-Kind seinen eigenen Task selbst ab,
+            # kommt der Watcher mit lauf/verbrauch/log als Zweiter — die
+            # fehlenden Felder werden dann nachgetragen statt verworfen.
             if not offen:
                 if (box.outbox / f"{task_id}-response.json").exists():
-                    _log(kanal, "complete_task", agent=wer, task=task_id, status="bereits")
-                    return {"task_id": task_id, "agent": wer, "status": status,
-                            "already": True}
+                    ergaenzt = box.response_ergaenzen(
+                        task_id, log,
+                        verbrauch if isinstance(verbrauch, dict) else None,
+                        lauf if isinstance(lauf, dict) else None)
+                    _log(kanal, "complete_task", agent=wer, task=task_id, status="bereits",
+                         ergaenzt=",".join(ergaenzt) or "-")
+                    antwort = {"task_id": task_id, "agent": wer, "status": status,
+                               "already": True}
+                    if ergaenzt:
+                        antwort["ergaenzt"] = ergaenzt
+                    return antwort
                 return {"error": f"Task {task_id} liegt nicht (mehr) bei {wer}."}
             if status == "done":
                 # Offene Rückfrage? Dann ist die Arbeit NICHT getan — Task

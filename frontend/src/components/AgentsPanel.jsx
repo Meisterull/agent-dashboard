@@ -61,7 +61,10 @@ function LaufAbzeichen({ lauf }) {
       {lauf.sitzung === "fortgesetzt" && (
         <span
           className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
-          title={t("Lauf hat die vorherige Claude-Sitzung fortgesetzt")}
+          title={
+            t("Lauf hat die vorherige Claude-Sitzung fortgesetzt") +
+            (lauf.sitzung_grund ? ` (${lauf.sitzung_grund})` : "")
+          }
         >
           ↻
         </span>
@@ -91,7 +94,17 @@ function LaufDetails({ lauf, log }) {
           {t("Sitzung übernehmen")}:{" "}
           <span className="select-all font-mono">claude --resume {lauf.session_id}</span>
           {lauf.kontext ? ` · ${t("Kontext {0}", fmtTok(lauf.kontext))}` : ""}
+          {lauf.modell ? ` · ${lauf.modell}` : ""}
           {lauf.thread ? ` · ${t("Vorgang {0}", lauf.thread)}` : ""}
+        </div>
+      )}
+      {/* Issue #44: warum die Sitzung neu begann (oder fortgesetzt wurde) —
+          sonst merkt niemand, dass das Gedächtnis nie greift. */}
+      {lauf?.sitzung && (
+        <div className="break-all">
+          {lauf.sitzung === "fortgesetzt" ? "↻ " : "🆕 "}
+          {lauf.sitzung === "fortgesetzt" ? t("Sitzung fortgesetzt") : t("neue Sitzung")}
+          {lauf.sitzung_grund ? `: ${lauf.sitzung_grund}` : ""}
         </div>
       )}
       {log && <pre className="whitespace-pre-wrap break-all font-mono text-[10px]">{log}</pre>}

@@ -177,6 +177,25 @@ function fetchDoppelDateien(url, opt = {}) {
     austauschStand[name] = { moeglich: true, aktiv: true, ordner, pfad: `/home/u/${ordner}` };
     return json({ name, aktiv: true, ordner, pfad: `/home/u/${ordner}` });
   }
+  // Suche (Issue #45): Namen bzw. Inhalt, beides ab /home/u
+  if (url.includes("/suche?")) {
+    const sp = new URL(url, location.origin).searchParams;
+    const q = sp.get("q") || "";
+    window.__aufrufe.push({ url: url.split("?")[0], methode: "GET", body: { q, inhalt: sp.get("inhalt"), path: sp.get("path") } });
+    if (sp.get("inhalt") === "1")
+      return json({
+        path: "/home/u", q, inhalt: true, gekuerzt: false, dauer: 0.1,
+        treffer: [{ name: "fehler.log", path: "/home/u/projekt/logs/fehler.log", type: "file",
+                    size: null, zeile: 2, text: "Hier steht ein Fehler-String" }],
+      });
+    return json({
+      path: "/home/u", q, inhalt: false, gekuerzt: true, dauer: 0.1,
+      treffer: [
+        { name: "logs", path: "/home/u/projekt/logs", type: "dir", size: null },
+        { name: "fehler.log", path: "/home/u/projekt/logs/fehler.log", type: "file", size: 36 },
+      ],
+    });
+  }
   if (url.startsWith("/api/files")) return json({ path: "", entries: [] });
   if (url.startsWith("/api/remote/")) {
     const pfad = new URL(url, location.origin).searchParams.get("path") || "/home/u";
@@ -260,7 +279,7 @@ if (welches === "terminal") {
   window.fetch = fetchDoppelDateien;
   createRoot(document.getElementById("root")).render(
     <div className="flex h-dvh flex-col">
-      <FilesPanel refreshKey={0} onOpenFile={() => {}} />
+      <FilesPanel refreshKey={0} onOpenFile={(f) => window.__aufrufe.push({ url: "editor", methode: "OPEN", body: f })} />
     </div>,
   );
 } else if (welches === "agenten") {

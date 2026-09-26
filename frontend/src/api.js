@@ -86,6 +86,24 @@ export const getRemoteFile = (name, path) =>
     `/api/remote/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}`,
   );
 
+// Rekursive Suche ab einem Pfad (Issue #45): Namen, oder mit `inhalt` im
+// Text. `signal` (AbortController) bricht eine laufende Suche ab — der Server
+// beendet dann auch find/grep auf der Maschine.
+export async function searchFiles(source, path, q, inhalt = false, signal = undefined) {
+  const params = `path=${encodeURIComponent(path)}&q=${encodeURIComponent(q)}&inhalt=${inhalt ? 1 : 0}`;
+  const url =
+    source === "ws"
+      ? `/api/files/suche?${params}`
+      : `/api/remote/${encodeURIComponent(source)}/suche?${params}`;
+  const res = await fetch(url, { signal });
+  if (!res.ok) {
+    notifyUnauthorized(res);
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 // Inline statt Download: zum Anzeigen und Abspielen im Dashboard selbst
 // (Issues #25/#26). Der Server setzt dabei den echten Medientyp — mit
 // `nosniff` im nginx wäre die Fläche sonst leer bzw. der Player stumm.

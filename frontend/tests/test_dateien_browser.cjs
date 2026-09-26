@@ -6,6 +6,9 @@
  * wieder ausschalten. Dazu die Grenzen: der Workspace kennt beides nicht,
  * Ordner haben kein 📤, die eigene Maschine und Token-Maschinen sind nie
  * Empfänger, eine zu große Datei lässt sich gar nicht erst abschicken.
+ * Dazu die Suche (Issue #45): Live-Filter im Listing, rekursive Namenssuche
+ * mit „gekürzt"-Hinweis und 📂-Sprung, Inhaltssuche mit Trefferzeile, die den
+ * Editor an der Zeile öffnet.
  *
  * Das Backend ersetzt ein fetch-Doppel im Prüfstand (src/pruefstand.jsx,
  * ?panel=dateien); es schneidet alle schreibenden Aufrufe in window.__aufrufe
@@ -184,6 +187,69 @@ const aufrufe = (page) => page.evaluate(() => window.__aufrufe);
   await warte(page, "Noch keine andere Maschine");
   pruefe("ohne Empfänger: Hinweis, wo man einschaltet", true);
   await tippe(page, "Schließen");
+
+  console.log("Suche (Issue #45):");
+  await tippe(page, "erp");
+  await warte(page, "riesig.iso");
+  await page.click("input[type=search]");
+  await page.type("input[type=search]", "exp");
+  await warteWeg(page, "riesig.iso");
+  const gefiltert = await text(page);
+  pruefe("Filter: nur export.csv bleibt, projekt/riesig.iso weg",
+    gefiltert.includes("export.csv") && !gefiltert.includes("projekt") && !gefiltert.includes("riesig.iso"));
+  pruefe("Treffer im Namen ist markiert",
+    await page.evaluate(() => [...document.querySelectorAll("mark")].some((m) => m.innerText === "exp")));
+  await page.type("input[type=search]", "zzz");
+  await warte(page, "nichts passt zu „expzzz“");
+  pruefe("kein Filtertreffer: Hinweis auf Enter", true);
+  await tippe(page, "Suche leeren");
+  await warte(page, "riesig.iso");
+  pruefe("✕ leert den Filter, Liste ist wieder voll", (await text(page)).includes("projekt"));
+
+  await page.type("input[type=search]", "fehler");
+  await page.keyboard.press("Enter");
+  await warte(page, "2 Treffer für „fehler“");
+  const such = (await aufrufe(page)).filter((a) => a.url.endsWith("/suche")).pop();
+  pruefe("GET /api/remote/erp/suche mit q, path=/home/u, ohne Inhalt",
+    such && such.url === "/api/remote/erp/suche" && such.body.q === "fehler" &&
+      such.body.path === "/home/u" && such.body.inhalt === "0",
+    JSON.stringify(such));
+  const erg = await text(page);
+  pruefe("Treffer relativ zum Startpunkt, »gekürzt« steht dabei",
+    erg.includes("projekt/logs/fehler.log") && erg.includes("gekürzt") && !erg.includes("/home/u/projekt/logs/fehler.log"));
+  pruefe("Listing ist durch die Ergebnisansicht ersetzt (← Ordner)",
+    !erg.includes("riesig.iso") && (await gibtKnopf(page, "← Ordner")));
+  await page.evaluate(() => {
+    const zeile = [...document.querySelectorAll("div.group")].find((z) => z.innerText.includes("fehler.log"));
+    [...zeile.querySelectorAll("button")].find((k) => k.innerText.trim() === "📂").click();
+  });
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("span.font-mono")].some((s) => s.innerText === "/home/u/projekt/logs"));
+  pruefe("📂 springt in den Ordner des Treffers, Suche ist zu",
+    !(await gibtKnopf(page, "← Ordner")) &&
+      (await page.$eval("input[type=search]", (i) => i.value)) === "");
+
+  await tippe(page, "eine Ebene hoch"); // Attrappe: alles unter /home/u hat /home/u als Eltern
+  await warte(page, "riesig.iso");
+  await tippe(page, "im Inhalt suchen");
+  await page.type("input[type=search]", "string");
+  await page.keyboard.press("Enter");
+  await warte(page, "1 Treffer für „string“");
+  const inhalt = (await aufrufe(page)).filter((a) => a.url.endsWith("/suche")).pop();
+  pruefe("Inhaltssuche geht mit inhalt=1 raus", inhalt && inhalt.body.inhalt === "1", JSON.stringify(inhalt));
+  const t2 = await text(page);
+  pruefe("Trefferzeile mit Nummer steht dabei", t2.includes("2: Hier steht ein Fehler-String") && t2.includes("im Inhalt"));
+  await page.evaluate(() => {
+    const zeile = [...document.querySelectorAll("div.group")].find((z) => z.innerText.includes("fehler.log"));
+    zeile.querySelector("button").click();
+  });
+  const geoeffnet = (await aufrufe(page)).filter((a) => a.methode === "OPEN").pop();
+  pruefe("Klick öffnet den Editor an Zeile 2",
+    geoeffnet && geoeffnet.body.path === "/home/u/projekt/logs/fehler.log" && geoeffnet.body.line === 2,
+    JSON.stringify(geoeffnet));
+  await tippe(page, "← Ordner");
+  await warte(page, "riesig.iso");
+  pruefe("← Ordner zeigt das Listing wieder", true);
 
   pruefe("keine Fehler in der Konsole", fehlerImLog.length === 0, fehlerImLog.join(" | "));
 

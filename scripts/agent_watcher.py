@@ -89,7 +89,17 @@ _schnelle_fehler = 0
 RESUME_MAX_PAUSE = 12 * 3600.0       # s seit dem letzten Lauf: ein Arbeitstag.
 #   Länger als die Cache-Lebensdauer ist Absicht: eine kalte Fortsetzung kostet
 #   etwa so viel wie Neustart + Neu-Orientierung, behält aber das Gedächtnis.
-RESUME_MAX_KONTEXT = 150_000         # Tokens: darüber ist ein Neustart billiger
+# Kontextgrenze (Issue #44): der feste Wert 150 000 war auf einer Bash-lastigen
+# Box nach EINEM Task erreicht — das Gedächtnis griff praktisch nie, obwohl
+# die aktuellen Modelle ein 1M-Fenster haben und Claude Code beim Fortsetzen
+# selbst kompaktiert. Default 0 = relativ: 85 % des Fensters, das zum Modell
+# der Sitzung gehört (init-Event); unbekanntes Modell = keine Kontextgrenze
+# (die Kompaktierung übernimmt das Binary). Ein positiver Wert bleibt eine
+# harte Grenze in Tokens (--resume-max-kontext / agents.yaml).
+RESUME_MAX_KONTEXT = 0
+KONTEXT_FENSTER_ANTEIL = 0.85
+KONTEXT_FENSTER_1M = 1_000_000
+KONTEXT_FENSTER_200K = 200_000
 RESUME_MAX_TASKS = 25                # Deckel gegen endlos wachsende Sitzungen
 RESUME_TASK_MERKDAUER = 7 * 86400.0  # so lange findet ein geparkter Task seine Sitzung
 RESUME_TASK_MERKZAHL = 100
@@ -163,7 +173,24 @@ def deliver_response(root: Path, sender: str, agent: str, task_id: str,
         pass
 
 
-def mcp_hint(agent: str) -> str:
+def eigener_task_hinweis(task_id: "str | None") -> str:
+    """Issue #43: Der Watcher hat den Task schon beansprucht und schließt ihn
+    nach dem Lauf selbst ab — mit session_id, Kontext, Kosten und Log. Ruft das
+    Modell complete_task für DIESEN Task selbst auf, kommt der Watcher als
+    Zweiter, und die Tool-Beschreibung von claim_task/complete_task legt genau
+    das nahe. Deshalb steht es ausdrücklich im Kontext."""
+    if not task_id:
+        return ""
+    return (
+        f"Dein aktueller Auftrag ist der Task '{task_id}' — er ist bereits "
+        f"beansprucht, und claim_task/complete_task dafür übernimmt der Watcher "
+        f"nach deinem Lauf: rufe beide für DIESEN Task NICHT auf, dein "
+        f"Abschlusstext ist die Antwort. (Für Tasks, die du selbst per "
+        f"send_task delegierst oder aus deiner Inbox annimmst, gilt das nicht.) "
+    )
+
+
+def mcp_hint(agent: str, task_id: "str | None" = None) -> str:
     """Identitäts-/Tool-Kontext für Claude-Code, wenn der Dashboard-MCP-Server
     auf diesem PC registriert ist (setup_agent_pc.sh + Reverse-Tunnel)."""
     return (
@@ -174,8 +201,9 @@ def mcp_hint(agent: str) -> str:
         f"verarbeitete Nachrichten archivierst du mit mark_read('{agent}', id), "
         f"sonst siehst du sie beim nächsten Mal erneut. Delegierst du selbst "
         f"per send_task(sender='{agent}'), kommt das Ergebnis als "
-        f"kind='response' in DEINE Inbox zurück. Prüfe "
-        f"zu Beginn deine Inbox und stelle Rückfragen per ask statt zu raten.\n\n"
+        f"kind='response' in DEINE Inbox zurück. "
+        + eigener_task_hinweis(task_id) +
+        f"Prüfe zu Beginn deine Inbox und stelle Rückfragen per ask statt zu raten.\n\n"
     )
 
 
@@ -193,16 +221,17 @@ def frist_hinweis(timeout: "float | None", leerlauf: "float | None") -> str:
     )
 
 
-def mcp_hint_kurz(agent: str) -> str:
+def mcp_hint_kurz(agent: str, task_id: "str | None" = None) -> str:
     """Hinweis für einen Folge-Auftrag in einer FORTGESETZTEN Sitzung: die
     Regeln stehen dort schon im Verlauf. Vor allem entfällt die Pflichtrunde
     „prüfe zu Beginn deine Inbox" — sie kostete je Task eine Werkzeugrunde mit
     vollem Kontext."""
     return (
         f"[Kontext] Neuer Auftrag in derselben Sitzung — du bist weiter der "
-        f"Agent '{agent}', die Dashboard-Regeln von oben gelten. Deine Inbox "
-        f"musst du nur erneut prüfen, wenn du auf eine Antwort oder ein "
-        f"Ergebnis wartest.\n\n"
+        f"Agent '{agent}', die Dashboard-Regeln von oben gelten. "
+        + eigener_task_hinweis(task_id) +
+        f"Deine Inbox musst du nur erneut prüfen, wenn du auf eine Antwort "
+        f"oder ein Ergebnis wartest.\n\n"
     )
 
 
@@ -876,6 +905,8 @@ def lauf_mitschreiben(lauf: dict, ev: dict) -> None:
     if typ == "system":
         if ev.get("subtype") == "init" and ev.get("session_id"):
             lauf["session_id"] = str(ev["session_id"])
+            if ev.get("model"):
+                lauf["modell"] = str(ev["model"])
     elif typ == "assistant":
         if ev.get("parent_tool_use_id"):
             return
@@ -939,6 +970,39 @@ def sitzungs_schluessel(task_dir: Path, rolle: "str | None",
     return f"{basis}|#{faden}" if faden else basis
 
 
+def kontext_fenster(modell: "str | None") -> "int | None":
+    """Kontextfenster in Tokens zum Modellnamen aus dem init-Event, None wenn
+    unbekannt. Stand 09/2026: die Claude-5-Familie (Opus 5, Sonnet 5, Fable,
+    Mythos) und Opus ab 4.6 haben 1M; Haiku 4.5 und ältere 200k; ein
+    `[1m]`-Zusatz erzwingt 1M."""
+    name = str(modell or "").strip().lower()
+    if not name:
+        return None
+    if "[1m]" in name or "1m" in name.split("-"):
+        return KONTEXT_FENSTER_1M
+    if "haiku" in name:
+        return KONTEXT_FENSTER_200K
+    m = re.search(r"(opus|sonnet|fable|mythos)[-_ ]?(\d+)(?:[-_.](\d+))?", name)
+    if not m:
+        return None
+    familie, haupt, neben = m.group(1), int(m.group(2)), int(m.group(3) or 0)
+    if haupt >= 5 or familie in ("fable", "mythos"):
+        return KONTEXT_FENSTER_1M
+    if familie == "opus" and haupt == 4 and neben >= 6:
+        return KONTEXT_FENSTER_1M
+    return KONTEXT_FENSTER_200K
+
+
+def kontext_grenze(max_kontext: "int | float | None", modell: "str | None") -> "int | None":
+    """Wirksame Kontextgrenze: positiver Wert = hart; sonst relativ zum
+    Modellfenster; None = keine Grenze (Modell unbekannt)."""
+    fest = int(_zahl(max_kontext))
+    if fest > 0:
+        return fest
+    fenster = kontext_fenster(modell)
+    return int(fenster * KONTEXT_FENSTER_ANTEIL) if fenster else None
+
+
 def sitzung_waehlen(buch: dict, schluessel: str, task_id: str, jetzt: float,
                     max_pause: float = RESUME_MAX_PAUSE,
                     max_kontext: int = RESUME_MAX_KONTEXT,
@@ -959,8 +1023,12 @@ def sitzung_waehlen(buch: dict, schluessel: str, task_id: str, jetzt: float,
     if pause > max_pause:
         return None, f"letzter Lauf vor {pause / 3600:.1f} h, Grenze {max_pause / 3600:.1f} h"
     kontext = int(_zahl(s.get("kontext")))
-    if kontext > max_kontext:
-        return None, f"Kontext {kontext // 1000}k über Grenze {int(max_kontext) // 1000}k"
+    grenze = kontext_grenze(max_kontext, s.get("modell"))
+    if grenze is not None and kontext > grenze:
+        return None, (f"Kontext {kontext // 1000}k über Grenze {grenze // 1000}k"
+                      + ("" if int(_zahl(max_kontext)) > 0 else
+                         f" ({int(KONTEXT_FENSTER_ANTEIL * 100)} % des Fensters von "
+                         f"{s.get('modell')})"))
     anzahl = int(_zahl(s.get("tasks")))
     if anzahl >= max_tasks:
         return None, f"schon {anzahl} Tasks in der Sitzung"
@@ -968,12 +1036,18 @@ def sitzung_waehlen(buch: dict, schluessel: str, task_id: str, jetzt: float,
 
 
 def sitzung_merken(buch: dict, schluessel: str, task_id: str, session_id: str,
-                   kontext: int, jetzt: float) -> None:
+                   kontext: int, jetzt: float, modell: "str | None" = None) -> None:
     vorher = buch["sitzungen"].get(schluessel)
     anzahl = (int(_zahl(vorher.get("tasks")))
               if isinstance(vorher, dict) and vorher.get("session_id") == session_id else 0)
-    buch["sitzungen"][schluessel] = {"session_id": session_id, "zuletzt": jetzt,
-                                     "kontext": int(kontext or 0), "tasks": anzahl + 1}
+    eintrag = {"session_id": session_id, "zuletzt": jetzt,
+               "kontext": int(kontext or 0), "tasks": anzahl + 1}
+    # Modell der Sitzung (Issue #44): daraus leitet sitzung_waehlen das
+    # Kontextfenster ab. Fehlt es im neuen Lauf, bleibt das alte stehen.
+    modell = modell or (vorher.get("modell") if isinstance(vorher, dict) else None)
+    if modell:
+        eintrag["modell"] = str(modell)
+    buch["sitzungen"][schluessel] = eintrag
     buch["tasks"][task_id] = {"session_id": session_id, "zeit": jetzt}
     # Aufräumen: das Buch darf auf einem Dauerläufer nicht endlos wachsen.
     frisch = {k: v for k, v in buch["tasks"].items()
@@ -1034,7 +1108,7 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
                 pass
 
     frist = frist_hinweis(timeout, leerlauf) if with_mcp_hint else ""
-    voll = (mcp_hint(agent) if with_mcp_hint else "") + frist + instruction
+    voll = (mcp_hint(agent, task_id) if with_mcp_hint else "") + frist + instruction
     lauf: dict = {}
     aktiv = bool(resume and resume.get("an")) and not dry_run
     sid = None
@@ -1059,7 +1133,7 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
             int(_zahl(resume.get("max_kontext"))) or RESUME_MAX_KONTEXT)
         if sid:
             melde(f"setzt Sitzung fort ({grund})")
-            kurzfassung = ((mcp_hint_kurz(agent) if with_mcp_hint else "")
+            kurzfassung = ((mcp_hint_kurz(agent, task_id) if with_mcp_hint else "")
                            + frist + instruction)
             start = time.monotonic()
             result, err, rc = starte(kurzfassung, sid)
@@ -1083,14 +1157,18 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
             rc == 0 or bool(lauf.get("timeout")))
         if behalten:
             sitzung_merken(buch, schluessel, task_id, lauf["session_id"],
-                           int(lauf.get("kontext") or 0), time.time())
+                           int(lauf.get("kontext") or 0), time.time(),
+                           lauf.get("modell"))
         else:
             sitzung_vergessen(buch, schluessel, task_id)
         speichere_sitzungen(agent, buch)
         lauf_meta["sitzung"] = "fortgesetzt" if sid else "neu"
+        # Issue #44: WARUM neu bzw. fortgesetzt — bisher stand das nur im
+        # Watcher-stdout; im Panel merkte niemand, dass das Gedächtnis nie griff.
+        lauf_meta["sitzung_grund"] = grund
         if behalten and lauf.get("timeout"):
             lauf_meta["fortsetzbar"] = True
-    for feld in ("session_id", "kontext", "timeout", "verweigert"):
+    for feld in ("session_id", "kontext", "timeout", "verweigert", "modell"):
         if lauf.get(feld):
             lauf_meta[feld] = lauf[feld]
     if thread_name(thread):
@@ -1719,7 +1797,9 @@ def main() -> int:
                          f"Sitzung fortgesetzt wird (Default {RESUME_MAX_PAUSE:.0f})")
     ap.add_argument("--resume-max-kontext", type=int, default=RESUME_MAX_KONTEXT,
                     help="Kontextgröße in Tokens, ab der eine neue Sitzung "
-                         f"beginnt (Default {RESUME_MAX_KONTEXT})")
+                         f"beginnt (Default {RESUME_MAX_KONTEXT} = "
+                         f"{int(KONTEXT_FENSTER_ANTEIL * 100)} %% des Fensters "
+                         "des Sitzungs-Modells; unbekanntes Modell = keine Grenze)")
     ap.add_argument("--timeout", type=float, default=CLAUDE_TIMEOUT,
                     help="Wanduhr-Deckel je Lauf in Sekunden "
                          f"(Default {CLAUDE_TIMEOUT:.0f}; ein Task darf ihn nur senken)")

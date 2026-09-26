@@ -845,6 +845,35 @@ async def files(path: str = "") -> dict:
         raise HTTPException(404, str(exc)) from exc
 
 
+@app.get("/api/files/suche")
+async def files_suche(request: Request, path: str = "", q: str = "",
+                      inhalt: bool = False) -> dict:
+    """Rekursive Suche im Workspace (Issue #45): Namen oder — mit inhalt=1 —
+    Textinhalt; Treffer- und Zeitdeckel liegen in app.files."""
+    try:
+        return await _bis_browser_weg(request, asyncio.to_thread(ws_files.suche, path, q, inhalt))
+    except FilesError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+async def _bis_browser_weg(request: Request, aufgabe):
+    """Eine längere Suche laufen lassen, aber abbrechen, sobald der Browser die
+    Anfrage aufgibt (AbortController) — sonst liefe find/grep auf der Maschine
+    bis zum Zeitdeckel weiter, obwohl niemand mehr auf das Ergebnis wartet."""
+    task = asyncio.ensure_future(aufgabe)
+    try:
+        while True:
+            fertig, _ = await asyncio.wait({task}, timeout=0.5)
+            if fertig:
+                return task.result()
+            if await request.is_disconnected():
+                task.cancel()
+                raise HTTPException(499, "Suche abgebrochen")
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
 @app.get("/api/files/content")
 async def file_content(path: str) -> dict:
     try:
@@ -987,6 +1016,18 @@ async def file_delete(path: str) -> dict:
 async def remote_list(name: str, path: str = "") -> dict:
     try:
         return await remote_files.list_dir(name, path)
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/remote/{name}/suche")
+async def remote_suche(request: Request, name: str, path: str = "", q: str = "",
+                       inhalt: bool = False) -> dict:
+    """Rekursive Suche auf der Maschine (find/grep über SSH, Issue #45)."""
+    try:
+        return await _bis_browser_weg(request, remote_files.suche(name, path, q, inhalt))
+    except FilesError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except RemoteFilesError as exc:
         raise HTTPException(502, str(exc)) from exc
 

@@ -328,7 +328,27 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   die Inbox-Pflichtrunde). Je Agent in agents.yaml: `resume: false`,
   `resume_max_pause` (s), `resume_max_kontext` (Tokens) →
   `--no-resume`/`--resume-max-*` (Zahlen werden im Manager zu int gemacht,
-  nichts Freies in die Remote-Shell).
+  nichts Freies in die Remote-Shell). **Kontextgrenze (Issue #44):** Default
+  `RESUME_MAX_KONTEXT = 0` = 85 % des Modellfensters (`kontext_fenster()` aus
+  dem `model` des init-Events, im Buch als `modell`); unbekanntes Modell =
+  keine Grenze; positiver Wert = harte Grenze. Der Grund („neue Sitzung (…)")
+  steht als `lauf.sitzung_grund` in der Antwort und im Panel.
+  **Eigenabschluss (Issue #43):** schließt das Kind seinen Task selbst ab,
+  trägt `Mailbox.response_ergaenzen` beim zweiten `complete_task` (Watcher)
+  fehlende `lauf`/`verbrauch`/`log` nach; `eigener_task_hinweis()` im
+  mcp_hint sagt dem Lauf, claim/complete für SEINEN Task nicht zu rufen.
+- **Datei-Suche (Issue #45):** `files.suche` (os.walk, `_safe`, GESPERRT +
+  Punkt-Ordner/node_modules ausgelassen, Inhalt ≤ 5 MB via `decode_text`) und
+  `remote_files.suche` (find `-printf` mit BSD-Rückfall bzw. grep `-m 1` über
+  `conn.create_process`; OS je Verbindung via `uname` gemerkt in
+  `_betriebssystem`; Windows `dir /s /b` mit `_WINDOWS_ERLAUBT`). Routen
+  `/api/files/suche`, `/api/remote/{name}/suche` laufen über `_bis_browser_weg`
+  (Abbruch bei Verbindungsabbruch → Prozess wird getötet). UI: Suchzeile im
+  FilesPanel — tippen filtert live, Enter sucht rekursiv (eigene Ansicht,
+  „← Ordner"), Knopf „Inhalt", 📂 springt zum Ordner; Inhaltstreffer öffnen
+  den Editor an der Zeile (`onOpenFile({line})`, EditorModal `line`-Prop).
+  Tests: `tests/test_suche.py`, Browser `test_dateien_browser.cjs`. Der
+  Test-Agent `lokal` (restrict-Key, kein Exec) kann NICHT remote suchen.
   **Lauf-Daten (`lauf` in der Antwort, Issues #37–#39):** `complete_task(lauf=…)`
   bzw. `antwort["lauf"]` beim Dateitransport — `sitzung` (neu/fortgesetzt),
   `session_id` (Mensch übernimmt mit `claude --resume <id>`), `kontext`,

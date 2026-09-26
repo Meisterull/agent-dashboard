@@ -435,12 +435,84 @@ class TestSitzungsbuch(unittest.TestCase):
     def test_grenzen_pause_kontext_tasks(self):
         for buch, jetzt in (
             (self.buch(), 1000.0 + aw.RESUME_MAX_PAUSE + 1),
-            (self.buch(kontext=aw.RESUME_MAX_KONTEXT + 1), 1001.0),
+            # Kontext über der relativen Grenze (85 % des 1M-Fensters)
+            (self.buch(kontext=900_000, modell="claude-opus-5"), 1001.0),
             (self.buch(tasks=aw.RESUME_MAX_TASKS), 1001.0),
         ):
             sid, grund = aw.sitzung_waehlen(buch, "/w|", "t9", jetzt)
             self.assertIsNone(sid, grund)
             self.assertTrue(grund)
+
+    def test_kontextgrenze_relativ_zum_modellfenster(self):
+        """Issue #44: 150k waren auf einer Bash-lastigen Box nach EINEM Task
+        erreicht — bei einem 1M-Modell greift das Gedächtnis jetzt weiter."""
+        # 164k (der Fall aus dem Echtbetrieb) bei einem 1M-Modell: fortsetzen
+        sid, grund = aw.sitzung_waehlen(
+            self.buch(kontext=164_274, modell="claude-opus-5"), "/w|", "t9", 1001.0)
+        self.assertEqual(sid, "sitz-0001-aaaa", grund)
+        # Haiku 4.5 hat 200k → 85 % = 170k: 164k geht noch, 175k nicht mehr
+        sid, _ = aw.sitzung_waehlen(
+            self.buch(kontext=164_274, modell="claude-haiku-4-5-20251001"), "/w|", "t9", 1001.0)
+        self.assertEqual(sid, "sitz-0001-aaaa")
+        sid, grund = aw.sitzung_waehlen(
+            self.buch(kontext=175_000, modell="claude-haiku-4-5-20251001"), "/w|", "t9", 1001.0)
+        self.assertIsNone(sid)
+        self.assertIn("170k", grund)
+        self.assertIn("85 %", grund)
+        # unbekanntes Modell (altes Buch ohne `modell`): keine Kontextgrenze —
+        # die Kompaktierung übernimmt Claude Code selbst
+        sid, _ = aw.sitzung_waehlen(self.buch(kontext=5_000_000), "/w|", "t9", 1001.0)
+        self.assertEqual(sid, "sitz-0001-aaaa")
+        # ein expliziter Wert bleibt eine harte Grenze
+        sid, grund = aw.sitzung_waehlen(
+            self.buch(kontext=164_274, modell="claude-opus-5"), "/w|", "t9", 1001.0,
+            max_kontext=150_000)
+        self.assertIsNone(sid)
+        self.assertIn("150k", grund)
+        self.assertNotIn("%", grund)
+
+    def test_kontext_fenster_je_modell(self):
+        f = aw.kontext_fenster
+        self.assertEqual(f("claude-opus-5-5"), 1_000_000)
+        self.assertEqual(f("claude-sonnet-5"), 1_000_000)
+        self.assertEqual(f("claude-fable-5-1"), 1_000_000)
+        self.assertEqual(f("claude-opus-4-6"), 1_000_000)
+        self.assertEqual(f("claude-opus-4-8-20260401"), 1_000_000)
+        self.assertEqual(f("claude-opus-4-1"), 200_000)
+        self.assertEqual(f("claude-sonnet-4-5[1m]"), 1_000_000)
+        self.assertEqual(f("claude-sonnet-4-5"), 200_000)
+        self.assertEqual(f("claude-haiku-4-5-20251001"), 200_000)
+        self.assertIsNone(f(None))
+        self.assertIsNone(f("gpt-irgendwas"))
+        self.assertEqual(aw.kontext_grenze(0, "claude-opus-5"), 850_000)
+        self.assertIsNone(aw.kontext_grenze(0, None))
+        self.assertEqual(aw.kontext_grenze(123, None), 123)
+
+    def test_sitzung_merken_behaelt_modell(self):
+        buch = {"sitzungen": {}, "tasks": {}}
+        aw.sitzung_merken(buch, "/w|", "t1", "sitz-1", 1000, 1.0, "claude-opus-5")
+        self.assertEqual(buch["sitzungen"]["/w|"]["modell"], "claude-opus-5")
+        # Folgelauf ohne init-Modell (z.B. altes Binary): das Modell bleibt
+        aw.sitzung_merken(buch, "/w|", "t2", "sitz-1", 2000, 2.0, None)
+        self.assertEqual(buch["sitzungen"]["/w|"]["modell"], "claude-opus-5")
+        self.assertEqual(buch["sitzungen"]["/w|"]["tasks"], 2)
+
+    def test_lauf_mitschreiben_nimmt_modell_aus_init(self):
+        lauf = {}
+        aw.lauf_mitschreiben(lauf, {"type": "system", "subtype": "init",
+                                    "session_id": "s1", "model": "claude-opus-5"})
+        self.assertEqual(lauf["modell"], "claude-opus-5")
+        self.assertEqual(lauf["session_id"], "s1")
+
+    def test_mcp_hint_nennt_eigenen_task(self):
+        """Issue #43: das Kind soll claim/complete für SEINEN Task nicht rufen."""
+        for text in (aw.mcp_hint("erp", "task-2f2fc6bc"),
+                     aw.mcp_hint_kurz("erp", "task-2f2fc6bc")):
+            self.assertIn("task-2f2fc6bc", text)
+            self.assertIn("NICHT", text)
+            self.assertIn("complete_task", text)
+        # ohne task_id bleibt der Hinweis weg (rückwärtskompatibel)
+        self.assertNotIn("complete_task", aw.mcp_hint("erp"))
 
     def test_anderes_verzeichnis_oder_rolle_beginnt_neu(self):
         self.assertIsNone(aw.sitzung_waehlen(self.buch(), "/anders|", "t9", 1001.0)[0])
@@ -451,7 +523,7 @@ class TestSitzungsbuch(unittest.TestCase):
     def test_geparkter_task_findet_seine_sitzung_trotz_grenzen(self):
         """Nach einer Rückfrage (Issue #17) läuft dieselbe task_id erneut —
         dort zählt das Gedächtnis mehr als Pause und Kontextgrenze."""
-        buch = self.buch(kontext=aw.RESUME_MAX_KONTEXT * 2)
+        buch = self.buch(kontext=5_000_000, modell="claude-opus-5")
         buch["tasks"]["t-park"] = {"session_id": "sitz-park-0007", "zeit": 1000.0}
         sid, _ = aw.sitzung_waehlen(buch, "/w|", "t-park", 1000.0 + 3 * 86400)
         self.assertEqual(sid, "sitz-park-0007")
@@ -579,6 +651,9 @@ class TestLaufMitSitzung(unittest.TestCase):
         self.assertEqual((rc1, rc2), (0, 0))
         self.assertEqual([a["resume"] for a in self.aufrufe()], [None, "sitzung-neu-0001"])
         self.assertEqual((m1["sitzung"], m2["sitzung"]), ("neu", "fortgesetzt"))
+        # Issue #44: der Grund steht in den Lauf-Daten, nicht nur im stdout
+        self.assertIn("noch keine Sitzung", m1["sitzung_grund"])
+        self.assertIn("Task 2", m2["sitzung_grund"])
         # session_id steht in der Antwort: ein Mensch kann den Faden mit
         # `claude --resume <id>` im Terminal übernehmen (Issue #37)
         self.assertEqual(m2["session_id"], "sitzung-neu-0001")

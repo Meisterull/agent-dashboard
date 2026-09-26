@@ -14,7 +14,7 @@ import { t } from "../sprache";
 // Sprache wird am Dateinamen erkannt und lazy nachgeladen (language-data).
 // Speichern: Button oder Strg/Cmd+S. Angeschnittene (truncated) Dateien
 // öffnen read-only — Speichern würde den Rest der Datei abschneiden.
-export default function EditorModal({ source, path, onClose }) {
+export default function EditorModal({ source, path, line, onClose }) {
   const hostRef = useRef(null);
   const viewRef = useRef(null);
   const saveRef = useRef(() => {});
@@ -119,6 +119,17 @@ export default function EditorModal({ source, path, onClose }) {
         parent: hostRef.current,
       });
       viewRef.current = view;
+
+      // Aus der Inhaltssuche (Issue #45): Cursor auf die Trefferzeile und
+      // sie in die Mitte holen.
+      const zeile = Number(line);
+      if (zeile > 0 && zeile <= view.state.doc.lines) {
+        const pos = view.state.doc.line(zeile).from;
+        view.dispatch({
+          selection: { anchor: pos },
+          effects: EditorView.scrollIntoView(pos, { y: "center" }),
+        });
+      }
 
       // Sprache anhand des Dateinamens lazy laden
       const desc = LanguageDescription.matchFilename(languages, filename);

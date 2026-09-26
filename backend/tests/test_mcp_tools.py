@@ -113,6 +113,49 @@ def test_project_ueberlebt_den_mcp_weg(ws: Path) -> None:
     assert "error" in unbekannt, unbekannt
 
 
+def test_watcher_traegt_laufdaten_nach_eigenabschluss_nach(ws: Path) -> None:
+    """Issue #43: das Claude-Kind schließt seinen Task selbst ab (ohne lauf);
+    der Watcher kommt als Zweiter MIT lauf/verbrauch/log — die Felder werden
+    nachgetragen, result/status bleiben unangetastet."""
+    import json
+    mcp_server = _mcp_server_laden(ws)
+    (ws / "mailboxes" / "worker").mkdir(parents=True)
+    (ws / "mailboxes" / "chef").mkdir(parents=True)
+    t = _tools(mcp_server)
+    gesendet = t["send_task"](to="worker", instruction="baue Y", sender="chef")
+    t["claim_task"](task_id=gesendet["id"], agent="worker")
+
+    # 1) das Kind: nur result
+    kind = t["complete_task"](task_id=gesendet["id"], result="vom Kind", agent="worker")
+    assert kind["status"] == "done" and not kind.get("already"), kind
+    datei = ws / "mailboxes" / "worker" / "outbox" / f"{gesendet['id']}-response.json"
+    vorher = json.loads(datei.read_text(encoding="utf-8"))
+    assert "lauf" not in vorher and "verbrauch" not in vorher and vorher["log"] == "", vorher
+
+    # 2) der Watcher: gleicher Task, jetzt mit lauf/verbrauch/log
+    lauf = {"session_id": "dfcc7eef-0000", "kontext": 164274, "sitzung": "neu"}
+    watcher = t["complete_task"](task_id=gesendet["id"], result="vom Watcher",
+                                 status="done", log="[watcher] 6 min", agent="worker",
+                                 verbrauch={"input_tokens": 5}, lauf=lauf)
+    assert watcher.get("already") is True, watcher
+    assert sorted(watcher.get("ergaenzt") or []) == ["lauf", "log", "verbrauch"], watcher
+    nachher = json.loads(datei.read_text(encoding="utf-8"))
+    assert nachher["lauf"] == lauf, nachher
+    assert nachher["verbrauch"] == {"input_tokens": 5}, nachher
+    assert nachher["log"] == "[watcher] 6 min", nachher
+    assert nachher["result"] == "vom Kind", nachher          # bleibt
+    assert nachher["responded_at"] == vorher["responded_at"]  # bleibt
+
+    # 3) ein dritter Abschluss überschreibt NICHTS mehr
+    dritter = t["complete_task"](task_id=gesendet["id"], result="x", agent="worker",
+                                 lauf={"session_id": "anders"}, log="anders")
+    assert dritter.get("already") is True and not dritter.get("ergaenzt"), dritter
+    assert json.loads(datei.read_text(encoding="utf-8"))["lauf"] == lauf
+    # und beim Auftraggeber liegt weiterhin genau EINE Antwort
+    responses = [a for a in t["inbox"](agent="chef") if a["kind"] == "response"]
+    assert len(responses) == 1, responses
+
+
 def test_doppelter_claim_meldet_fehler(ws: Path) -> None:
     """H2: der zweite Claimer bekommt einen Fehler, keinen Auftrag."""
     mcp_server = _mcp_server_laden(ws)
@@ -260,6 +303,7 @@ def test_kein_tool_blockiert_den_loop(ws: Path) -> None:
 
 def main() -> None:
     tests = [test_project_ueberlebt_den_mcp_weg,
+             test_watcher_traegt_laufdaten_nach_eigenabschluss_nach,
              test_doppelter_claim_meldet_fehler,
              test_unbekannter_empfaenger_wird_abgelehnt,
              test_antwort_raeumt_die_frage_ab,

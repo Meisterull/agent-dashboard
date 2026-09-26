@@ -537,6 +537,44 @@ class Mailbox:
             self.processing / f"{task_id}.json"
         ).exists()
 
+    def response_ergaenzen(
+        self, task_id: str, log: str = "",
+        verbrauch: dict[str, Any] | None = None,
+        lauf: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """Lauf-Daten in eine SCHON geschriebene Response nachtragen (Issue #43).
+
+        Der Watcher startet einen Lauf, dessen Modell den eigenen Task oft
+        selbst per complete_task abschließt — dann kommt der Watcher mit
+        `lauf`/`verbrauch`/`log` erst als Zweiter und traf bisher auf
+        „bereits abgeschlossen": session_id, Kontextgröße, Kosten und
+        Watcher-Log gingen verloren. Jetzt werden nur die Felder ergänzt, die
+        in der Response fehlen oder leer sind; `result`/`status` bleiben
+        unangetastet (die Antwort ist zugestellt). → Namen der ergänzten Felder.
+        """
+        task_id = _sichere_id(task_id, "Task-ID")  # P0-1
+        target = self.outbox / f"{task_id}-response.json"
+        with self._lock():
+            try:
+                response = json.loads(target.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                return []
+            if not isinstance(response, dict):
+                return []
+            ergaenzt: list[str] = []
+            if log and not response.get("log"):
+                response["log"] = log
+                ergaenzt.append("log")
+            if isinstance(verbrauch, dict) and verbrauch and not response.get("verbrauch"):
+                response["verbrauch"] = dict(verbrauch)
+                ergaenzt.append("verbrauch")
+            if isinstance(lauf, dict) and lauf and not response.get("lauf"):
+                response["lauf"] = dict(lauf)
+                ergaenzt.append("lauf")
+            if ergaenzt:
+                atomic_write_json(target, response)
+            return ergaenzt
+
     def claim_task(self, task_id: str, erneut: bool = False) -> Optional[dict[str, Any]]:
         """EINEN bestimmten Task beanspruchen (inbox → .processing).
 

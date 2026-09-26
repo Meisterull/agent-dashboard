@@ -310,6 +310,7 @@ export default function App() {
           <EditorModal
             source={openFile.source}
             path={openFile.path}
+            line={openFile.line}
             onClose={() => setOpenFile(null)}
           />
         </Suspense>

@@ -293,17 +293,26 @@ frischen, gedächtnislosen Claude-Lauf, sondern führt je Arbeitsverzeichnis und
 Rolle eine Sitzung weiter (`claude --resume`). Der zweite Task kennt das Projekt
 und die Vorgeschichte schon — das spart den Startkontext, die erneute
 Orientierung im Code und nach einer Rückfrage den kompletten zweiten Lauf. Eine
-neue Sitzung beginnt von selbst nach 12 Stunden Pause, ab 150 000 Tokens Kontext
-oder nach 25 Tasks, außerdem nach einem fehlgeschlagenen Lauf (nicht nach einem
-Timeout — dort bleibt der Stand in der Sitzung und der erneut angestoßene Task
-macht weiter). Wer Folge-Aufträge ausdrücklich an einen Vorgang binden will,
+neue Sitzung beginnt von selbst nach 12 Stunden Pause, wenn der Kontext 85 %
+des Fensters des Sitzungs-Modells übersteigt (1M bei der Claude-5-Familie und
+Opus ab 4.6, 200k bei Haiku 4.5; unbekanntes Modell = keine Kontextgrenze,
+Claude Code kompaktiert dann selbst) oder nach 25 Tasks, außerdem nach einem
+fehlgeschlagenen Lauf (nicht nach einem Timeout — dort bleibt der Stand in der
+Sitzung und der erneut angestoßene Task macht weiter). Wer Folge-Aufträge ausdrücklich an einen Vorgang binden will,
 gibt bei `send_task` einen `thread` mit: gleicher thread = gleiche Sitzung,
 auch nach Tagen. Im Automatik-Log steht je Task „neue Sitzung (…)" oder „setzt
 Sitzung fort (…)". Jede Antwort trägt die Lauf-Daten (`lauf`): Sitzung,
-Kontextgröße und die `session_id` — im Panel aufgeklappt als
+Kontextgröße, Modell, die `session_id` und den Grund, warum die Sitzung neu
+begann oder fortgesetzt wurde — im Panel aufgeklappt als
 `claude --resume <id>`, damit ein Mensch denselben Faden im Terminal übernehmen
 kann. Optional je Agent in `agents.yaml`: `resume: false` (jeder Task wieder
-frisch), `resume_max_pause` (Sekunden) und `resume_max_kontext` (Tokens). Das
+frisch), `resume_max_pause` (Sekunden) und `resume_max_kontext` (Tokens; ein
+positiver Wert ist eine harte Grenze statt der 85 %-Regel — 150 000 waren auf
+einer Bash-lastigen Box schon nach einem Task erreicht, deshalb ist der Default
+relativ). Schließt der Lauf seinen eigenen Task selbst per `complete_task` ab,
+trägt der Watcher `lauf`, `verbrauch` und `log` anschließend nach; der Lauf
+wird zudem im Kontext gebeten, `claim_task`/`complete_task` für seinen eigenen
+Task nicht aufzurufen. Das
 Sitzungsbuch liegt auf dem Agenten-PC unter
 `~/.agent-dashboard/<agent>.sitzungen.json`; löschen setzt es gefahrlos zurück.
 
@@ -396,6 +405,7 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `POST` | `/api/chat` | Body `{message, session_id?}` → `{session_id, reply, tool_calls}` |
 | `GET` | `/api/files?path=` | Verzeichnis auflisten (path-traversal-sicher) |
 | `GET` | `/api/files/content?path=` | Dateiinhalt (begrenzt auf 256 KB) |
+| `GET` | `/api/files/suche?path=&q=&inhalt=` | rekursive Suche ab `path`: Namen (Teilstring) oder mit `inhalt=1` Textinhalt (erste Trefferzeile); Deckel 500 Treffer / 20 s (`gekuerzt`), bricht ab, wenn der Browser die Anfrage aufgibt |
 | `GET` | `/api/connections` | SSH-Verbindungen aus `agents.yaml` (ohne Credentials) |
 | `GET` | `/api/settings` | editierbare UI-Settings |
 | `PUT` | `/api/settings` | Settings speichern (Whitelist) |
@@ -414,6 +424,7 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `POST` | `/api/files/upload` · `/mkdir` · `/rename` | Upload (multipart) · anlegen · umbenennen |
 | `GET` | `/api/files/download` · `/raw` | herunterladen · inline anzeigen/abspielen |
 | `*` | `/api/remote/{name}/…` | dieselben Datei-Ops auf Agenten-PCs via SFTP |
+| `GET` | `/api/remote/{name}/suche?path=&q=&inhalt=` | Suche auf der Maschine per `find`/`grep` über die SSH-Verbindung (Begriff nur geprüft + `shlex.quote` in die Zeile; Windows: `dir /s /b` mit Zeichen-Whitelist, keine Inhaltssuche); braucht einen SSH-Key, der Befehle ausführen darf |
 | `GET` | `/api/austausch` | je Maschine: Austausch möglich (SSH)? an? Ordner + absoluter Pfad; dazu `max_mb` |
 | `PUT`/`DELETE` | `/api/austausch/{name}` | Ordner per SFTP anlegen + Empfang einschalten (`{ordner}`, leer = `austausch`) · ausschalten (löscht nichts auf der Maschine) |
 | `POST` | `/api/austausch/senden` | `{von, an, pfade[], nachricht?}` — Dateien von Maschine zu Maschine; nginx-Lesefrist 1800 s (eigene Location) |
