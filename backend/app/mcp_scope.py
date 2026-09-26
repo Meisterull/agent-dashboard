@@ -42,6 +42,7 @@ KNOWN_TOOLS = frozenset({
     "send_file",
     "list_integrations", "call_integration",
     "list_rollen",
+    "agent_events",
 })
 
 

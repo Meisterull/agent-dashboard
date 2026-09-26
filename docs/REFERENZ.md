@@ -157,12 +157,14 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `app/rollen.py` | Rollen für Task-Läufe (`config/rollen/*.md`), beim send_task eingefroren |
 | `app/zeitplaene.py` | geplante Tasks (`config/zeitplaene.yaml`) + Planer-Loop im API-Prozess |
 | `app/verbrauch.py` | Verbrauchszähler je Agent, ON-READ aus der Outbox aggregiert |
+| `app/ereignisse.py` | Ereignis-Log je Agent (`mailboxes/<agent>/ereignisse.jsonl`): Läufe, Sitzungen, Verweigerungen, Fehlserien … — schreiben, lesen, rotieren |
 
 **MCP-Tools** (im `mcp_server.py`, pfad-gehärtet gegen `WORKSPACE_DIR`):
 - Delegation: `list_agents()` · `send_task(to, instruction, sender?, project?, files?, rolle?, nicht_vor?)` — `files` sind Workspace-Pfade, die als Kontextzeile in die Instruction wandern; `nicht_vor` plant den Start (serverseitig tz-eingefroren) (`create_task` als Alias) · `list_rollen()` · `read_responses(worker, for_sender?)` (Outbox-Archiv des Bearbeiters)
 - Task-Lebenszyklus (Agent-Seite): `claim_task(task_id, agent?, erneut?)` (→ "in Arbeit"; ein bereits laufender Task wird **nicht** erneut vergeben — `erneut=True` holt dem eigenen Bearbeiter seinen Auftragstext zurück) · `complete_task(task_id, result, status?, log?, agent?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab; ein wiederholter Aufruf ist kein Fehler (`already: true`), damit eine verlorene Antwort erneut abgeliefert werden kann
 - Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` (archiviert die beantwortete Frage gleich mit) · `inbox(agent, kind?)` · `mark_read(envelope_id, agent?)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder). Empfänger müssen bekannt sein (Mailbox oder `agents.yaml`) — sonst Fehler statt Geister-Mailbox
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
+- Beobachtbarkeit: `agent_events(agent?, seit?, art?, limit?, nur_probleme?)` — das Ereignis-Log eines Agenten lesen (nur lesend; auf dem gebundenen Kanal ohne `agent` = man selbst)
 - Dateiaustausch: `send_file(to, paths, note?, source?)` — Dateien der EIGENEN Maschine in den Austausch-Ordner einer anderen legen (SFTP von Platte zu Platte, der Inhalt läuft nicht durchs Modell; max. 20 Dateien, je `AUSTAUSCH_MAX_MB`); gebundener Kanal: `source` = eigene Maschine (fremde Werte abgelehnt), freier Kanal: `source` Pflicht; Ziel braucht einen eingeschalteten Ordner, nur SSH-Maschinen; Rückgabe `zugestellt`/`fehler` je Datei, der Empfänger bekommt eine `message` mit den Zielpfaden. Nicht in der Grundmenge der Token-Agenten
 - Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)` — Aufruf-Timeout `INTEGRATION_TIMEOUT` (Default 60 s, je Integration per `timeout:`); lange Vorgänge asynchron anstoßen (Job-ID zurück, Status pollen) statt das Timeout hochzudrehen
 
@@ -215,6 +217,28 @@ Datei-Transport-Watcher schreibt remote am Server vorbei; die Outbox-Rotation
 (30 Tage) deckt die 7-Tage-Anzeige locker. `/api/agents/{name}/tasks` liefert
 das Aggregat gleich mit (dieselbe Outbox-Lesung, kein Doppel-I/O); das Panel
 zeigt ⚡ heute + rollierendes 5-h-Fenster, Antippen die letzten 7 Tage.
+**Ereignis-Log (Beobachtbarkeit, 26.09.2026):** Warum ein Lauf lange dauerte,
+teuer war, seine Sitzung verlor oder der Watcher stehen blieb, stand vorher
+verstreut in Task-Antworten, im 20-Zeilen-Roh-Log und im Container-Log. Jetzt
+schreibt der Server je Agent eine Zeitleiste nach
+`mailboxes/<agent>/ereignisse.jsonl` (`app/ereignisse.py`): je Task-Abschluss
+ein `lauf`-Eintrag (Status, Dauer aus `claimed_at`→`responded_at`, Tokens,
+Kosten, Kontext, Modell), dazu `sitzung` (neu/fortgesetzt + Grund; ein
+Kontext-Neustart ist eine Warnung), `verweigert`, `timeout`; vom
+Automatik-Manager `watcher_start`, `watcher_abriss`, `fehlserie`, `weckruf`;
+vom MCP-Server `send_file` und `integration`. Nur der Server schreibt, der
+Watcher bleibt unverändert; nachgetragene Lauf-Daten (Issue #43) ergänzen die
+Einträge. Rotation nach `MAILBOX_ARCHIV_TAGE` (30 Tage) und 5000 Zeilen in der
+Mailbox-Pflege. Im Agenten-Panel: Block „Ereignisse" (letzte 50, neueste oben,
+Warnungen gelb, Fehler rot, „nur Probleme", „mehr laden"; ein Eintrag mit Task
+klappt den Task auf), das Roh-Log des Watchers bleibt daneben aufklappbar.
+Web-Push: Warnungen und Fehler gehen gebündelt aufs Handy — höchstens eine
+Meldung je Agent alle 10 Minuten (`EREIGNIS_PUSH_SPERRE_S`), weitere werden
+gezählt („+3 weitere Ereignisse"); Fehlserie und Watcher-Abriss durchbrechen
+die Sperre. Der Bestand beim Start wird nie gemeldet. Per MCP liest
+`agent_events(...)` dieselbe Datei, damit der Orchestrator „was lief bei
+deverp zuletzt schief?" beantworten kann.
+
 Optionale Schwelle `verbrauch_schwelle_5h` (Settings, Tokens/5 h je Agent,
 0 = aus): darüber färbt sich der Zähler rot und der Planer pausiert
 GEPLANTE Tasks dieses Agenten (der ▶-Sofort-Knopf und Chat-Delegation laufen
@@ -409,6 +433,7 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `GET` | `/api/connections` | SSH-Verbindungen aus `agents.yaml` (ohne Credentials) |
 | `GET` | `/api/settings` | editierbare UI-Settings |
 | `PUT` | `/api/settings` | Settings speichern (Whitelist) |
+| `GET` | `/api/agents/{name}/ereignisse?limit=&vor=&seit=&art=&probleme=` | Ereignis-Log eines Agenten, neueste zuerst; `vor` = ältere nachladen, `art` kommagetrennt, `probleme=1` = nur warnung/fehler (ETag/304) |
 | `GET` | `/api/agents/{name}/outbox/{task_id}` | Eine Antwort ungekürzt (die Task-Liste trägt lange Texte nur angeschnitten, `gekuerzt: true`; Liste antwortet mit ETag/304) |
 | `GET` | `/api/automatik` | Automatikmodus: Not-Aus + gewünschter/echter Status je Agent, dazu `weckt`/`ungeweckt` |
 | `POST` | `/api/automatik/{name}` | Body `{an}` — Automatik eines Agenten an/aus (aus = sanft) |

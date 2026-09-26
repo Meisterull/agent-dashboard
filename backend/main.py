@@ -90,7 +90,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSo
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app import auth, auto_watcher, chat_store, events, llm, push, remote_files
+from app import auth, auto_watcher, chat_store, ereignisse, events, llm, push, remote_files
 from app import mcp_scope, mcp_token, rollen, verbrauch, zeitplaene
 from app.config import (
     KEYS_DIR,
@@ -176,6 +176,12 @@ async def _mailbox_pflege_schleife() -> None:
         except Exception as exc:  # noqa: BLE001 — Pflege darf die API nie killen
             print(f"{_log_zeit()} [pflege] Fehler: {exc}", flush=True)
             continue
+        try:
+            rotiert = await asyncio.to_thread(ereignisse.rotiere_alle, MAILBOXES, ARCHIV_TAGE)
+            if rotiert:
+                print(f"{_log_zeit()} [pflege] Ereignis-Log rotiert: {rotiert} Einträge", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{_log_zeit()} [pflege] Ereignis-Rotation: {exc}", flush=True)
         if bericht["requeued"] or bericht["aufgegeben"] or bericht["geloescht"]:
             print(
                 f"{_log_zeit()} [pflege] wieder eingereiht: {bericht['requeued'] or '-'}; "
@@ -453,6 +459,19 @@ async def agent_tasks(name: str, request: Request) -> Response:
     # to_thread (Review P2): der 8-s-Poll je Agent parste Inbox + komplette
     # Outbox synchron im Event-Loop — Terminals ruckelten mit.
     daten = await asyncio.to_thread(_agent_tasks_sync, name, base)
+    return _etag_antwort(request, daten)
+
+
+@app.get("/api/agents/{name}/ereignisse")
+async def agent_ereignisse(name: str, request: Request, limit: int = 50,
+                           vor: str | None = None, seit: str | None = None,
+                           art: str | None = None, probleme: bool = False) -> Response:
+    """Ereignis-Log eines Agenten (Beobachtbarkeit): neueste zuerst; `vor` =
+    „mehr laden", `art` = kommagetrennte Arten, `probleme` = nur warnung/fehler."""
+    _agent_base(name)
+    arten = [a.strip() for a in (art or "").split(",") if a.strip()] or None
+    daten = await asyncio.to_thread(
+        ereignisse.lies, MAILBOXES, name, max(1, min(int(limit), 500)), vor, seit, arten, probleme)
     return _etag_antwort(request, daten)
 
 

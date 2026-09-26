@@ -114,6 +114,24 @@ function fetchDoppel(url, opt = {}) {
         },
       },
     });
+  // Ereignis-Log (Beobachtbarkeit): drei Einträge, einer mit Task
+  if (url.startsWith("/api/agents/PMNB029/ereignisse")) {
+    const probleme = new URL(url, location.origin).searchParams.get("probleme") === "1";
+    const alle = [
+      { zeit: new Date().toISOString(), art: "verweigert", schwere: "warnung", task_id: "task-9",
+        text: "1 verweigerte Aufrufe: Bash", details: { anzahl: 1, werkzeuge: ["Bash"] } },
+      { zeit: new Date(Date.now() - 60000).toISOString(), art: "sitzung", schwere: "warnung", task_id: "task-9",
+        text: "neue Sitzung: Kontext 164k über Grenze 150k", details: { kontext_neustart: true } },
+      { zeit: new Date(Date.now() - 120000).toISOString(), art: "lauf", schwere: "info", task_id: "task-9",
+        text: "Lauf error · 6 min · 5k Tok · 0.12 $ · Kontext 164k", details: { dauer: 379 } },
+      { zeit: new Date(Date.now() - 3600000).toISOString(), art: "watcher_start", schwere: "info", task_id: null,
+        text: "Watcher gestartet (MCP :9100)", details: {} },
+    ];
+    const eintraege = probleme ? alle.filter((e) => e.schwere !== "info") : alle;
+    return json({ eintraege, mehr: false, gesamt: alle.length });
+  }
+  if (url.startsWith("/api/agents/erp/ereignisse"))
+    return json({ eintraege: [], mehr: false, gesamt: 0 });
   // Einzelabruf der ungekürzten Antwort (Issue #41)
   if (url.startsWith("/api/agents/PMNB029/outbox/task-9"))
     return json({ ...antwortMitLauf, result: "VOLLER TEXT der Antwort", gekuerzt: undefined });

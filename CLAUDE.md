@@ -349,6 +349,25 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   den Editor an der Zeile (`onOpenFile({line})`, EditorModal `line`-Prop).
   Tests: `tests/test_suche.py`, Browser `test_dateien_browser.cjs`. Der
   Test-Agent `lokal` (restrict-Key, kein Exec) kann NICHT remote suchen.
+- **Ereignis-Log / Beobachtbarkeit (26.09.2026, per /ausfragen abgenommen):**
+  `app/ereignisse.py` — JSONL je Agent (`mailboxes/<agent>/ereignisse.jsonl`),
+  NUR der Server schreibt (API + MCP-Prozess; O_APPEND-Zeilen < 4 KiB, kein
+  Lock nötig). Anschluss: `Mailbox._write_response` (Lauf/Sitzung/Verweigert/
+  Timeout via `ereignisse.lauf_ereignisse`, nur beim ERSTEN Abschluss),
+  `response_ergaenzen` (nachgetragen), `auto_watcher` (watcher_start,
+  fehlserie rc=1, watcher_abriss, weckruf), `mcp_server` (send_file,
+  integration). Route `/api/agents/{name}/ereignisse`, MCP `agent_events`
+  (lesend, in KNOWN_TOOLS, nicht in TOKEN_GRUNDTOOLS). Push-Bündler
+  `events.EreignisPush` liest die Datei ab Byte-Offset (`lies_ab`; Falle:
+  Ereignisse aus dem MCP-Prozess erreichen keinen In-Process-Hook → deshalb
+  Datei-Wächter; mtime-Fallback beobachtet die Datei mit), Baseline beim
+  Start, Sperre 10 min je Agent, `STETS_PUSHEN` = fehlserie/watcher_abriss.
+  Rotation in der Pflege-Schleife (`rotiere_alle`, ARCHIV_TAGE + 5000
+  Zeilen). UI `components/Ereignisse.jsx` im AgentsPanel über dem
+  Verbrauchszähler; Roh-Log heißt jetzt „Roh-Log (n)". Tests:
+  `test_ereignisse.py`, `test_events_push.TestEreignisPush`,
+  `test_mcp_tools.test_ereignisse_beim_abschluss_und_agent_events`, Browser
+  `test_agents_browser.cjs` (Abschnitt „Ereignisse").
   **Lauf-Daten (`lauf` in der Antwort, Issues #37–#39):** `complete_task(lauf=…)`
   bzw. `antwort["lauf"]` beim Dateitransport — `sitzung` (neu/fortgesetzt),
   `session_id` (Mensch übernimmt mit `claude --resume <id>`), `kontext`,

@@ -75,6 +75,48 @@ const text = (page) => page.$eval("body", (b) => b.innerText);
   pruefe("…und die Sitzung zum Übernehmen (#37)",
     auf.includes("claude --resume 9a2d20b8-b893-43c0-8867-a80963446b17"));
 
+  // Ereignis-Zeitleiste (Beobachtbarkeit): Kopfzeile mit Problem-Zähler und
+  // letztem Eintrag, aufgeklappt alle Einträge farbig, „nur Probleme", und
+  // ein Eintrag mit Task klappt den Task auf (nicht zu — idempotent).
+  console.log("Ereignisse:");
+  const kopf = await text(page);
+  pruefe("Kopfzeile: Zähler + Problem-Abzeichen + letzter Eintrag",
+    /Ereignisse \(4\)/.test(kopf) && kopf.includes("⚠ 2") && kopf.includes("1 verweigerte Aufrufe: Bash"));
+  pruefe("zugeklappt: Watcher-Start noch nicht sichtbar", !kopf.includes("Watcher gestartet"));
+  await page.$$eval("button", (bs) => bs.find((b) => (b.title || "") === "Ereignisse anzeigen").click());
+  await page.waitForFunction(() => document.body.innerText.includes("Watcher gestartet"), { timeout: 5000 });
+  const zl = await text(page);
+  pruefe("aufgeklappt: Lauf mit Dauer/Kosten/Kontext, Sitzungsgrund, Watcher-Start",
+    zl.includes("6 min · 5k Tok · 0.12 $") && zl.includes("über Grenze 150k") && zl.includes("Watcher gestartet"));
+  const gelb = await page.$$eval("div.bg-amber-50", (ds) => ds.length);
+  pruefe("Warnungen sind gelb hinterlegt", gelb === 2, `gefunden: ${gelb}`);
+  await page.$$eval("button", (bs) => bs.find((b) => b.textContent.trim() === "nur Probleme").click());
+  await page.waitForFunction(() => !document.body.innerText.includes("Watcher gestartet"), { timeout: 5000 });
+  pruefe("„nur Probleme“ blendet info aus", !(await text(page)).includes("Lauf error"));
+  await page.$$eval("button", (bs) => bs.find((b) => b.textContent.trim() === "nur Probleme").click());
+  await page.waitForFunction(() => document.body.innerText.includes("Watcher gestartet"), { timeout: 5000 });
+  // Task-9 ist oben aufgeklappt → erst zuklappen (die LETZTE „task-9"-Marke
+  // ist die Task-Zeile; die Zeitleiste trägt die ID ebenfalls), dann über
+  // das Ereignis öffnen
+  await page.evaluate(() => {
+    const el = [...document.querySelectorAll("span")].filter((s) => s.innerText === "task-9").pop();
+    el.closest("div.cursor-pointer").click();
+  });
+  await page.waitForFunction(() => !document.body.innerText.includes("VOLLER TEXT"), { timeout: 5000 });
+  await page.evaluate(() => {
+    const z = [...document.querySelectorAll("div[title]")].find((d) => d.title === "Task task-9 aufklappen");
+    z.click();
+  });
+  await page.waitForFunction(() => document.body.innerText.includes("VOLLER TEXT"), { timeout: 5000 });
+  pruefe("Ereignis-Klick klappt den Task auf", true);
+  await page.evaluate(() => {
+    const z = [...document.querySelectorAll("div[title]")].find((d) => d.title === "Task task-9 aufklappen");
+    z.click();
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  pruefe("…und ein zweiter Klick klappt ihn NICHT zu", (await text(page)).includes("VOLLER TEXT"));
+  pruefe("erp ohne Ereignisse: kein Absturz", true);
+
   // Zähler am Agenten-Kopf: ohne Aufklappen sehen, wo etwas liegt (#33).
   const zaehler = await page.$$eval("button", (bs) =>
     bs

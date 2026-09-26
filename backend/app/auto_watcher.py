@@ -37,7 +37,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from app import weckruf
+from app import ereignisse, weckruf
 from app.config import load_agents_full, load_settings, save_settings
 
 RECONCILE_INTERVAL = 15   # Sekunden, bis settings-/agents-Änderungen greifen
@@ -361,6 +361,8 @@ class AutoWatcherManager:
             bericht = weckruf.pruefe(MAILBOX_ROOT, name, arten)
             for task_id in bericht["geweckt"]:
                 print(f"{_zeit()} [automatik] {name}: Weckruf {task_id} aus ungelesener Post", flush=True)
+                ereignisse.schreibe(MAILBOX_ROOT, name, "weckruf",
+                                    "Weckruf aus ungelesener Post", task_id=task_id)
             for absender in bericht["gebremst"]:
                 print(f"{_zeit()} [automatik] {name}: Schleifenschutz — Post von {absender} "
                       f"bleibt liegen (>{weckruf.WECK_MAX_JE_STUNDE}/h)", flush=True)
@@ -442,6 +444,8 @@ class AutoWatcherManager:
                     w.proc = proc
                     w.setze("an", "")
                     print(f"{_zeit()} [automatik] {name}: Watcher läuft (MCP :{cfg['mcp_port']})", flush=True)
+                    ereignisse.schreibe(MAILBOX_ROOT, name, "watcher_start",
+                                        f"Watcher gestartet (MCP :{cfg['mcp_port']})")
                     async for zeile in proc.stdout:
                         zeile = zeile.rstrip()
                         if zeile:
@@ -464,12 +468,18 @@ class AutoWatcherManager:
                             + " — kein Auto-Neustart, Automatik neu einschalten")
                     print(f"{_zeit()} [automatik] {name}: Watcher mit Fehler beendet (rc=1) — "
                           f"Auto-Neustart ausgesetzt ({w.detail})", flush=True)
+                    ereignisse.schreibe(MAILBOX_ROOT, name, "fehlserie",
+                                        f"Watcher gestoppt: {w.detail} — Automatik neu einschalten",
+                                        schwere="fehler", detail=w.detail)
                     return
                 # rc=2 (Instanz-Lock, H2) läuft bewusst in den normalen
                 # Reconnect: der andere Watcher endet irgendwann von selbst.
                 w.setze("fehler", w.detail or "Watcher-Prozess beendet")
                 print(f"{_zeit()} [automatik] {name}: Prozess endete — Neustart in {RECONNECT_DELAY}s "
                       f"({w.detail})", flush=True)
+                ereignisse.schreibe(MAILBOX_ROOT, name, "watcher_abriss",
+                                    f"Watcher-Prozess endete (rc={rc}) — Neustart in {RECONNECT_DELAY}s",
+                                    schwere="fehler", rc=rc, detail=w.detail or None)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — Reconnect-Loop, nie crashen
@@ -480,6 +490,10 @@ class AutoWatcherManager:
                 w.setze("fehler", f"{type(exc).__name__}: {exc}")
                 print(f"{_zeit()} [automatik] {name}: {w.detail} — Neustart in {RECONNECT_DELAY}s",
                       flush=True)
+                ereignisse.schreibe(MAILBOX_ROOT, name, "watcher_abriss",
+                                    f"Verbindung zum Watcher verloren: {w.detail} — "
+                                    f"Neustart in {RECONNECT_DELAY}s",
+                                    schwere="fehler", detail=w.detail)
             try:
                 await asyncio.wait_for(self._warte_auf_beenden(w), timeout=RECONNECT_DELAY)
             except asyncio.TimeoutError:

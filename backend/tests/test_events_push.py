@@ -106,6 +106,66 @@ class TestSnapshotDiff(unittest.TestCase):
         self.assertEqual(events.lies_snapshot(self.root)["nachrichten"], {})
 
 
+class TestEreignisPush(unittest.TestCase):
+    """Push-Bündler fürs Ereignis-Log: Bestand nie, Probleme gebündelt (eine
+    Meldung je Agent alle 10 min), Fehlserie/Abriss durchbrechen die Sperre."""
+
+    def setUp(self) -> None:
+        from app import ereignisse
+        self.er = ereignisse
+        self.root = Path(tempfile.mkdtemp(prefix="ereignis-push-"))
+
+    def test_baseline_meldet_bestand_nicht(self):
+        self.er.schreibe(self.root, "erp", "fehlserie", "alt", schwere="fehler")
+        b = events.EreignisPush(sperre_s=600)
+        b.baseline(self.root)
+        self.assertEqual(b.verarbeite(self.root, {"erp"}, 1000.0), [])
+        self.er.schreibe(self.root, "erp", "verweigert", "2 verweigerte Aufrufe: Bash", schwere="warnung")
+        m = b.verarbeite(self.root, {"erp"}, 1001.0)
+        self.assertEqual(len(m), 1)
+        self.assertEqual(m[0]["titel"], "⚠ erp")
+        self.assertEqual(m[0]["text"], "2 verweigerte Aufrufe: Bash")
+        self.assertEqual(m[0]["tag"], "ereignis-erp")
+
+    def test_buendelung_und_durchbruch(self):
+        b = events.EreignisPush(sperre_s=600)
+        er = self.er
+        er.schreibe(self.root, "erp", "lauf", "Lauf done")                        # info: nie
+        er.schreibe(self.root, "erp", "verweigert", "1 verweigert", schwere="warnung")
+        self.assertEqual(len(b.verarbeite(self.root, {"erp"}, 1000.0)), 1)
+        # innerhalb der Sperre: zählen statt melden
+        er.schreibe(self.root, "erp", "verweigert", "1 verweigert", schwere="warnung")
+        er.schreibe(self.root, "erp", "timeout", "abgebrochen", schwere="warnung")
+        self.assertEqual(b.verarbeite(self.root, {"erp"}, 1100.0), [])
+        self.assertEqual(b.aufgelaufen["erp"], 2)
+        # anderer Agent hat seine eigene Sperre
+        er.schreibe(self.root, "deverp", "sitzung", "neue Sitzung: Kontext 900k über Grenze 850k",
+                    schwere="warnung")
+        m = b.verarbeite(self.root, {"deverp", "erp"}, 1200.0)
+        self.assertEqual([x["agent"] for x in m], ["deverp"])
+        # Fehlserie durchbricht die Sperre — samt Zähler der aufgelaufenen
+        er.schreibe(self.root, "erp", "fehlserie", "Watcher gestoppt: Preflight", schwere="fehler")
+        m = b.verarbeite(self.root, {"erp"}, 1300.0)
+        self.assertEqual(len(m), 1)
+        self.assertEqual(m[0]["titel"], "⛔ erp")
+        self.assertIn("Watcher gestoppt: Preflight", m[0]["text"])
+        self.assertIn("+2 weitere", m[0]["text"])
+        self.assertEqual(b.aufgelaufen["erp"], 0)
+        # nach Ablauf der Sperre wieder normal
+        er.schreibe(self.root, "erp", "timeout", "abgebrochen", schwere="warnung")
+        self.assertEqual(b.verarbeite(self.root, {"erp"}, 1300.0 + 601), [{
+            "titel": "⚠ erp", "text": "abgebrochen", "tag": "ereignis-erp", "url": "/",
+            "art": "ereignis", "agent": "erp"}])
+        # das Schwerste gewinnt in einer Lieferung
+        er.schreibe(self.root, "erp", "verweigert", "v", schwere="warnung")
+        er.schreibe(self.root, "erp", "watcher_abriss", "Prozess endete", schwere="fehler")
+        m = b.verarbeite(self.root, {"erp"}, 5000.0)
+        self.assertTrue(m[0]["text"].startswith("Prozess endete"))
+        self.assertIn("+1 weitere", m[0]["text"])
+        # unbekannter/ungültiger Agent stört nicht
+        self.assertEqual(b.verarbeite(self.root, {"../x", "nix"}, 6000.0), [])
+
+
 class TestPushStore(unittest.TestCase):
     def test_add_dedupe_remove(self) -> None:
         n = push.add_subscription({"endpoint": "https://a/1", "keys": {"p256dh": "x", "auth": "y"}})

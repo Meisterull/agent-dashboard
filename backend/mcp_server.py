@@ -51,6 +51,7 @@ from app.config import load_agents_full
 from app.files import decode_text
 from datetime import datetime
 
+from app import ereignisse
 from app.mailbox import (
     AGENT_NAME_RE,
     AlreadyClaimed,
@@ -319,6 +320,36 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             """
             _log(kanal, "list_agents")
             return _bekannte_agenten()
+
+    if on("agent_events"):
+        @werkzeug
+        def agent_events(agent: str | None = None, seit: str | None = None,
+                         art: str | None = None, limit: int = 30,
+                         nur_probleme: bool = False) -> dict:
+            """Ereignis-Log eines Agenten lesen (Beobachtbarkeit der Automatik).
+
+            Neueste zuerst: Läufe (Status, Dauer, Tokens, Kosten, Kontext),
+            Sitzung neu/fortgesetzt samt Grund, verweigerte Aufrufe, Timeouts,
+            Fehlserien und Watcher-Abrisse, Weckrufe, send_file, Integrationen.
+            `agent` = wessen Log (auf einem gebundenen Kanal weglassen = du
+            selbst), `seit` = ISO-Zeit, `art` = eine Art oder kommagetrennt,
+            `nur_probleme` = nur warnung/fehler. Nur lesend.
+            """
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            unbekannt = _pruefe_empfaenger(wer)
+            if unbekannt:
+                return unbekannt
+            arten = [a.strip() for a in (art or "").split(",") if a.strip()] or None
+            _log(kanal, "agent_events", agent=wer, art=art, limit=limit)
+            try:
+                daten = ereignisse.lies(MAILBOX_ROOT, wer, max(1, min(int(limit), 200)),
+                                        None, seit, arten, bool(nur_probleme))
+            except ValueError as exc:
+                return {"error": str(exc)}
+            return {"agent": wer, **daten}
 
     if on("send_task"):
         @werkzeug
@@ -839,6 +870,11 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             liste = [paths] if isinstance(paths, str) else list(paths or [])
             _log(kanal, "send_file", to=to, source=quelle, dateien=len(liste))
             try:
+                ereignisse.schreibe(MAILBOX_ROOT, quelle, "send_file",
+                                    f"{len(liste)} Datei(en) an {to}", an=to, dateien=len(liste))
+            except ValueError:
+                pass
+            try:
                 return austausch.uebergib_sync(
                     quelle, liste, to, melder=identity or "orchestrator", nachricht=note
                 )
@@ -863,12 +899,18 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             Auth wird serverseitig injiziert. Gibt {status, body} zurück.
             """
             _log(kanal, "call_integration", name=name, method=method, path=path)
+            wer_ruft = identity or "orchestrator"
             try:
-                return integrations.call_integration(name, method, path, body)
+                ergebnis = integrations.call_integration(name, method, path, body)
             except integrations.IntegrationError as exc:
                 # Serie von Timeouts (Issue #40): einmal den Menschen rufen —
                 # als Nachricht in die Orchestrator-Inbox (= Panel + Push).
                 warnung = integrations.timeout_warnung(name)
+                ereignisse.schreibe(MAILBOX_ROOT, wer_ruft, "integration",
+                                    f"{name} {method} {path}: {exc}",
+                                    schwere="fehler" if warnung else "warnung",
+                                    name=name, method=method, path=path,
+                                    timeout_serie=bool(warnung) or None)
                 if warnung:
                     _log(kanal, "call_integration", warnung="timeout-serie", name=name)
                     try:
@@ -878,6 +920,10 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                     except (ValueError, OSError):
                         pass
                 return {"error": str(exc)}
+            ereignisse.schreibe(MAILBOX_ROOT, wer_ruft, "integration",
+                                f"{name} {method} {path}", name=name, method=method, path=path,
+                                status=ergebnis.get("status") if isinstance(ergebnis, dict) else None)
+            return ergebnis
 
 
 def build_server(port: int, identity: str | None = None, allowed: set[str] | None = None) -> FastMCP:

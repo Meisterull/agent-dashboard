@@ -40,6 +40,14 @@ export const getTasks = (name) =>
   jget(`/api/agents/${encodeURIComponent(name)}/tasks`);
 // Eine Antwort ungekürzt (Issue #41): die Liste trägt lange Texte nur noch
 // angeschnitten, der volle Eintrag kommt beim Aufklappen.
+// Ereignis-Log je Agent (Beobachtbarkeit): neueste zuerst, `vor` = „mehr
+// laden" (Einträge älter als diese Zeit), `probleme` = nur warnung/fehler.
+export const getEreignisse = (name, { limit = 50, vor, probleme } = {}) =>
+  jget(
+    `/api/agents/${encodeURIComponent(name)}/ereignisse?limit=${limit}` +
+      (vor ? `&vor=${encodeURIComponent(vor)}` : "") +
+      (probleme ? "&probleme=1" : ""),
+  );
 export const getOutboxEintrag = (name, taskId) =>
   jget(
     `/api/agents/${encodeURIComponent(name)}/outbox/${encodeURIComponent(taskId)}`,

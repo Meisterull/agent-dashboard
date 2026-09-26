@@ -27,7 +27,17 @@ export default {
   "Automatik": "Automation",
   "Log einklappen": "Collapse log",
   "Fortschritts-Log anzeigen": "Show progress log",
-  "Log ({0})": "Log ({0})",
+  "Roh-Log ({0})": "Raw log ({0})",
+  // Ereignisse.jsx — Zeitleiste je Agent
+  "Ereignisse": "Events",
+  "Ereignisse anzeigen": "Show events",
+  "Ereignisse einklappen": "Collapse events",
+  "nur Probleme": "problems only",
+  "nur Warnungen und Fehler zeigen": "show warnings and errors only",
+  "keine Probleme": "no problems",
+  "noch keine Ereignisse": "no events yet",
+  "Task {0} aufklappen": "expand task {0}",
+  "mehr laden": "load more",
 
   // AgentsPanel.jsx — Inbox / Nachrichten / Outbox
   "Inbox ({0})": "Inbox ({0})",

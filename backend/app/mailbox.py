@@ -38,6 +38,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
+from app import ereignisse
+
 try:  # POSIX-Lock; auf Plattformen ohne fcntl bleibt nur die Atomarität
     import fcntl
 except ImportError:  # pragma: no cover — Windows
@@ -573,6 +575,12 @@ class Mailbox:
                 ergaenzt.append("lauf")
             if ergaenzt:
                 atomic_write_json(target, response)
+                # nachgetragene Lauf-Daten → nachgetragene Ereignisse
+                ereignisse.lauf_ereignisse(
+                    self.root, self.agent, task_id, str(response.get("status") or "done"),
+                    None, None,
+                    verbrauch if "verbrauch" in ergaenzt else None,
+                    lauf if "lauf" in ergaenzt else None, nachgetragen=True)
             return ergaenzt
 
     def claim_task(self, task_id: str, erneut: bool = False) -> Optional[dict[str, Any]]:
@@ -918,6 +926,14 @@ class Mailbox:
                     pass
             else:
                 stale.unlink(missing_ok=True)
+        # Ereignis-Log (Beobachtbarkeit): der Lauf mit Dauer/Kosten/Kontext,
+        # dazu Sitzung, Verweigerungen, Timeout — nur beim ERSTEN Abschluss
+        # (task_env da), ein Wiederholungs-Abschluss ist kein neues Ereignis.
+        if task_env is not None:
+            ereignisse.lauf_ereignisse(
+                self.root, self.agent, task_id, status,
+                task_env.get("claimed_at") or task_env.get("created_at"),
+                response["responded_at"], verbrauch, lauf)
         return target
 
     # --- Aufräumen / Wiederanlauf -------------------------------------------

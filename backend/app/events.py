@@ -21,10 +21,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from app import push
+from app import ereignisse, push
 from app.mailbox import ORCHESTRATOR
 
 MAILBOXES = Path(os.environ.get("WORKSPACE_DIR", "/workspace")) / "mailboxes"
@@ -183,6 +184,79 @@ def neue_meldungen(
 
 # --- Dateisystem beobachten -------------------------------------------------
 
+# --- Push-Bündler für das Ereignis-Log (Beobachtbarkeit, 26.09.2026) --------
+# Verweigerungen, Timeouts, Kontext-Neustarts, Fehlserien, Watcher-Abrisse
+# sollen aufs Handy — aber eine Verweigerungs-Serie darf nicht zehnmal
+# vibrieren: höchstens EINE Meldung je Agent alle 10 Minuten, weitere
+# Ereignisse werden gezählt und mit der nächsten Meldung genannt. Fehlserie
+# und Watcher-Abriss durchbrechen die Sperre immer (dann steht die Automatik).
+# Gelesen wird die JSONL-Datei ab dem letzten Offset — so kommen auch die
+# Ereignisse aus dem MCP-Prozess an (kein In-Process-Hook möglich).
+PUSH_SPERRE_S = float(os.environ.get("EREIGNIS_PUSH_SPERRE_S", "600"))
+_RANG = {"fehler": 2, "warnung": 1, "info": 0}
+
+
+class EreignisPush:
+    def __init__(self, sperre_s: float = PUSH_SPERRE_S) -> None:
+        self.sperre_s = sperre_s
+        self.offsets: dict[str, int] = {}
+        self.zuletzt: dict[str, float] = {}
+        self.aufgelaufen: dict[str, int] = {}
+
+    def baseline(self, root: Path) -> None:
+        """Bestand beim Start NICHT melden — nur, was danach dazukommt."""
+        try:
+            for d in root.iterdir():
+                p = d / ereignisse.DATEI
+                if d.is_dir() and p.exists():
+                    self.offsets[d.name] = p.stat().st_size
+        except OSError:
+            pass
+
+    def entscheide(self, agent: str, probleme: list[dict[str, Any]],
+                   jetzt: float) -> dict[str, Any] | None:
+        """Rein: aus neuen Problem-Ereignissen eines Agenten eine Meldung machen
+        — oder None (Sperre aktiv → nur zählen)."""
+        if not probleme:
+            return None
+        stets = any(e.get("art") in ereignisse.STETS_PUSHEN for e in probleme)
+        letzte = self.zuletzt.get(agent)
+        if not stets and letzte is not None and jetzt - letzte < self.sperre_s:
+            self.aufgelaufen[agent] = self.aufgelaufen.get(agent, 0) + len(probleme)
+            return None
+        schwerstes = max(probleme, key=lambda e: (_RANG.get(e.get("schwere"), 0),
+                                                  str(e.get("zeit") or "")))
+        weitere = self.aufgelaufen.get(agent, 0) + len(probleme) - 1
+        self.aufgelaufen[agent] = 0
+        self.zuletzt[agent] = jetzt
+        text = str(schwerstes.get("text") or schwerstes.get("art"))
+        if weitere:
+            text += f" · +{weitere} weitere Ereignisse"
+        return {
+            "titel": f"{'⛔' if schwerstes.get('schwere') == 'fehler' else '⚠'} {agent}",
+            "text": text, "tag": f"ereignis-{agent}", "url": "/",
+            "art": "ereignis", "agent": agent,
+        }
+
+    def verarbeite(self, root: Path, agents: set[str], jetzt: float | None = None) -> list[dict[str, Any]]:
+        meldungen = []
+        jetzt = time.time() if jetzt is None else jetzt
+        for agent in sorted(agents):
+            try:
+                neue, offset = ereignisse.lies_ab(root, agent, self.offsets.get(agent, 0))
+            except ValueError:
+                continue
+            self.offsets[agent] = offset
+            probleme = [e for e in neue if e.get("schwere") in ("warnung", "fehler")]
+            m = self.entscheide(agent, probleme, jetzt)
+            if m:
+                meldungen.append(m)
+        return meldungen
+
+
+_ereignis_push = EreignisPush()
+
+
 def _agent_aus_pfad(pfad: str) -> str | None:
     try:
         rel = Path(pfad).relative_to(MAILBOXES)
@@ -207,7 +281,7 @@ async def _aenderungen() -> AsyncIterator[set[str]]:
                     if not agent_dir.is_dir():
                         continue
                     zeiten = []
-                    for unter in ("inbox", "inbox/.processing", "outbox"):
+                    for unter in ("inbox", "inbox/.processing", "outbox", ereignisse.DATEI):
                         try:
                             zeiten.append((agent_dir / unter).stat().st_mtime)
                         except OSError:
@@ -246,12 +320,15 @@ async def _watch_schleife() -> None:
     # Handys. Nur der allererste Lauf setzt sie; Neustarts erben den Stand.
     if _letzter_stand is None:
         _letzter_stand = await asyncio.to_thread(lies_snapshot, MAILBOXES)
+        _ereignis_push.baseline(MAILBOXES)
     alt = _letzter_stand
     async for betroffene in _aenderungen():
         broadcaster.publish({"type": "mailbox", "agents": sorted(betroffene)})
         try:
             neu = await asyncio.to_thread(lies_snapshot, MAILBOXES)
-            for m in neue_meldungen(alt, neu):
+            meldungen = neue_meldungen(alt, neu)
+            meldungen += await asyncio.to_thread(_ereignis_push.verarbeite, MAILBOXES, set(betroffene))
+            for m in meldungen:
                 await push.sende_an_alle(
                     m["titel"],
                     m["text"],

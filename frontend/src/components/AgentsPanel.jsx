@@ -14,6 +14,7 @@ import { bestaetigen, melden } from "./Dialog";
 import RollenDialog from "./RollenDialog";
 import ZeitplaeneDialog from "./ZeitplaeneDialog";
 import { t } from "../sprache";
+import Ereignisse from "./Ereignisse";
 
 const STATUS_COLORS = {
   pending: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
@@ -545,7 +546,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                   title={logOffen ? t("Log einklappen") : t("Fortschritts-Log anzeigen")}
                   className="shrink-0 rounded px-1 text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
                 >
-                  {logOffen ? "▾" : "▸"} {t("Log ({0})", autoInfo.log.length)}
+                  {logOffen ? "▾" : "▸"} {t("Roh-Log ({0})", autoInfo.log.length)}
                 </button>
               )}
             </div>
@@ -571,6 +572,23 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
             )}
           </div>
         )}
+        {/* Ereignis-Zeitleiste (Beobachtbarkeit): Läufe, Sitzungen,
+            Verweigerungen, Fehlserien — dauerhaft, nicht nur der Roh-Log. */}
+        <Ereignisse
+          agent={selected}
+          onTask={(id) => {
+            setOffen((s) => {
+              const n = new Set(s);
+              n.add(`outbox/${id}`);
+              return n;
+            });
+            const tk = (tasks?.outbox || []).find((x) => x.task_id === id);
+            if (tk?.gekuerzt && !voll[`${selected}/${id}`])
+              getOutboxEintrag(selected, id)
+                .then((r) => setVoll((v) => ({ ...v, [`${selected}/${id}`]: r })))
+                .catch(() => {});
+          }}
+        />
         {/* Verbrauchszähler (St.3): aus den result-Events der Läufe, vom
             Server aus der Outbox aggregiert. Antippen zeigt die letzten
             7 Tage. Rot = selbst gesetzte 5-h-Schwelle erreicht (Settings) —

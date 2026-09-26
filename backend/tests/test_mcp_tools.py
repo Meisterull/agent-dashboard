@@ -156,6 +156,43 @@ def test_watcher_traegt_laufdaten_nach_eigenabschluss_nach(ws: Path) -> None:
     assert len(responses) == 1, responses
 
 
+def test_ereignisse_beim_abschluss_und_agent_events(ws: Path) -> None:
+    """Beobachtbarkeit: complete_task hinterlässt Ereignisse (Lauf, Sitzung,
+    Verweigerung) in mailboxes/<agent>/ereignisse.jsonl, das Nachtragen
+    (Issue #43) ergänzt sie, und agent_events liest sie — nur lesend."""
+    mcp_server = _mcp_server_laden(ws)
+    (ws / "mailboxes" / "worker").mkdir(parents=True)
+    (ws / "mailboxes" / "chef").mkdir(parents=True)
+    t = _tools(mcp_server)
+    gesendet = t["send_task"](to="worker", instruction="baue Z", sender="chef")
+    t["claim_task"](task_id=gesendet["id"], agent="worker")
+    # Kind schließt ohne lauf ab, Watcher trägt nach
+    t["complete_task"](task_id=gesendet["id"], result="ok", agent="worker")
+    t["complete_task"](task_id=gesendet["id"], result="ok", agent="worker",
+                       verbrauch={"input_tokens": 2000, "total_cost_usd": 0.05},
+                       lauf={"sitzung": "neu", "sitzung_grund": "Kontext 164k über Grenze 150k",
+                             "kontext": 164274, "verweigert": [{"tool": "Bash", "eingabe": "x"}]})
+    datei = ws / "mailboxes" / "worker" / "ereignisse.jsonl"
+    assert datei.exists(), "Ereignis-Log fehlt"
+    alle = t["agent_events"](agent="worker", limit=50)
+    arten = [e["art"] for e in alle["eintraege"]]
+    # neueste zuerst: verweigert, sitzung, lauf(nachgetragen), lauf
+    assert arten == ["verweigert", "sitzung", "lauf", "lauf"], arten
+    assert alle["eintraege"][1]["schwere"] == "warnung", alle["eintraege"][1]   # Kontext-Neustart
+    assert alle["eintraege"][2]["details"]["kosten"] == 0.05, alle["eintraege"][2]
+    assert all(e["task_id"] == gesendet["id"] for e in alle["eintraege"])
+    probleme = t["agent_events"](agent="worker", nur_probleme=True)
+    assert [e["art"] for e in probleme["eintraege"]] == ["verweigert", "sitzung"], probleme
+    nur_lauf = t["agent_events"](agent="worker", art="lauf", limit=1)
+    assert len(nur_lauf["eintraege"]) == 1 and nur_lauf["mehr"] is True, nur_lauf
+    # unbekannter Agent → Fehler, kein Crash
+    assert "error" in t["agent_events"](agent="niemand"), "unbekannter Agent muss Fehler liefern"
+    # gebundener Kanal: agent weglassen = ich selbst, fremder Name = ScopeError
+    gebunden = _tools(mcp_server, identity="worker", allowed={"agent_events"})
+    assert gebunden["agent_events"]()["agent"] == "worker"
+    assert "error" in gebunden["agent_events"](agent="chef")
+
+
 def test_doppelter_claim_meldet_fehler(ws: Path) -> None:
     """H2: der zweite Claimer bekommt einen Fehler, keinen Auftrag."""
     mcp_server = _mcp_server_laden(ws)
@@ -304,6 +341,7 @@ def test_kein_tool_blockiert_den_loop(ws: Path) -> None:
 def main() -> None:
     tests = [test_project_ueberlebt_den_mcp_weg,
              test_watcher_traegt_laufdaten_nach_eigenabschluss_nach,
+             test_ereignisse_beim_abschluss_und_agent_events,
              test_doppelter_claim_meldet_fehler,
              test_unbekannter_empfaenger_wird_abgelehnt,
              test_antwort_raeumt_die_frage_ab,
