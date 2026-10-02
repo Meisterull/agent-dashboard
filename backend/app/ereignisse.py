@@ -19,7 +19,8 @@ In-Process-Hook des API-Prozesses.
 Eintrag:
   zeit      ISO-Zeit (lokal, mit Offset)
   art       lauf | sitzung | verweigert | timeout | fehlserie | watcher_abriss |
-            watcher_start | weckruf | send_file | integration
+            watcher_start | weckruf | send_file | integration |
+            rueckreihung | aufgegeben (Pflege, Issue #47)
   schwere   info | warnung | fehler
   task_id   optional
   text      eine Zeile für Menschen
@@ -39,9 +40,14 @@ SCHWEREN = ("info", "warnung", "fehler")
 ARTEN = frozenset({
     "lauf", "sitzung", "verweigert", "timeout", "fehlserie", "watcher_abriss",
     "watcher_start", "weckruf", "send_file", "integration",
+    # Pflege (Issue #47): `rueckreihung` = Vorwarnung, ein gebündelter Eintrag
+    # je Runde; `aufgegeben` = die Pflege hat einen Task als Fehlschlag
+    # abgeschlossen (statt eines `lauf`-Eintrags — gelaufen ist da niemand).
+    "rueckreihung", "aufgegeben",
 })
-# Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik.
-STETS_PUSHEN = frozenset({"fehlserie", "watcher_abriss"})
+# Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
+# oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).
+STETS_PUSHEN = frozenset({"fehlserie", "watcher_abriss", "aufgegeben"})
 MAX_ZEILEN = 5000          # Deckel neben der Zeit-Rotation (gesprächige Agenten)
 MAX_ZEILE_BYTES = 3500     # unter PIPE_BUF (4096): das Anhängen bleibt atomar
 STANDARD_LIMIT = 50
@@ -258,7 +264,19 @@ def lauf_ereignisse(root: str | os.PathLike, agent: str, task_id: str, status: s
     tokens = _tokens(verbrauch)
     kosten = _kosten(verbrauch)
     dauer = _dauer_sekunden(claimed_at, responded_at)
-    if not nachgetragen or tokens or kosten is not None or lauf.get("kontext"):
+    # Ohne Lauf-Daten vom Watcher (interaktive Sitzung, Issue #47) ist der
+    # Abstand Claim → Abschluss keine Laufzeit, sondern eine LIEGEZEIT samt
+    # Nacht: „abgeschlossen · lag 765 min" statt „Lauf done · 765 min".
+    handbetrieb = (not nachgetragen and not lauf and not tokens and kosten is None)
+    if handbetrieb:
+        teile = ["abgeschlossen" if status == "done" else f"abgeschlossen ({status})"]
+        if dauer is not None:
+            teile.append(f"lag {_dauer_text(dauer)}")
+        geschrieben.append(schreibe(
+            root, agent, "lauf", " · ".join(teile),
+            schwere="fehler" if status == "error" else "info", task_id=task_id,
+            status=status, liegezeit=dauer, handbetrieb=True))
+    elif not nachgetragen or tokens or kosten is not None or lauf.get("kontext"):
         teile = [status]
         if dauer is not None:
             teile.append(_dauer_text(dauer))

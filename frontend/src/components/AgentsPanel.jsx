@@ -26,6 +26,10 @@ const STATUS_COLORS = {
   gesperrt: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
 };
 
+// So oft reiht die Pflege einen verstummten Watcher-Lauf zurück, bevor sie den
+// Task aufgibt (Mailbox.requeue_stale, max_versuche).
+const PFLEGE_MAX_VERSUCHE = 3;
+
 function StatusBadge({ status }) {
   return (
     <span
@@ -670,6 +674,16 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                           className="rounded bg-indigo-100 px-1 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
                         >
                           {tk.rolle}
+                        </span>
+                      )}
+                      {tk.requeues > 0 && (
+                        // #47: sichtbar, BEVOR der letzte Versuch verbraucht ist —
+                        // gezählt werden nur verstummte Watcher-Läufe (#46).
+                        <span
+                          title={t("{0}× von der Pflege zurückgereiht (Watcher-Lauf verstummt) — nach {1} wird der Task aufgegeben", tk.requeues, PFLEGE_MAX_VERSUCHE)}
+                          className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                        >
+                          ↩ {tk.requeues}/{PFLEGE_MAX_VERSUCHE}
                         </span>
                       )}
                       {tk.nicht_vor && new Date(tk.nicht_vor) > new Date() && (

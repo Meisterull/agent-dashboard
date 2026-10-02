@@ -1467,7 +1467,10 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 task_id = env.get("id") or env.get("task_id")
                 if not task_id:
                     continue
-                claimed = client.call("claim_task", {"task_id": task_id})
+                # `watcher` (Issue #46): nur gekennzeichnete Watcher-Ansprüche
+                # zählen beim Server für die Aufgabe-Grenze der Pflege. Ein
+                # älterer Server ignoriert das unbekannte Argument.
+                claimed = client.call("claim_task", {"task_id": task_id, "watcher": True})
                 if not isinstance(claimed, dict) or claimed.get("error"):
                     continue  # schon von jemand anderem beansprucht
                 instruction = claimed.get("instruction") or env.get("text") or ""
@@ -1504,7 +1507,8 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                         herz["zuletzt"] = time.monotonic()
                         try:
                             if client is not None:
-                                client.call("claim_task", {"task_id": _tid, "erneut": True})
+                                client.call("claim_task", {"task_id": _tid, "erneut": True,
+                                                           "watcher": True})
                         except Exception:  # noqa: BLE001 — nur ein Lebenszeichen
                             pass
 
@@ -1657,6 +1661,7 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
             # >3 h Inbox-Liegezeit (bei nicht_vor der Normalfall) gälte sofort
             # als verwaist und liefe doppelt.
             task["claimed_at"] = now()
+            task["claim_von"] = "watcher"   # Issue #46, s. Mailbox.claim_task
             task["status"] = "running"
             try:
                 atomic_write_json(claimed, task)

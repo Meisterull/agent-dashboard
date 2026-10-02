@@ -149,6 +149,11 @@ def _log_zeit() -> str:
 
 PFLEGE_INTERVALL = float(os.environ.get("MAILBOX_PFLEGE_INTERVALL", "900"))
 STALE_TASK_ALTER = float(os.environ.get("MAILBOX_STALE_ALTER", "10800"))  # 3 h
+# Issue #46: Tasks, die eine INTERAKTIVE Sitzung beansprucht hat, gelten erst
+# nach dieser längeren Frist als verwaist (eine Sitzung beansprucht den Stapel
+# und baut dann stundenlang ohne Dashboard-Kontakt, nachts arbeitet niemand) —
+# und werden nie aufgegeben. Die 3 h oben gelten für Watcher-Ansprüche.
+STALE_SITZUNG_ALTER = float(os.environ.get("MAILBOX_STALE_ALTER_SITZUNG", "86400"))  # 24 h
 ARCHIV_TAGE = float(os.environ.get("MAILBOX_ARCHIV_TAGE", "30"))
 # Issue #21: alte response/answer wandern auch aus der INBOX ins Archiv — sonst
 # wächst sie bei einem Agenten, der nie mark_read ruft, unbegrenzt weiter (und
@@ -171,7 +176,7 @@ async def _mailbox_pflege_schleife() -> None:
         try:
             bericht = await asyncio.to_thread(
                 mailbox_pflege, MAILBOXES, STALE_TASK_ALTER, ARCHIV_TAGE,
-                INBOX_TAGE
+                INBOX_TAGE, STALE_SITZUNG_ALTER
             )
         except Exception as exc:  # noqa: BLE001 — Pflege darf die API nie killen
             print(f"{_log_zeit()} [pflege] Fehler: {exc}", flush=True)

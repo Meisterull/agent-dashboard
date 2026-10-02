@@ -182,6 +182,8 @@ export default {
     "catch up — one missed slot runs late once everything is back",
   "Auftrag": "Instruction",
   "geplant — läuft nicht vor {0}": "scheduled — will not run before {0}",
+  "{0}× von der Pflege zurückgereiht (Watcher-Lauf verstummt) — nach {1} wird der Task aufgegeben":
+    "requeued {0}× by maintenance (watcher run went silent) — the task is given up after {1}",
 
   // Verbrauchszähler im AgentsPanel (St.3)
   "heute: {0} Tasks · {1} Tok · {2} $": "today: {0} tasks · {1} tok · ${2}",

@@ -54,6 +54,8 @@ from datetime import datetime
 from app import ereignisse
 from app.mailbox import (
     AGENT_NAME_RE,
+    CLAIM_SITZUNG,
+    CLAIM_WATCHER,
     AlreadyClaimed,
     Mailbox,
     Task,
@@ -109,6 +111,25 @@ def _bekannte_agenten() -> list[str]:
     except Exception:  # noqa: BLE001 — kaputte agents.yaml darf Tools nicht killen
         pass
     return sorted(namen)
+
+
+def _darf_ereignisse_lesen(identity: str, ziel: str) -> bool:
+    """Lesendes Recht eines gebundenen Kanals auf das Ereignis-Log eines
+    anderen Agenten (Issue #47): agents.yaml `darf_ereignisse_lesen: [a, b]`
+    oder `"*"` am Agenten bzw. in seiner connection. Default: nein."""
+    try:
+        eintrag = next((a for a in load_agents_full() if a.get("name") == identity), None)
+    except Exception:  # noqa: BLE001 — kaputte agents.yaml gibt nichts frei
+        return False
+    if not eintrag:
+        return False
+    for quelle in (eintrag.get("darf_ereignisse_lesen"),
+                   (eintrag.get("connection") or {}).get("darf_ereignisse_lesen")):
+        if quelle is None:
+            continue
+        erlaubt = [quelle] if isinstance(quelle, str) else list(quelle)
+        return "*" in erlaubt or ziel in erlaubt
+    return False
 
 
 def _pruefe_empfaenger(to: str) -> dict | None:
@@ -335,10 +356,21 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             selbst), `seit` = ISO-Zeit, `art` = eine Art oder kommagetrennt,
             `nur_probleme` = nur warnung/fehler. Nur lesend.
             """
-            try:
-                wer = ident(agent, "agent")
-            except ScopeError as exc:
-                return {"error": str(exc)}
+            # Issue #47: ein gebundener Kanal darf das Log eines ANDEREN nur
+            # lesen, wenn agents.yaml es freigibt (`darf_ereignisse_lesen`) —
+            # sonst käme ein Agent, den der Mensch bittet, bei einem anderen
+            # nachzusehen, nur per `docker exec` an dessen Zeitleiste.
+            if identity is not None and agent and agent != identity:
+                if not _darf_ereignisse_lesen(identity, agent):
+                    return {"error": f"Dieser Kanal ist an '{identity}' gebunden — das "
+                                     f"Ereignis-Log von '{agent}' ist nicht freigegeben "
+                                     f"(agents.yaml: darf_ereignisse_lesen)."}
+                wer = agent
+            else:
+                try:
+                    wer = ident(agent, "agent")
+                except ScopeError as exc:
+                    return {"error": str(exc)}
             unbekannt = _pruefe_empfaenger(wer)
             if unbekannt:
                 return unbekannt
@@ -518,7 +550,8 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
 
     if on("claim_task"):
         @werkzeug
-        def claim_task(task_id: str, agent: str | None = None, erneut: bool = False) -> dict:
+        def claim_task(task_id: str, agent: str | None = None, erneut: bool = False,
+                       watcher: bool = False) -> dict:
             """Einen Task aus der eigenen Inbox annehmen, BEVOR du daran arbeitest.
 
             Markiert ihn als "in Arbeit" (inbox → .processing) — im Dashboard sichtbar,
@@ -526,7 +559,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             auf einem gebundenen Kanal weglassen). Danach: Aufgabe erledigen und mit
             complete_task abschließen. Ein bereits laufender Task wird NICHT erneut
             vergeben; arbeitest du selbst daran und brauchst den Auftragstext noch
-            einmal, dann `erneut=True`.
+            einmal, dann `erneut=True`. `watcher` setzt nur der Automatik-Watcher.
             """
             try:
                 wer = ident(agent, "agent")
@@ -534,7 +567,11 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 return {"error": str(exc)}
             _log(kanal, "claim_task", agent=wer, task=task_id)
             try:
-                env = Mailbox(MAILBOX_ROOT, wer).claim_task(task_id, erneut=erneut)
+                # Issue #46: nur gekennzeichnete Watcher-Ansprüche zählen für
+                # die Aufgabe-Grenze der Pflege; alles andere ist eine Sitzung.
+                env = Mailbox(MAILBOX_ROOT, wer).claim_task(
+                    task_id, erneut=erneut,
+                    von=CLAIM_WATCHER if watcher else CLAIM_SITZUNG)
             except AlreadyClaimed as exc:
                 return {
                     "error": str(exc) + ". Falls du selbst daran arbeitest: "
@@ -617,6 +654,14 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             # Issue #43: schließt das Claude-Kind seinen eigenen Task selbst ab,
             # kommt der Watcher mit lauf/verbrauch/log als Zweiter — die
             # fehlenden Felder werden dann nachgetragen statt verworfen.
+            # Issue #46: hat die PFLEGE den Task aufgegeben, während der
+            # Bearbeiter in Wahrheit noch daran saß, ist dies das echte
+            # Ergebnis — es ersetzt die Abbruch-Antwort und wird neu zugestellt,
+            # statt in `already: true` zu verschwinden.
+            nach_aufgabe = False
+            if not offen and box.nach_aufgabe_oeffnen(task_id):
+                offen = nach_aufgabe = True
+                _log(kanal, "complete_task", agent=wer, task=task_id, status="nach-aufgabe")
             if not offen:
                 if (box.outbox / f"{task_id}-response.json").exists():
                     ergaenzt = box.response_ergaenzen(
@@ -651,7 +696,10 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             box.write_response(task_id, result, status, log,
                                verbrauch if isinstance(verbrauch, dict) else None,
                                lauf if isinstance(lauf, dict) else None)
-            return {"task_id": task_id, "agent": wer, "status": status}
+            antwort = {"task_id": task_id, "agent": wer, "status": status}
+            if nach_aufgabe:
+                antwort["ersetzt_aufgabe"] = True
+            return antwort
 
     # --- Agent-↔-Agent-Kommunikation ----------------------------------------
 

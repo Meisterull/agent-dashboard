@@ -55,6 +55,7 @@ const text = (page) => page.$eval("body", (b) => b.innerText);
   pruefe("Absender steht dabei", t.includes("deverp"));
   pruefe("Rückfrage erscheint als eigene Art", t.includes("Rückfrage"));
   pruefe("Tasks bleiben eigener Abschnitt", /Inbox \(1\)/.test(t));
+  pruefe("Rückreih-Zähler steht am Task (#47)", t.includes("↩ 2/3"));
 
   // Lauf-Daten des Watchers (Issues #36–#39, #41): sichtbar OHNE das
   // log-Feld öffnen zu müssen — am Handy war das praktisch unsichtbar.

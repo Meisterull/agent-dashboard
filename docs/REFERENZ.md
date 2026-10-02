@@ -164,7 +164,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 - Task-Lebenszyklus (Agent-Seite): `claim_task(task_id, agent?, erneut?)` (→ "in Arbeit"; ein bereits laufender Task wird **nicht** erneut vergeben — `erneut=True` holt dem eigenen Bearbeiter seinen Auftragstext zurück) · `complete_task(task_id, result, status?, log?, agent?)` — das Gegenstück zu `send_task`: legt das Ergebnis als `kind="response"` in die Inbox des Auftraggebers (`sender` des Tasks), archiviert es in der Outbox und räumt den Task ab; ein wiederholter Aufruf ist kein Fehler (`already: true`), damit eine verlorene Antwort erneut abgeliefert werden kann
 - Agent-↔-Agent: `send_message(to, text, sender?)` · `ask(to, question, sender?, reply_to?)` · `answer(to, text, sender?, reply_to)` (archiviert die beantwortete Frage gleich mit) · `inbox(agent, kind?)` · `mark_read(envelope_id, agent?)` (Gelesenes archivieren, sonst kommt es bei jedem `inbox()` wieder). Empfänger müssen bekannt sein (Mailbox oder `agents.yaml`) — sonst Fehler statt Geister-Mailbox
 - Projektdateien: `write_project_file(...)` · `read_project_file(...)`
-- Beobachtbarkeit: `agent_events(agent?, seit?, art?, limit?, nur_probleme?)` — das Ereignis-Log eines Agenten lesen (nur lesend; auf dem gebundenen Kanal ohne `agent` = man selbst)
+- Beobachtbarkeit: `agent_events(agent?, seit?, art?, limit?, nur_probleme?)` — das Ereignis-Log eines Agenten lesen (nur lesend; auf dem gebundenen Kanal ohne `agent` = man selbst; ein FREMDES Log nur mit `darf_ereignisse_lesen: [name, …]` bzw. `"*"` am eigenen Eintrag in `agents.yaml`)
 - Dateiaustausch: `send_file(to, paths, note?, source?)` — Dateien der EIGENEN Maschine in den Austausch-Ordner einer anderen legen (SFTP von Platte zu Platte, der Inhalt läuft nicht durchs Modell; max. 20 Dateien, je `AUSTAUSCH_MAX_MB`); gebundener Kanal: `source` = eigene Maschine (fremde Werte abgelehnt), freier Kanal: `source` Pflicht; Ziel braucht einen eingeschalteten Ordner, nur SSH-Maschinen; Rückgabe `zugestellt`/`fehler` je Datei, der Empfänger bekommt eine `message` mit den Zielpfaden. Nicht in der Grundmenge der Token-Agenten
 - Integrationen (config-getrieben): `list_integrations()` · `call_integration(name, method, path, body?)` — Aufruf-Timeout `INTEGRATION_TIMEOUT` (Default 60 s, je Integration per `timeout:`); lange Vorgänge asynchron anstoßen (Job-ID zurück, Status pollen) statt das Timeout hochzudrehen
 
@@ -234,8 +234,10 @@ Warnungen gelb, Fehler rot, „nur Probleme", „mehr laden"; ein Eintrag mit Ta
 klappt den Task auf), das Roh-Log des Watchers bleibt daneben aufklappbar.
 Web-Push: Warnungen und Fehler gehen gebündelt aufs Handy — höchstens eine
 Meldung je Agent alle 10 Minuten (`EREIGNIS_PUSH_SPERRE_S`), weitere werden
-gezählt („+3 weitere Ereignisse"); Fehlserie und Watcher-Abriss durchbrechen
-die Sperre. Der Bestand beim Start wird nie gemeldet. Per MCP liest
+gezählt („+3 weitere Ereignisse"); Fehlserie, Watcher-Abriss und ein von der
+Pflege aufgegebener Task durchbrechen die Sperre. Die Pflege schreibt je Runde
+EINEN Eintrag `rueckreihung` (welche Tasks, Zählerstand) und beim Aufgeben
+`aufgegeben` mit Grund; am Task im Panel steht der Zähler als „↩ 2/3". Der Bestand beim Start wird nie gemeldet. Per MCP liest
 `agent_events(...)` dieselbe Datei, damit der Orchestrator „was lief bei
 deverp zuletzt schief?" beantworten kann.
 

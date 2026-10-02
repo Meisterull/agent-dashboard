@@ -19,6 +19,9 @@ const ICON = {
   weckruf: "✉",
   send_file: "📤",
   integration: "🔌",
+  // Pflege (#47): Vorwarnung je Runde bzw. als Fehlschlag abgeschlossen
+  rueckreihung: "↩",
+  aufgegeben: "✖",
 };
 
 function zeit(iso) {

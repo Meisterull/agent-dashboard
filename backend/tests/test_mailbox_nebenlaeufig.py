@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from app.mailbox import AlreadyClaimed, Mailbox, Task, new_id, pflege
+from app.mailbox import CLAIM_WATCHER, AlreadyClaimed, Mailbox, Task, new_id, pflege
 
 
 def _task(root: Path, task_id: str, agent: str = "worker", sender: str = "chef",
@@ -52,7 +52,7 @@ def test_zweiter_claim_wird_abgelehnt(root: Path) -> None:
 def test_verwaisten_task_wieder_einreihen(root: Path) -> None:
     """M9: stirbt der Bearbeiter, muss der Task zurück in die Warteschlange."""
     mb = _task(root, "task-v")
-    mb.claim_task("task-v")
+    mb.claim_task("task-v", von=CLAIM_WATCHER)
 
     # Frisch beansprucht: nichts passiert
     assert mb.requeue_stale(3600)["requeued"] == []
@@ -85,7 +85,8 @@ def test_giftiger_task_wird_aufgegeben(root: Path) -> None:
     """M9: nach zu vielen Anläufen wird abgeschlossen statt ewig gekreist."""
     mb = _task(root, "task-g")
     for _ in range(4):
-        mb.claim_task("task-g", erneut=True)
+        # Nur WATCHER-Ansprüche zählen für die Aufgabe-Grenze (Issue #46).
+        mb.claim_task("task-g", erneut=True, von=CLAIM_WATCHER)
         p = mb.processing / "task-g.json"
         env = json.loads(p.read_text(encoding="utf-8"))
         env["claimed_at"] = "2020-01-01T00:00:00+01:00"

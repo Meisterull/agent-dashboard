@@ -51,6 +51,12 @@ VALID_STATUS = {"pending", "running", "done", "error", "needs_confirm"}
 # Default-Absender für Aufträge und Empfänger der Rückfragen, die wirklich
 # eine menschliche Entscheidung brauchen (Issue #22).
 ORCHESTRATOR = "orchestrator"
+# Wer einen Task beansprucht hat (Envelope-Feld `claim_von`, Issue #46).
+# Ohne das Feld (Anspruch vor dem Update) gilt der Task als Sitzungs-Anspruch.
+CLAIM_WATCHER = "watcher"
+CLAIM_SITZUNG = "sitzung"
+# Kennung im `log` einer von der Pflege geschriebenen Abbruch-Antwort.
+LOG_AUFGEGEBEN = "requeue-limit erreicht"
 
 # Agent-Namen werden roh in Pfade gejoint (root/<agent>/inbox) — ohne diese
 # Allowlist wäre `to="../.."` ein Path-Traversal aus dem Workspace heraus.
@@ -526,6 +532,7 @@ class Mailbox:
                 except FileNotFoundError:
                     continue
                 env["claimed_at"] = _now()
+                env["claim_von"] = CLAIM_WATCHER  # Issue #46, s. claim_task
                 try:
                     atomic_write_json(claimed, env)
                 except OSError:
@@ -583,8 +590,17 @@ class Mailbox:
                     lauf if "lauf" in ergaenzt else None, nachgetragen=True)
             return ergaenzt
 
-    def claim_task(self, task_id: str, erneut: bool = False) -> Optional[dict[str, Any]]:
+    def claim_task(self, task_id: str, erneut: bool = False,
+                   von: str = CLAIM_SITZUNG) -> Optional[dict[str, Any]]:
         """EINEN bestimmten Task beanspruchen (inbox → .processing).
+
+        `von` (Issue #46): `CLAIM_WATCHER` kennzeichnet den Anspruch eines
+        Watchers, alles andere ist eine interaktive Sitzung. Nur Watcher-
+        Ansprüche zählen für die Aufgabe-Grenze der Pflege — dort heißt
+        „wieder beansprucht und wieder verstummt" giftiger Task. Eine Sitzung
+        dagegen beansprucht den ganzen Stapel und baut dann stundenlang lokal:
+        ihr frischer Anspruch beweist, dass der Bearbeiter lebt, und setzt
+        den Zähler zurück.
 
         Der Anspruch ist EXKLUSIV: liegt der Task schon in .processing, wirft
         das AlreadyClaimed statt ihn erneut auszuliefern — sonst führen zwei
@@ -611,6 +627,11 @@ class Mailbox:
                 # Zeitstempel des Anspruchs: Grundlage für "verwaist?" und für
                 # die Fehlermeldung an einen zweiten Claimer.
                 env["claimed_at"] = _now()
+                if von == CLAIM_WATCHER:
+                    env["claim_von"] = CLAIM_WATCHER
+                else:
+                    env["claim_von"] = CLAIM_SITZUNG
+                    env.pop("requeues", None)
                 atomic_write_json(dst, env)
                 return env
             try:
@@ -810,21 +831,27 @@ class Mailbox:
         self, task_id: str, result: str, status: str = "done", log: str = "",
         verbrauch: dict[str, Any] | None = None,
         lauf: dict[str, Any] | None = None,
+        aufgegeben: str = "",
     ) -> Path:
         """Task abschließen: Response schreiben, zustellen, Task abräumen.
 
         Läuft unter dem Mailbox-Lock, weil Abschluss und Rückfragen-Parken
         (Issue #17) denselben Envelope anfassen. `verbrauch` (St.3) sind die
         usage-/Kosten-Felder des Laufs — der Zähler aggregiert sie aus der
-        Outbox.
+        Outbox. `aufgegeben` (Issues #46/#47): Grund, mit dem die PFLEGE den
+        Task abbricht — die Response trägt dann `aufgegeben: true` (ein
+        späterer echter Abschluss darf sie ersetzen, `nach_aufgabe_oeffnen`)
+        und im Ereignis-Log steht `aufgegeben` statt eines `lauf`-Eintrags.
         """
         with self._lock():
-            return self._write_response(task_id, result, status, log, verbrauch, lauf)
+            return self._write_response(task_id, result, status, log, verbrauch, lauf,
+                                        aufgegeben)
 
     def _write_response(
         self, task_id: str, result: str, status: str = "done", log: str = "",
         verbrauch: dict[str, Any] | None = None,
         lauf: dict[str, Any] | None = None,
+        aufgegeben: str = "",
     ) -> Path:
         task_id = _sichere_id(task_id, "Task-ID")  # P0-1
         if status not in VALID_STATUS:
@@ -865,6 +892,8 @@ class Mailbox:
         # „abgebrochen, fortsetzbar", statt dass es nur im log-Freitext steht.
         if lauf:
             response["lauf"] = dict(lauf)
+        if aufgegeben:
+            response["aufgegeben"] = True
         # Fehlschlag: Aufgabenbeschreibung mit in die Antwort nehmen — der
         # Auftraggeber muss nachvollziehen können, WORUM es ging (Issue #15).
         if status == "error" and task_env is not None:
@@ -897,6 +926,12 @@ class Mailbox:
                 # Issue #38: der Timeout-Grund gehört in die Meldung an den
                 # Auftraggeber (und in die Push-Zeile), nicht nur ins log.
                 envelope["hinweis"] = _timeout_hinweis(self.agent, task_id, lauf)
+            elif task_env.get("nach_aufgabe"):
+                # Issue #46: der Auftraggeber hat für diesen Task schon eine
+                # Abbruchmeldung der Pflege — dies ist das echte Ergebnis.
+                envelope["hinweis"] = (
+                    f"Nachgereichtes Ergebnis von {self.agent} zu {task_id} — "
+                    f"ersetzt die Abbruchmeldung der Pflege.")
             try:
                 Mailbox(self.root, to).post(envelope)
             except (ValueError, OSError):
@@ -929,12 +964,57 @@ class Mailbox:
         # Ereignis-Log (Beobachtbarkeit): der Lauf mit Dauer/Kosten/Kontext,
         # dazu Sitzung, Verweigerungen, Timeout — nur beim ERSTEN Abschluss
         # (task_env da), ein Wiederholungs-Abschluss ist kein neues Ereignis.
-        if task_env is not None:
+        if task_env is not None and aufgegeben:
+            # Issue #47: kein `lauf` — hier ist niemand gelaufen. Die „Dauer"
+            # wäre der Abstand vom letzten Anspruch bis zur Pflege und läse
+            # sich wie ein sechsstündiger Fehllauf.
+            ereignisse.schreibe(
+                self.root, self.agent, "aufgegeben",
+                f"von der Pflege aufgegeben: {aufgegeben}",
+                schwere="fehler", task_id=task_id, grund=aufgegeben)
+        elif task_env is not None:
             ereignisse.lauf_ereignisse(
                 self.root, self.agent, task_id, status,
                 task_env.get("claimed_at") or task_env.get("created_at"),
                 response["responded_at"], verbrauch, lauf)
         return target
+
+    def nach_aufgabe_oeffnen(self, task_id: str) -> bool:
+        """Einen von der Pflege aufgegebenen Task für den ECHTEN Abschluss
+        wieder öffnen (Issue #46).
+
+        Die Pflege gibt einen Task auf, an dem der Bearbeiter in Wahrheit noch
+        arbeitet — dessen späteres `complete_task` traf auf eine vorhandene
+        Response, endete in `already: true`, und das Ergebnis war weg; beim
+        Auftraggeber blieb „error". Trägt die Response `aufgegeben`, wandert
+        der Envelope aus `.failed/` zurück nach `.processing/` (Vermerk
+        `nach_aufgabe`), und der normale Abschluss ersetzt die Abbruch-Antwort
+        und stellt neu zu. True = geöffnet; False = keine Pflege-Aufgabe."""
+        task_id = _sichere_id(task_id, "Task-ID")  # P0-1
+        target = self.outbox / f"{task_id}-response.json"
+        with self._lock():
+            try:
+                response = json.loads(target.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                return False
+            if not isinstance(response, dict) or not response.get("aufgegeben"):
+                return False
+            quelle = self.failed / f"{task_id}.json"
+            try:
+                env = json.loads(quelle.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                env = None
+            if not isinstance(env, dict):
+                # .failed schon rotiert: das Nötigste steht in der Response.
+                env = {"task_id": task_id, "kind": "task",
+                       "sender": response.get("to") or ORCHESTRATOR,
+                       "instruction": response.get("instruction") or ""}
+            env["nach_aufgabe"] = True
+            env["status"] = "running"
+            env.pop("requeues", None)
+            atomic_write_json(self.processing / f"{task_id}.json", env)
+            quelle.unlink(missing_ok=True)
+            return True
 
     # --- Aufräumen / Wiederanlauf -------------------------------------------
 
@@ -1048,7 +1128,8 @@ class Mailbox:
         }
 
     def requeue_stale(
-        self, max_alter: float, max_versuche: int = 3
+        self, max_alter: float, max_versuche: int = 3,
+        max_alter_sitzung: float | None = None,
     ) -> dict[str, list[str]]:
         """Verwaiste Tasks aus .processing/ zurück in die Warteschlange.
 
@@ -1058,13 +1139,22 @@ class Mailbox:
         bleibt er unangetastet. Nach `max_versuche` vergeblichen Anläufen wird
         er als Fehlschlag abgeschlossen, damit ein giftiger Task nicht ewig
         zwischen Inbox und .processing kreist.
+
+        Issue #46 — aufgegeben wird nur, was ein WATCHER beansprucht hat
+        (`claim_von`). Eine interaktive Sitzung beansprucht den ganzen Stapel
+        und baut dann stundenlang ohne Dashboard-Kontakt; jede Nacht kostete
+        bisher einen Versuch, und nach der vierten Ruhephase meldete die
+        Pflege dem Auftraggeber einen Fehlschlag, den es nie gab. Sitzungs-
+        Ansprüche werden deshalb nur zurückgereiht (ohne Zähler, nie
+        aufgegeben) und erst nach der längeren Frist `max_alter_sitzung`.
         """
-        requeued: list[str] = []
-        aufgegeben: list[str] = []
+        grenze_sitzung = max_alter if max_alter_sitzung is None else max_alter_sitzung
+        requeued: dict[str, tuple[str, float]] = {}   # task_id -> (Zählerstand, Frist)
+        aufgegeben: dict[str, int] = {}               # task_id -> Ruhephasen
         # Issue #42: meldet sich der Agent noch (interaktive Sitzung arbeitet,
         # fragt nach, schreibt Nachrichten), ist KEIN Task von ihm verwaist.
         seit = self.sekunden_seit_lebenszeichen()
-        if seit is not None and seit < max_alter:
+        if seit is not None and seit < min(max_alter, grenze_sitzung):
             return {"requeued": [], "aufgegeben": []}
         with self._lock():
             for p, env in _lese_ordner(self.processing):
@@ -1072,49 +1162,87 @@ class Mailbox:
                     continue
                 if env.get("status") == "needs_confirm":
                     continue  # wartet auf eine Antwort, nicht verwaist
-                if _alter_sekunden(env, p) < max_alter:
+                watcher = env.get("claim_von") == CLAIM_WATCHER
+                grenze = max_alter if watcher else grenze_sitzung
+                if seit is not None and seit < grenze:
                     continue
-                versuche = int(env.get("requeues") or 0) + 1
+                if _alter_sekunden(env, p) < grenze:
+                    continue
                 task_id = env.get("task_id") or p.stem
-                if versuche > max_versuche:
-                    aufgegeben.append(task_id)
-                    continue
-                env["requeues"] = versuche
+                if watcher:
+                    versuche = int(env.get("requeues") or 0) + 1
+                    if versuche > max_versuche:
+                        aufgegeben[task_id] = versuche
+                        continue
+                    env["requeues"] = versuche
+                    stand = f"{versuche}/{max_versuche}"
+                else:
+                    stand = CLAIM_SITZUNG
                 env["status"] = "pending"
                 env.pop("claimed_at", None)
                 env.pop("zuletzt_aktiv", None)
+                env.pop("claim_von", None)
                 atomic_write_json(p, env)
                 try:
                     os.replace(p, self.inbox / p.name)
                 except FileNotFoundError:
                     continue
-                requeued.append(task_id)
+                requeued[task_id] = (stand, grenze)
         # Aufgeben heißt abschließen — außerhalb der Schleife, weil
         # write_response denselben Lock nimmt (bei uns re-entrant, aber die
         # Ordner-Iteration soll nicht unter der Hand verändert werden).
         # Nicht mehr lautlos (Issue #42): der Agent erfährt, dass sein Task
         # wieder in der Warteschlange liegt. `weckt: False` — die Notiz selbst
         # darf keinen Automatik-Lauf auslösen (Issue #36).
-        for task_id in requeued:
-            try:
-                self.post({
-                    "kind": "message", "sender": ORCHESTRATOR, "weckt": False,
-                    "text": (f"[Pflege] Dein Task {task_id} lag {max_alter / 3600:.0f} h "
-                             f"ohne Lebenszeichen in Arbeit und wurde zurück in deine "
-                             f"Inbox gereiht. Arbeitest du noch daran: "
-                             f"claim_task('{task_id}') erneut aufrufen."),
-                })
-            except (ValueError, OSError):
-                pass
-        for task_id in aufgegeben:
+        for task_id, (_stand, grenze) in requeued.items():
+            self._pflege_notiz(
+                f"[Pflege] Dein Task {task_id} lag {grenze / 3600:.0f} h "
+                f"ohne Lebenszeichen in Arbeit und wurde zurück in deine "
+                f"Inbox gereiht. Arbeitest du noch daran: "
+                f"claim_task('{task_id}') erneut aufrufen.")
+        if requeued:
+            # Issue #47: EIN gebündelter Eintrag je Runde — die Vorwarnung
+            # stand bisher nur als [pflege]-Zeile im Container-Log.
+            fristen = sorted({g for _s, g in requeued.values()})
+            letztes = ""
+            if seit is not None:
+                letztes = datetime.fromtimestamp(time.time() - seit).strftime("%H:%M")
+            ereignisse.schreibe(
+                self.root, self.agent, "rueckreihung",
+                (f"{len(requeued)} Task{'s' if len(requeued) != 1 else ''} zurückgereiht: "
+                 f"{fristen[0] / 3600:.0f} h ohne Lebenszeichen"
+                 + (f" (letztes {letztes})" if letztes else "")),
+                schwere="warnung",
+                tasks={t: s for t, (s, _g) in requeued.items()},
+                anzahl=len(requeued))
+        for task_id, versuche in aufgegeben.items():
+            grund = (f"{versuche}× länger als {max_alter / 3600:.0f} h ohne "
+                     f"Lebenszeichen in Arbeit")
             self.write_response(
                 task_id,
-                f"[Abgebrochen: {max_versuche}× ohne Ergebnis wieder aufgenommen — "
-                f"der Bearbeiter bricht offenbar reproduzierbar ab.]",
+                f"[Aufgegeben: lag {grund} — der Watcher-Lauf kommt offenbar "
+                f"nicht zu einem Ergebnis.]",
                 "error",
-                log="requeue-limit erreicht",
+                log=LOG_AUFGEGEBEN,
+                aufgegeben=grund,
             )
-        return {"requeued": requeued, "aufgegeben": aufgegeben}
+            # Auch der Bearbeiter erfährt es (Issue #46) — sonst arbeitet er
+            # an einem Task weiter, der im Dashboard schon gescheitert ist.
+            self._pflege_notiz(
+                f"[Pflege] Dein Task {task_id} wurde aufgegeben ({grund}); der "
+                f"Auftraggeber hat eine Fehlermeldung bekommen. Arbeitest du "
+                f"noch daran: complete_task('{task_id}', …) ersetzt sie durch "
+                f"dein Ergebnis.")
+        return {"requeued": list(requeued), "aufgegeben": list(aufgegeben)}
+
+    def _pflege_notiz(self, text: str) -> None:
+        """Notiz der Pflege in die eigene Inbox — `weckt: False`, sie darf
+        keinen Automatik-Lauf auslösen (Issue #36)."""
+        try:
+            self.post({"kind": "message", "sender": ORCHESTRATOR, "weckt": False,
+                       "text": text})
+        except (ValueError, OSError):
+            pass
 
     def aufraeumen(self, max_tage: float, inbox_tage: float = 0) -> int:
         """Alte Ablagen rotieren: .archive/, .failed/ und Outbox-Responses.
@@ -1178,7 +1306,7 @@ def alle_mailboxen(root: str | os.PathLike) -> list["Mailbox"]:
 
 def pflege(
     root: str | os.PathLike, stale_alter: float, archiv_tage: float,
-    inbox_tage: float = 0
+    inbox_tage: float = 0, stale_alter_sitzung: float | None = None,
 ) -> dict[str, Any]:
     """Periodische Mailbox-Pflege: verwaiste Tasks + alte Ablagen.
 
@@ -1186,12 +1314,15 @@ def pflege(
     nicht im Watcher: der Watcher ist genau der Prozess, der stirbt.
 
     `inbox_tage` reicht die Inbox-Rotation aus Issue #21 durch (nur alte
-    response/answer, siehe `Mailbox.aufraeumen`).
+    response/answer, siehe `Mailbox.aufraeumen`). `stale_alter_sitzung` ist
+    die längere Frist für Tasks, die eine interaktive Sitzung beansprucht hat
+    (Issue #46, siehe `Mailbox.requeue_stale`).
     """
     bericht: dict[str, Any] = {"requeued": [], "aufgegeben": [], "geloescht": 0}
     for box in alle_mailboxen(root):
         try:
-            ergebnis = box.requeue_stale(stale_alter)
+            ergebnis = box.requeue_stale(
+                stale_alter, max_alter_sitzung=stale_alter_sitzung)
             bericht["requeued"] += [f"{box.agent}/{t}" for t in ergebnis["requeued"]]
             bericht["aufgegeben"] += [f"{box.agent}/{t}" for t in ergebnis["aufgegeben"]]
             bericht["geloescht"] += box.aufraeumen(archiv_tage, inbox_tage)

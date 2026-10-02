@@ -411,6 +411,27 @@ docker compose up --build                      # nginx+api+mcp(+tunnel) via supe
   `inbox(kind="task")` zählt NICHT — sonst hielte ein neu gestarteter Watcher
   den Task seines abgestürzten Vorgängers ewig am Leben. Rückreihen schickt
   dem Agenten eine Notiz.
+  **Wer hat beansprucht (Issue #46):** der Envelope trägt `claim_von`
+  (`watcher` | `sitzung`). Der Watcher kennzeichnet seinen Anspruch
+  (`claim_task(…, watcher=True)`, Datei-Transport schreibt das Feld selbst),
+  alles andere ist eine interaktive Sitzung. NUR Watcher-Ansprüche zählen
+  (`requeues`) und werden nach 3 verstummten Läufen aufgegeben — dort heißt
+  „wieder beansprucht und wieder verstummt" giftiger Task. Sitzungs-Ansprüche
+  gelten erst nach `MAILBOX_STALE_ALTER_SITZUNG` (24 h) als verwaist, werden
+  nur zurückgereiht und nie aufgegeben; ein frischer Sitzungs-Anspruch setzt
+  den Zähler zurück (`erneut=True` ändert die Zuordnung nicht). Beim Aufgeben
+  bekommt auch der Bearbeiter eine Notiz, die Response trägt `aufgegeben:
+  true`, und ein späteres echtes `complete_task` ersetzt sie
+  (`Mailbox.nach_aufgabe_oeffnen`: Envelope aus `.failed/` zurück, normaler
+  Abschluss, neue response mit `hinweis` an den Auftraggeber — statt
+  `already: true`). Ereignis-Log dazu (Issue #47): `rueckreihung` (warnung,
+  EIN Eintrag je Runde, `details.tasks` mit Zählerstand) und `aufgegeben`
+  (fehler, in `STETS_PUSHEN`) statt eines `lauf`-Eintrags; ohne Lauf-Daten vom
+  Watcher heißt der Abschluss „abgeschlossen · lag 765 min" (`liegezeit`,
+  `handbetrieb`) statt „Lauf done · 765 min"; Abzeichen „↩ 2/3" am Task
+  (`PFLEGE_MAX_VERSUCHE` in AgentsPanel.jsx = `max_versuche`). Fremde
+  Ereignis-Logs liest ein gebundener Kanal nur mit `darf_ereignisse_lesen`
+  in agents.yaml. Tests: `tests/test_issues_46_47.py`.
   **Log + Polling (Issues #40/#41):** `[mcp]`/`[automatik]`/`[pflege]`-Zeilen
   tragen Zeitstempel; `ergebnis=fehler:<kurz>` auch bei `{"error": …}` als
   Rückgabewert (`fehler_im_ergebnis`); der leere Watcher-Poll loggt nicht

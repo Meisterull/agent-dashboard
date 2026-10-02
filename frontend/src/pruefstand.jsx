@@ -138,7 +138,8 @@ function fetchDoppel(url, opt = {}) {
   if (url.startsWith("/api/agents/PMNB029/tasks"))
     return json({
       agent: "PMNB029",
-      inbox: [{ task_id: "task-1", status: "pending", instruction: "bau das" }],
+      // requeues: zwei verstummte Watcher-Läufe → Abzeichen „↩ 2/3" (#47)
+      inbox: [{ task_id: "task-1", status: "pending", instruction: "bau das", requeues: 2 }],
       outbox: [antwortMitLauf],
       messages: nachrichten,
     });
