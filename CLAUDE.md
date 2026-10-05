@@ -53,6 +53,13 @@ backend/
                            requeue_stale/aufraeumen/pflege (Wartung, s.u.)
     files.py               pfad-sichere Datei-Ops (Dateibaum, Editor, Up-/Download)
     remote_files.py        SFTP-Datei-Ops auf den Agenten-PCs (/api/remote/…)
+    upload.py              gestreamter Datei-Upload (#48): je Datei eine Anfrage, Rumpf =
+                           Bytes (`?name=` bzw. `?datei=` bei /api/remote), stückweise
+                           in den Workspace oder per SFTP ins Ziel; Grenze
+                           `UPLOAD_MAX_MB` (5120, 0 = keine) — dieselbe Variable setzt
+                           entrypoint.sh in die nginx-Vorlage (nur die zwei
+                           Upload-Routen, ohne Zwischenpuffer); Abbruch räumt das
+                           Bruchstück weg; multipart `files` geht weiter
     austausch.py           Austausch-Ordner je Maschine (21.09.2026): kopiert per
                            SFTP von Maschine A nach <ordner>/von-<A>/ auf B —
                            am Modell vorbei, also auch Binäres/Großes. Schalter

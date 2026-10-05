@@ -342,7 +342,16 @@ async def upload_file(agent_name: str, directory: str, filename: str, src) -> di
                         break
                     await f.write(chunk)
                     written += len(chunk)
-        except Exception as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001
+            # Abgebrochen (Grenze, Verbindung weg, Abbrechen im Browser, #48):
+            # kein Bruchstück unter dem Zielnamen liegen lassen — eine halbe
+            # 2-GB-Datei sieht im Listing aus wie eine fertige.
+            try:
+                await sftp.remove(dest)
+            except Exception:  # noqa: BLE001
+                pass
+            if not isinstance(exc, Exception):
+                raise
             raise RemoteFilesError(f"Upload fehlgeschlagen: {dest} ({exc})") from exc
     return {"path": dest, "size": written}
 

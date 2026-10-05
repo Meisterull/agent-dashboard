@@ -146,6 +146,7 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `app/weckruf.py` | Automatik-Weckruf: bündelt ungelesene Nachrichten/Ergebnisse/Rückfragen je Absender zu einem Task (`automatik_weckt`), mit Schleifenschutz |
 | `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
 | `app/remote_files.py` | SFTP-Datei-Ops auf den Agenten-PCs (`/api/remote/…`) |
+| `app/upload.py` | Gestreamter Datei-Upload (#48): je Datei eine Anfrage, deren Rumpf die Bytes sind; Grenze `UPLOAD_MAX_MB` (5120 MB, `0` = keine) für nginx und Backend; abgebrochene Uploads hinterlassen kein Bruchstück |
 | `app/austausch.py` | Austausch-Ordner je Maschine: kopiert per SFTP von Maschine A nach `<ordner>/von-<A>/` auf Maschine B (nie überschreiben, `.teil` + Umbenennen, Deckel `AUSTAUSCH_MAX_MB`), Schalter in `settings.json` → `austausch`, Benachrichtigung als `message` (`/api/austausch*`, MCP `send_file`) |
 | `app/ssh_connect.py` | zentraler SSH-Connect mit Host-Key-Pinning (TOFU, `known_hosts`) |
 | `app/mcp_tunnel.py` | Reverse-SSH-Tunnel: gebundene MCP-Kanäle auf die Agenten-PCs |
@@ -448,7 +449,8 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `POST` | `/api/chat/stream/{id}/cancel` | laufenden Stream-Turn anhalten |
 | `GET`/`DELETE` | `/api/chat/sessions` · `/api/chat/{id}` | Session-Liste · History lesen/löschen |
 | `PUT`/`DELETE` | `/api/files/content` · `/api/files` | Editor-Speichern · Datei/Ordner löschen |
-| `POST` | `/api/files/upload` · `/mkdir` · `/rename` | Upload (multipart) · anlegen · umbenennen |
+| `POST` | `/api/files/upload` · `/mkdir` · `/rename` | Upload (`?path=&name=`, Rumpf = Bytes, gestreamt; multipart `files` geht weiter) · anlegen · umbenennen |
+| `GET` | `/api/upload/grenze` | Grenze je hochgeladener Datei in MB (`UPLOAD_MAX_MB`, `0` = keine) |
 | `GET` | `/api/files/download` · `/raw` | herunterladen · inline anzeigen/abspielen |
 | `*` | `/api/remote/{name}/…` | dieselben Datei-Ops auf Agenten-PCs via SFTP |
 | `GET` | `/api/remote/{name}/suche?path=&q=&inhalt=` | Suche auf der Maschine per `find`/`grep` über die SSH-Verbindung (Begriff nur geprüft + `shlex.quote` in die Zeile; Windows: `dir /s /b` mit Zeichen-Whitelist, keine Inhaltssuche); braucht einen SSH-Key, der Befehle ausführen darf |

@@ -178,20 +178,112 @@ export const deletePath = (source, path) =>
         "DELETE",
       );
 
-export async function uploadFiles(source, path, fileList) {
-  const url =
-    source === "ws"
-      ? `/api/files/upload?path=${encodeURIComponent(path)}`
-      : `/api/remote/${encodeURIComponent(source)}/upload?path=${encodeURIComponent(path)}`;
-  const form = new FormData();
-  for (const f of fileList) form.append("files", f);
-  const res = await fetch(url, { method: "POST", body: form });
-  if (!res.ok) {
-    notifyUnauthorized(res);
-    const detail = await res.json().catch(() => ({}));
-    throw new Error(detail.detail || `HTTP ${res.status}`);
+// Upload (Issue #48): je Datei EINE Anfrage, der Rumpf sind die rohen Bytes —
+// nginx reicht sie ungepuffert durch, das Backend streamt ins Ziel. So gilt
+// die Grenze je Datei (nicht für die Summe einer Auswahl), ein Fehler kostet
+// nur eine Datei, und XMLHttpRequest liefert Fortschritt (fetch kann das beim
+// Senden nicht).
+let uploadGrenze = null;
+/** Grenze je Datei in MB, 0 = keine. Einmal geholt; ohne Antwort: keine Vorprüfung. */
+export const getUploadGrenze = () =>
+  (uploadGrenze ??= jget("/api/upload/grenze").catch(() => {
+    uploadGrenze = null;
+    return { max_mb: 0 };
+  }));
+
+export function dateiGroesse(n) {
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function ladeEineDatei(url, datei, { onProgress, signal }, maxMb) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const abbruch = () => xhr.abort();
+    const fertig = (fn, wert) => {
+      signal?.removeEventListener("abort", abbruch);
+      fn(wert);
+    };
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => onProgress?.(e.loaded);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          fertig(resolve, JSON.parse(xhr.responseText));
+        } catch {
+          fertig(reject, new Error(`HTTP ${xhr.status}`));
+        }
+        return;
+      }
+      if (xhr.status === 401) window.dispatchEvent(new CustomEvent("auth:required"));
+      // 413 kommt meist von nginx (HTML-Seite, kein JSON) — die Grenze selbst
+      // nennen statt nur die Statuszahl.
+      if (xhr.status === 413) {
+        fertig(
+          reject,
+          new Error(
+            maxMb
+              ? t("„{0}“ ist zu groß ({1}) — erlaubt sind {2} MB je Datei.", datei.name, dateiGroesse(datei.size), maxMb)
+              : t("„{0}“ ist zu groß ({1}) — der Server nimmt sie nicht an.", datei.name, dateiGroesse(datei.size)),
+          ),
+        );
+        return;
+      }
+      let detail = "";
+      try {
+        detail = JSON.parse(xhr.responseText).detail || "";
+      } catch {
+        /* keine JSON-Antwort */
+      }
+      fertig(reject, new Error(detail || `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => fertig(reject, new Error(t("Upload fehlgeschlagen: Verbindung unterbrochen.")));
+    xhr.onabort = () => fertig(reject, new Error(t("Upload abgebrochen.")));
+    if (signal) {
+      if (signal.aborted) return fertig(reject, new Error(t("Upload abgebrochen.")));
+      signal.addEventListener("abort", abbruch);
+    }
+    xhr.send(datei);
+  });
+}
+
+/**
+ * Lädt Dateien nacheinander hoch. `onProgress({datei, index, anzahl, geladen,
+ * gesamt})` meldet den Stand über ALLE Dateien (Bytes), `signal` bricht ab.
+ * Antwort wie früher: {saved: [...]}.
+ */
+export async function uploadFiles(source, path, fileList, { onProgress, signal } = {}) {
+  const dateien = Array.from(fileList);
+  const { max_mb: maxMb } = await getUploadGrenze();
+  // Vor dem Senden prüfen: wer 2 GB auswählt, soll es nicht erst nach
+  // Minuten erfahren.
+  if (maxMb) {
+    const zuGross = dateien.find((d) => d.size > maxMb * 1024 * 1024);
+    if (zuGross) {
+      throw new Error(
+        t("„{0}“ ist zu groß ({1}) — erlaubt sind {2} MB je Datei.", zuGross.name, dateiGroesse(zuGross.size), maxMb),
+      );
+    }
   }
-  return res.json();
+  const gesamt = dateien.reduce((summe, d) => summe + d.size, 0);
+  const saved = [];
+  let davor = 0;
+  for (let index = 0; index < dateien.length; index++) {
+    const datei = dateien[index];
+    const url =
+      source === "ws"
+        ? `/api/files/upload?path=${encodeURIComponent(path)}&name=${encodeURIComponent(datei.name)}`
+        : `/api/remote/${encodeURIComponent(source)}/upload?path=${encodeURIComponent(path)}&datei=${encodeURIComponent(datei.name)}`;
+    const melde = (geladen) =>
+      onProgress?.({ datei: datei.name, index, anzahl: dateien.length, geladen: davor + geladen, gesamt });
+    melde(0);
+    const antwort = await ladeEineDatei(url, datei, { onProgress: melde, signal }, maxMb);
+    saved.push(...(antwort.saved || []));
+    davor += datei.size;
+  }
+  return { saved };
 }
 // Austausch-Ordner je Maschine (backend/app/austausch.py): wer einen hat,
 // empfängt Dateien anderer Maschinen unter <ordner>/von-<absender>/. Das

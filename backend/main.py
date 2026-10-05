@@ -30,7 +30,9 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   PUT  /api/files/content          Dateiinhalt speichern (Editor)
   GET  /api/files/download?path=   Datei herunterladen
   GET  /api/files/raw?path=        Datei anzeigen/abspielen (inline, echter Typ)
-  POST /api/files/upload?path=     Datei(en) hochladen (multipart)
+  POST /api/files/upload?path=&name=  Datei hochladen: Rumpf = Bytes, gestreamt
+                                   (#48; multipart mit `files` geht weiter)
+  GET  /api/upload/grenze          Grenze je Datei in MB (UPLOAD_MAX_MB, 0 = keine)
   POST /api/files/mkdir · /rename  Verzeichnis anlegen / umbenennen
   DEL  /api/files?path=            Datei/Ordner löschen
   GET  /api/remote/{name}/files    dasselbe für Agenten-PCs via SFTP
@@ -86,7 +88,7 @@ import httpx
 import mimetypes
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -108,11 +110,11 @@ from app.files import (
     file_path,
     list_dir,
     read_file,
-    save_upload,
     write_file,
 )
 from app.remote_files import RemoteFilesError
 from app import austausch
+from app import upload
 from app.austausch import AustauschError
 from app.integrations import list_integrations
 from app.mailbox import AGENT_NAME_RE, ORCHESTRATOR, Mailbox, normalize_envelope
@@ -988,14 +990,42 @@ async def file_raw(path: str) -> FileResponse:
     return FileResponse(p, media_type=typ, headers=_inline(p.name, typ))
 
 
+# --- Upload (Issue #48, app/upload.py) ---------------------------------------
+# Zwei Formen auf derselben Route: der Rumpf IST die Datei (`?name=`, so lädt
+# das Frontend — je Datei eine Anfrage, gestreamt, mit Fortschritt), oder
+# multipart mit Feld `files` (alter Weg, bleibt für fremde Aufrufer).
+
+@app.get("/api/upload/grenze")
+async def upload_grenze() -> dict:
+    """Grenze je Datei in MB (0 = unbegrenzt) — das Frontend prüft vor dem Senden."""
+    return {"max_mb": upload.MAX_MB}
+
+
+async def _upload_quellen(request: Request, name: str | None):
+    """Liefert (dateiname, leser)-Paare für beide Upload-Formen."""
+    try:
+        upload.pruefe_laenge(request.headers.get("content-length"))
+    except upload.UploadZuGross as exc:
+        raise HTTPException(413, str(exc)) from exc
+    if request.headers.get("content-type", "").lower().startswith("multipart/"):
+        form = await request.form()
+        dateien = [v for v in form.getlist("files") if hasattr(v, "filename")]
+        if not dateien:
+            raise HTTPException(400, "keine Dateien im Upload")
+        return [(f.filename, f) for f in dateien]
+    if not name:
+        raise HTTPException(400, "Dateiname fehlt (?name=)")
+    return [(name, upload.KoerperLeser(request.stream()))]
+
+
 @app.post("/api/files/upload")
-async def file_upload(path: str = "", files: list[UploadFile] = None) -> dict:  # noqa: B008
-    if not files:
-        raise HTTPException(400, "keine Dateien im Upload")
+async def file_upload(request: Request, path: str = "", name: str | None = None) -> dict:
     saved = []
-    for f in files:
+    for dateiname, leser in await _upload_quellen(request, name):
         try:
-            saved.append(save_upload(path, f.filename, await f.read()))
+            saved.append(await upload.schreibe_lokal(path, dateiname, leser))
+        except upload.UploadZuGross as exc:
+            raise HTTPException(413, str(exc)) from exc
         except FilesError as exc:
             raise HTTPException(400, str(exc)) from exc
     return {"saved": saved}
@@ -1156,14 +1186,17 @@ async def remote_delete(name: str, path: str) -> dict:
 
 
 @app.post("/api/remote/{name}/upload")
-async def remote_upload(name: str, path: str, files: list[UploadFile] = None) -> dict:  # noqa: B008
-    if not files:
-        raise HTTPException(400, "keine Dateien im Upload")
+async def remote_upload(request: Request, name: str, path: str,
+                        datei: str | None = None) -> dict:
+    # `name` ist hier die Maschine — der Dateiname des Roh-Uploads heißt
+    # deshalb `datei` (bei /api/files/upload: `name`).
     saved = []
-    for f in files:
+    for dateiname, leser in await _upload_quellen(request, datei):
         try:
-            saved.append(await remote_files.upload_file(name, path, f.filename, f))
+            saved.append(await remote_files.upload_file(name, path, dateiname, leser))
         except RemoteFilesError as exc:
+            if getattr(leser, "zu_gross", False):
+                raise HTTPException(413, str(upload.UploadZuGross())) from exc
             raise HTTPException(502, str(exc)) from exc
     return {"saved": saved}
 

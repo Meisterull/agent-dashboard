@@ -77,9 +77,20 @@ chown -R app:app "$WORKSPACE_DIR"
 #     (nginx-Worker droppen auf www-data und brauchen den Key nicht).
 chown -R root:root "$EFFECTIVE_SSL_DIR"
 
-# 4. nginx-Config rendern (SSL-Pfad einsetzen).
-export EFFECTIVE_SSL_DIR EXTERNAL_HTTPS_PORT
-envsubst '${EFFECTIVE_SSL_DIR} ${EXTERNAL_HTTPS_PORT}' \
+# 4. nginx-Config rendern (SSL-Pfad und Upload-Grenze einsetzen).
+#    UPLOAD_MAX_MB (#48): Grenze je hochgeladener Datei, 0 = unbegrenzt.
+#    Dieselbe Variable liest das Backend (app/upload.py) — nginx weist zu
+#    Großes sofort ab, das Backend zählt zur Sicherheit mit.
+case "${UPLOAD_MAX_MB:-}" in
+    ''|*[!0-9]*) UPLOAD_MAX_MB=5120 ;;
+esac
+if [ "$UPLOAD_MAX_MB" = "0" ]; then
+    UPLOAD_MAX_BODY=0
+else
+    UPLOAD_MAX_BODY="${UPLOAD_MAX_MB}m"
+fi
+export EFFECTIVE_SSL_DIR EXTERNAL_HTTPS_PORT UPLOAD_MAX_MB UPLOAD_MAX_BODY
+envsubst '${EFFECTIVE_SSL_DIR} ${EXTERNAL_HTTPS_PORT} ${UPLOAD_MAX_BODY}' \
     < /app/nginx/agent-dashboard.conf.template \
     > /etc/nginx/sites-enabled/agent-dashboard
 rm -f /etc/nginx/sites-enabled/default

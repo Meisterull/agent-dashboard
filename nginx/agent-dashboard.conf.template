@@ -149,6 +149,44 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Datei-Upload (Issue #48): Das Datei-Panel ist der allgemeine Dateiweg
+    # auf die Maschinen — Videos, Archive, Images. Die 50 MB oben gelten für
+    # den Rest der API; hier gilt UPLOAD_MAX_MB (entrypoint.sh setzt den Wert
+    # ein, "0" = unbegrenzt). Das Frontend schickt je Datei eine Anfrage.
+    #  - proxy_request_buffering off: sonst schreibt nginx jeden Upload erst
+    #    komplett nach client_body_temp IM CONTAINER, bevor das Backend ein
+    #    Byte sieht — bei 2 GB doppelter Platz und kein echter Fortschritt.
+    #  - lange Fristen: das Backend antwortet erst, wenn die Datei per SFTP
+    #    auf der Maschine liegt (WLAN-Strecken!).
+    # Exakte und Regex-Location gewinnen gegen das /api/-Präfix unten,
+    # deshalb stehen die proxy_set_header hier noch einmal.
+    location = /api/files/upload {
+        client_max_body_size ${UPLOAD_MAX_BODY};
+        client_body_timeout 300s;
+        proxy_request_buffering off;
+        proxy_http_version 1.1;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location ~ ^/api/remote/[^/]+/upload$ {
+        client_max_body_size ${UPLOAD_MAX_BODY};
+        client_body_timeout 300s;
+        proxy_request_buffering off;
+        proxy_http_version 1.1;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # REST-API
     location /api/ {
         proxy_pass http://127.0.0.1:5000;

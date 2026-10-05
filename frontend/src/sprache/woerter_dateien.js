@@ -7,6 +7,12 @@ export default {
   "Speichern": "Save",
   "Löschen": "Delete",
 
+  // api.js: Upload (#48)
+  "„{0}“ ist zu groß ({1}) — erlaubt sind {2} MB je Datei.": "“{0}” is too large ({1}) — the limit is {2} MB per file.",
+  "„{0}“ ist zu groß ({1}) — der Server nimmt sie nicht an.": "“{0}” is too large ({1}) — the server rejects it.",
+  "Upload fehlgeschlagen: Verbindung unterbrochen.": "Upload failed: connection lost.",
+  "Upload abgebrochen.": "Upload cancelled.",
+
   // FilesPanel.jsx
   "Abbrechen": "Cancel",
   "Anlegen": "Create",

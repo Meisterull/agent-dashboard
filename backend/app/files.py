@@ -179,8 +179,10 @@ def delete(relpath: str) -> dict[str, Any]:
     return {"deleted": relpath}
 
 
-def save_upload(rel_dir: str, filename: str, data: bytes) -> dict[str, Any]:
-    """Upload in ein Workspace-Verzeichnis; Dateiname wird auf Basename gekürzt."""
+def upload_ziel(rel_dir: str, filename: str) -> Path:
+    """Zielpfad eines Uploads in einem Workspace-Verzeichnis; der Dateiname
+    wird auf den Basename gekürzt. Getrennt von save_upload, damit der
+    gestreamte Upload (app/upload.py, #48) dieselben Prüfungen durchläuft."""
     base = _safe(rel_dir)
     if not base.is_dir():
         raise FilesError(f"kein Verzeichnis: {rel_dir}")
@@ -194,6 +196,12 @@ def save_upload(rel_dir: str, filename: str, data: bytes) -> dict[str, Any]:
         # Review N: ein Upload in die Workspace-Wurzel konnte chat.db
         # oder keys/ überschreiben — _safe prüfte nur das Zielverzeichnis.
         raise FilesError(f"gesperrter Bereich: {safe_name}")
+    return dest
+
+
+def save_upload(rel_dir: str, filename: str, data: bytes) -> dict[str, Any]:
+    """Upload aus dem Speicher (kleine Inhalte); große laufen über app/upload.py."""
+    dest = upload_ziel(rel_dir, filename)
     dest.write_bytes(data)
     return {"path": str(dest.relative_to(WORKSPACE)), "size": len(data)}
 

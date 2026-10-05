@@ -9,6 +9,7 @@ import {
   getRemoteFiles,
   downloadUrl,
   uploadFiles,
+  dateiGroesse,
   mkdir,
   renamePath,
   deletePath,
@@ -121,6 +122,9 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Laufender Upload (#48): {datei, index, anzahl, geladen, gesamt} + Abbruch
+  const [upload, setUpload] = useState(null);
+  const uploadAbbruchRef = useRef(null);
   const [localKey, setLocalKey] = useState(0); // ↻-Button: Listing neu laden
   const [dlg, setDlg] = useState(null); // Anlegen/Umbenennen/Löschen-Dialog
   const [medien, setMedien] = useState(null); // Bild-/PDF-/Audio-Vorschau
@@ -279,8 +283,14 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
   function onUpload(e) {
     const files = e.target.files;
     if (!files?.length) return;
-    run(() => uploadFiles(source, curDir, files)).finally(() => {
+    const abbruch = new AbortController();
+    uploadAbbruchRef.current = abbruch;
+    run(() =>
+      uploadFiles(source, curDir, files, { onProgress: setUpload, signal: abbruch.signal }),
+    ).finally(() => {
       e.target.value = "";
+      uploadAbbruchRef.current = null;
+      setUpload(null);
     });
   }
 
@@ -460,6 +470,40 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
         </button>
         <input ref={inputRef} type="file" multiple hidden onChange={onUpload} />
       </div>
+
+      {/* Upload-Fortschritt (#48): bei Gigabyte-Dateien sähe man sonst
+          minutenlang nichts. Eigene Zeile, damit sie auch im schmalen
+          Panel am Handy lesbar bleibt; der Name kürzt, Prozent und
+          Abbrechen bleiben stehen. */}
+      {upload && (
+        <div className="border-b px-2 py-1 text-xs dark:border-slate-700" role="status">
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-slate-600 dark:text-slate-300">
+              ⇪ {upload.anzahl > 1 ? `${upload.index + 1}/${upload.anzahl} · ` : ""}
+              {upload.datei}
+            </span>
+            <span className="shrink-0 tabular-nums text-slate-500 dark:text-slate-400">
+              {dateiGroesse(upload.geladen)} / {dateiGroesse(upload.gesamt)} ·{" "}
+              {upload.gesamt ? Math.floor((upload.geladen / upload.gesamt) * 100) : 100} %
+            </span>
+            <button
+              type="button"
+              onClick={() => uploadAbbruchRef.current?.abort()}
+              className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              {t("Abbrechen")}
+            </button>
+          </div>
+          <div className="mt-1 h-1 overflow-hidden rounded bg-slate-200 dark:bg-slate-700">
+            <div
+              className="h-full bg-sky-500 transition-[width] duration-200"
+              style={{
+                width: `${upload.gesamt ? (upload.geladen / upload.gesamt) * 100 : 100}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Suche (Issue #45): tippen filtert die Liste, Enter sucht ab hier */}
       <form
