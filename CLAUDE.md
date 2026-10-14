@@ -175,11 +175,13 @@ Dockerfile · docker-compose.yml · entrypoint.sh · supervisord.conf · nginx/
 cd frontend && npm install && npm run dev      # http://localhost:5173 (proxyt /api,/ws)
 cd frontend && npm run build                   # erzeugt dist/ (nginx liefert es aus)
 cd frontend && node tests/test_layout.mjs      # Fensteranordnung, rein rechnerisch (kein Browser)
+cd frontend && node tests/test_terminalfenster.mjs  # Terminal-Fenster verdoppeln: Tab-Zuordnung, Nebeneinander
 cd frontend && node tests/test_woerter.mjs     # Wörterbuch-Konsistenz (Duplikate, Platzhalter)
 cd frontend && node tests/test_verbindung.mjs  # Terminal: Herzschlag, Eingabe-Warteschlange, Zwergen-Maße
 # Im echten Browser (Prüfstand ohne Backend/Login, ?panel=… wählt den Teil) —
 # Aufruf steht im Kopf der Testdatei; Handy-Format + Touch-Emulation:
 #   tests/test_workspace_browser.cjs  Fensteranordnung (#24)
+#   tests/test_terminalfenster_browser.cjs  Terminal verdoppeln (◫/⇄/✕, ?panel=terminalfenster)
 #   tests/test_agents_browser.cjs     Agenten-Panel: Nachrichten (#33)
 #   tests/test_terminal_browser.cjs   Terminal wischen/Größenwechsel (#35)
 #   tests/test_keybar_browser.cjs     Tastenleiste bleibt wischbar
@@ -586,6 +588,18 @@ der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Bl�
   Ein xterm darin darf dann NICHT fitten und keine Größe melden — `istSichtbar()`
   aus termVerbindung.js prüfen (Browser-Test in test_terminal_browser.cjs).
   Der Server verwirft resize < 20×3 zusätzlich (`ssh_bridge.MIN_COLS/MIN_ROWS`).
+- **Terminal-Fenster verdoppeln** (07.10.2026, `frontend/src/terminalFenster.js`): ◫ in
+  der SSH-Leiste legt ein weiteres Terminal-Panel daneben (Panel-Ids `terminal`,
+  `terminal:2`, … — höchstens 4, Liste in localStorage `terminal-fenster-v1`). Die
+  Tabs gehören ALLEN Fenstern gemeinsam (`<TerminalVorrat>` über der Arbeitsfläche,
+  jeder Tab trägt `fenster`), NICHT je Panel: eine SSH-Session hängt serverseitig an
+  genau einem Client (Close-Code 4000) — getrennte Listen nähmen sie sich gegenseitig
+  weg. Darum öffnet ein Klick auf eine Verbindung, die schon im Nachbarfenster offen
+  ist, ein NEUES Terminal (`tabsFuerKlick`); ⇄ legt einen Tab hinüber (Remount, die
+  Session kommt mit Replay zurück), ✕ schließt das Zweitfenster und holt seine Tabs
+  ins erste. Platz: neues Fenster teilt die Terminal-Zeile gleichmäßig
+  (`nebeneinander`), ein geschlossenes gibt seine Breite dem Nachbarn zurück
+  (`platzZurueck`), „Fenster anordnen" legt alle in die Zeile des ersten.
 - **Fensteranordnung** (`frontend/src/workspaceLayout.js`): `standardLayout(ids)` rechnet
   die Standardanordnung über ALLE vorhandenen Panels — nie wieder feste Plätze für
   eine bekannte Handvoll Ids, sonst hat das nächste dynamische Fenster keinen Platz

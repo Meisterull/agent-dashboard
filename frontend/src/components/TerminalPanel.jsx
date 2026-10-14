@@ -1,8 +1,18 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { getConnections, getSshSessions, deleteSshSession } from "../api";
 import { bestaetigen, melden } from "./Dialog";
 import Terminal, { DEFAULT_SID } from "./Terminal";
 import ConnectionsModal from "./ConnectionsModal";
+import { lsGet, lsSet } from "../speicher";
+import {
+  MAX_FENSTER,
+  fensterListe,
+  freieSid,
+  heimholen,
+  keyOf,
+  neueNummer,
+  tabsFuerKlick,
+} from "../terminalFenster";
 import { t } from "../sprache";
 
 // SSH-Verbindungen als Tabs; pro Verbindung sind MEHRERE Terminals möglich
@@ -16,15 +26,68 @@ import { t } from "../sprache";
 // angehängt. Beendet wird nur über den eigenen ⏻-Knopf (DELETE-Endpoint)
 // oder Shell-Exit. Ein Punkt am Tab markiert laufende Sessions; beim Mount
 // und bei Fokus-Rückkehr werden laufende Sessions automatisch wieder geöffnet.
-const keyOf = (t) => `${t.name}:${t.sid}`;
+//
+// MEHRERE TERMINAL-FENSTER (07.10.2026): Das ganze Panel lässt sich
+// verdoppeln (◫ rechts in der Leiste) und liegt dann als eigenes Fenster
+// daneben. Die Tabs gehören allen Fenstern gemeinsam und tragen die Nummer
+// ihres Fensters — warum, steht in terminalFenster.js. Deshalb lebt der
+// Zustand hier im <TerminalVorrat> (einmal, über der Arbeitsfläche) und nicht
+// mehr im Panel; jedes <TerminalPanel n={…}> zeigt nur seine Tabs.
 
-export default function TerminalPanel() {
+const ZUORDNUNG_KEY = "terminal-zuordnung-v1"; // {"name:sid": fensternummer}
+
+function ladeZuordnung() {
+  try {
+    const z = JSON.parse(lsGet(ZUORDNUNG_KEY));
+    return z && typeof z === "object" ? z : {};
+  } catch {
+    return {};
+  }
+}
+
+// Welche Terminal-Fenster es gibt: 1 immer, weitere legt ◫ an. Die Liste
+// gehört wie die Anordnung zum Bildschirm, vor dem man sitzt (localStorage).
+// Die Panels melden ihren Wunsch per Ereignis "terminal:fenster" — so wie
+// "workspace:reset" —, weil die Panel-Liste der App gehört.
+const FENSTER_KEY = "terminal-fenster-v1";
+
+export function useTerminalFenster() {
+  const [liste, setListe] = useState(() => {
+    try {
+      return fensterListe(JSON.parse(lsGet(FENSTER_KEY)));
+    } catch {
+      return [1];
+    }
+  });
+  useEffect(() => {
+    lsSet(FENSTER_KEY, JSON.stringify(liste));
+  }, [liste]);
+  useEffect(() => {
+    const on = (e) => {
+      const { aktion, n } = e.detail || {};
+      setListe((l) => {
+        if (aktion === "neu" && l.length < MAX_FENSTER)
+          return [...l, neueNummer(l)].sort((a, b) => a - b);
+        if (aktion === "zu" && n !== 1) return l.filter((x) => x !== n);
+        return l;
+      });
+    };
+    window.addEventListener("terminal:fenster", on);
+    return () => window.removeEventListener("terminal:fenster", on);
+  }, []);
+  return liste;
+}
+
+const Kontext = createContext(null);
+
+export function TerminalVorrat({ fenster, children }) {
   const [connections, setConnections] = useState([]);
-  const [open, setOpen] = useState([]); // offene Terminal-Tabs: {name, sid}
+  const [open, setOpen] = useState([]); // offene Terminal-Tabs: {name, sid, fenster}
   const [running, setRunning] = useState([]); // serverseitige Sessions: {name, sid}
   const [pendingOpen, setPendingOpen] = useState([]); // beim Mount gefundene Sessions
-  const [active, setActive] = useState(null); // "name:sid"
-  const [showManage, setShowManage] = useState(false);
+  const [active, setActive] = useState({}); // je Fenster: "name:sid"
+
+  const aktiviere = (n, key) => setActive((a) => ({ ...a, [n]: key }));
 
   useEffect(() => {
     const load = () =>
@@ -58,41 +121,76 @@ export default function TerminalPanel() {
   }, []);
 
   // Auto-Reopen, sobald auch die Verbindungsliste da ist; nur für Verbindungen,
-  // die es (noch) gibt — sonst gäbe es Terminals ohne Tab.
+  // die es (noch) gibt — sonst gäbe es Terminals ohne Tab. Jeder Tab kommt in
+  // das Fenster zurück, in dem er zuletzt lag (gemerkt im localStorage); gibt
+  // es das nicht mehr, ins erste.
   useEffect(() => {
     const tabs = pendingOpen.filter((t) => connections.some((c) => c.name === t.name));
     if (!tabs.length) return;
-    setOpen((o) => [...o, ...tabs.filter((t) => !o.some((x) => keyOf(x) === keyOf(t)))]);
+    const gemerkt = ladeZuordnung();
+    const mitFenster = tabs.map((t) => ({
+      ...t,
+      fenster: fenster.includes(gemerkt[keyOf(t)]) ? gemerkt[keyOf(t)] : 1,
+    }));
+    setOpen((o) => [...o, ...mitFenster.filter((t) => !o.some((x) => keyOf(x) === keyOf(t)))]);
     setPendingOpen((p) => p.filter((t) => !tabs.includes(t)));
   }, [pendingOpen, connections]);
 
-  // Klick auf eine Verbindung ohne offene Tabs: laufende Sessions wieder
-  // anhängen (alle — auch die mit sid ≠ main), sonst frisches "main" öffnen.
-  const activate = (name) => {
-    const runningTabs = running.filter((r) => r.name === name);
-    const tabs = runningTabs.length ? runningTabs : [{ name, sid: DEFAULT_SID }];
+  // Ein Fenster wurde geschlossen: Seine Terminals wandern ins erste — die
+  // Sessions laufen weiter, niemand verliert etwas.
+  const fensterKey = fenster.join("|");
+  useEffect(() => {
+    setOpen((o) => heimholen(o, fenster));
+  }, [fensterKey]);
+
+  // Wer liegt wo — für das nächste Laden merken. ERGÄNZEN, nicht ersetzen:
+  // Direkt nach dem Laden ist `open` noch leer, und ein Ersetzen löschte die
+  // Zuordnung, bevor das Auto-Reopen sie lesen kann. Einträge zu längst
+  // beendeten Sessions stören nicht — sie greifen nur, wenn es Name und
+  // Nummer wieder gibt.
+  useEffect(() => {
+    if (!open.length) return;
+    lsSet(
+      ZUORDNUNG_KEY,
+      JSON.stringify({ ...ladeZuordnung(), ...Object.fromEntries(open.map((t) => [keyOf(t), t.fenster])) }),
+    );
+  }, [open]);
+
+  // Klick auf eine Verbindung ohne Tab in DIESEM Fenster — was dann geöffnet
+  // wird, entscheidet tabsFuerKlick (nie dem Nachbarfenster etwas wegnehmen).
+  const activate = (name, n) => {
+    const tabs = tabsFuerKlick(name, n, open, running);
     setOpen((o) => [...o, ...tabs.filter((t) => !o.some((x) => keyOf(x) === keyOf(t)))]);
-    setActive(keyOf(tabs[0]));
+    aktiviere(n, keyOf(tabs[0]));
   };
 
-  // ⧉ — weiteres Terminal auf derselben Verbindung: kleinste freie Nummer als
-  // sid (auch serverseitig laufende zählen, sonst würde eine detachte Session
-  // ungewollt übernommen statt eine neue Shell zu starten).
-  const openExtra = (name) => {
-    const used = new Set(
-      [...open, ...running].filter((t) => t.name === name).map((t) => t.sid),
-    );
-    let n = 2;
-    while (used.has(String(n))) n += 1;
-    const tab = { name, sid: String(n) };
+  // ⧉ — weiteres Terminal auf derselben Verbindung, in diesem Fenster.
+  const openExtra = (name, n) => {
+    const tab = { name, sid: freieSid(name, open, running), fenster: n };
     setOpen((o) => [...o, tab]);
-    setActive(keyOf(tab));
+    aktiviere(n, keyOf(tab));
   };
 
   // × — nur das Fenster schließen; die Session läuft serverseitig weiter.
   const close = (tab) => {
     setOpen((o) => o.filter((t) => keyOf(t) !== keyOf(tab)));
-    setActive((a) => (a === keyOf(tab) ? null : a));
+    setActive((a) =>
+      Object.fromEntries(Object.entries(a).map(([n, k]) => [n, k === keyOf(tab) ? null : k])),
+    );
+  };
+
+  // ⇄ — Tab ins nächste Terminal-Fenster legen. Das Terminal wird dort neu
+  // eingehängt und holt sich die Session samt bisheriger Ausgabe zurück.
+  const verschieben = (tab) => {
+    const ziel = fenster[(fenster.indexOf(tab.fenster) + 1) % fenster.length];
+    if (ziel === tab.fenster) return;
+    setOpen((o) => o.map((t) => (keyOf(t) === keyOf(tab) ? { ...t, fenster: ziel } : t)));
+    setActive((a) => ({
+      ...a,
+      [tab.fenster]: a[tab.fenster] === keyOf(tab) ? null : a[tab.fenster],
+      [ziel]: keyOf(tab),
+    }));
+    setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   };
 
   // ⏻ — Session serverseitig beenden (killt die Shell auf dem Agenten-PC).
@@ -129,6 +227,33 @@ export default function TerminalPanel() {
     loadSessions();
   };
 
+  return (
+    <Kontext.Provider
+      value={{
+        fenster, connections, open, running, active,
+        aktiviere, activate, openExtra, close, verschieben, endSession, ended,
+      }}
+    >
+      {children}
+    </Kontext.Provider>
+  );
+}
+
+// Fenster öffnen/schließen entscheidet die App (sie hält die Panel-Liste) —
+// das Panel meldet den Wunsch nur, wie "workspace:reset" es auch tut.
+const fensterWunsch = (aktion, n) =>
+  window.dispatchEvent(new CustomEvent("terminal:fenster", { detail: { aktion, n } }));
+
+export default function TerminalPanel({ n = 1 }) {
+  const {
+    fenster, connections, running, aktiviere, activate, openExtra,
+    close, verschieben, endSession, ended, ...vorrat
+  } = useContext(Kontext);
+  const open = vorrat.open.filter((tab) => tab.fenster === n);
+  const active = vorrat.active[n] ?? null;
+  const setActive = (key) => aktiviere(n, key);
+  const [showManage, setShowManage] = useState(false);
+
   const runningDot = (
     <span
       title={t("Session läuft")}
@@ -149,7 +274,7 @@ export default function TerminalPanel() {
             return (
               <button
                 key={c.name}
-                onClick={() => activate(c.name)}
+                onClick={() => activate(c.name, n)}
                 title={`${c.user}@${c.host}`}
                 className="rounded bg-slate-200 px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
               >
@@ -173,6 +298,15 @@ export default function TerminalPanel() {
                     {running.some((r) => keyOf(r) === keyOf(tab)) && runningDot}
                     {tab.sid === DEFAULT_SID ? c.name : `${c.name} ·${tab.sid}`}
                   </button>
+                  {fenster.length > 1 && (
+                    <button
+                      onClick={() => verschieben(tab)}
+                      title={t("In das nächste Terminal-Fenster legen")}
+                      className="ml-0.5 rounded px-1 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+                    >
+                      ⇄
+                    </button>
+                  )}
                   <button
                     onClick={() => close(tab)}
                     title={t("Fenster schließen (Session läuft weiter)")}
@@ -190,7 +324,7 @@ export default function TerminalPanel() {
                 </span>
               ))}
               <button
-                onClick={() => openExtra(c.name)}
+                onClick={() => openExtra(c.name, n)}
                 title={t("Weiteres Terminal auf dieser Verbindung öffnen")}
                 className="rounded px-1 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
               >
@@ -206,6 +340,30 @@ export default function TerminalPanel() {
         >
           +
         </button>
+        {/* Rechts außen: das ganze Fenster verdoppeln bzw. ein Zweitfenster
+            wieder schließen (seine Terminals wandern ins erste). */}
+        <span className="ml-auto inline-flex shrink-0 items-center gap-1">
+          {fenster.length < MAX_FENSTER && (
+            <button
+              onClick={() => fensterWunsch("neu", n)}
+              title={t("Terminal-Fenster verdoppeln (legt ein zweites daneben)")}
+              data-test="terminal-verdoppeln"
+              className="rounded border border-slate-300 px-1.5 py-0.5 text-xs text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-800"
+            >
+              ◫
+            </button>
+          )}
+          {n !== 1 && (
+            <button
+              onClick={() => fensterWunsch("zu", n)}
+              title={t("Dieses Terminal-Fenster schließen (Sessions laufen weiter)")}
+              data-test="terminal-fenster-zu"
+              className="rounded border border-slate-300 px-1.5 py-0.5 text-xs text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-800"
+            >
+              ✕
+            </button>
+          )}
+        </span>
       </div>
       {showManage && <ConnectionsModal onClose={() => setShowManage(false)} />}
       <div className="relative min-h-0 flex-1 bg-slate-800">

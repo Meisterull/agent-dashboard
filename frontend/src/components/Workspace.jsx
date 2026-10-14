@@ -7,6 +7,7 @@ import {
   normRect,
   standardLayout,
 } from "../workspaceLayout";
+import { istTerminalPanel, nebeneinander, platzZurueck } from "../terminalFenster";
 import { t } from "../sprache";
 
 // Fenster-Manager für den Desktop (md+): jedes Panel ist ein frei
@@ -111,7 +112,24 @@ export default function Workspace({
       const std = standardLayout(alleIds);
       for (const id of alleIds) {
         if (!out[id]) {
-          out[id] = std[id];
+          // Ein weiteres Terminal-Fenster legt sich NEBEN die vorhandenen
+          // (terminalFenster.nebeneinander) — dafür ist die Verdopplung da.
+          // Nur wenn es in DIESER Sitzung hinzukommt; beim Laden ohne
+          // gespeicherten Platz, oder wenn es zu eng würde, gilt die
+          // Standardanordnung. Die Mindestbreite ist die der Fenster selbst.
+          const breitePx = containerRef.current?.getBoundingClientRect().width || 0;
+          const teile =
+            istTerminalPanel(id) && id !== "terminal" && gesehenRef.current.size && breitePx
+              ? nebeneinander(
+                  alleIds
+                    .filter((x) => istTerminalPanel(x) && out[x])
+                    .map((x) => ({ id: x, rect: out[x] })),
+                  id,
+                  (MIN_W_PX / breitePx) * 100,
+                )
+              : null;
+          if (teile) Object.assign(out, teile);
+          else out[id] = std[id];
           changed = true;
         }
       }
@@ -120,6 +138,15 @@ export default function Workspace({
       // mit jedem je angelegten externen Fenster.
       for (const id of Object.keys(out))
         if (!aktuell.has(id) && gesehenRef.current.has(id)) {
+          // Ein geschlossenes Terminal-Fenster gibt seinen Platz dem Nachbarn
+          // in derselben Zeile zurück (terminalFenster.platzZurueck).
+          if (istTerminalPanel(id)) {
+            const erbe = platzZurueck(
+              out[id],
+              alleIds.filter((x) => istTerminalPanel(x) && out[x]).map((x) => ({ id: x, rect: out[x] })),
+            );
+            if (erbe) out[erbe.id] = erbe.rect;
+          }
           delete out[id];
           changed = true;
         }
@@ -145,6 +172,8 @@ export default function Workspace({
       const added = cur.filter((id) => !kept.includes(id));
       return kept.length === o.length && !added.length ? o : [...kept, ...added];
     });
+    // Geteilte/neue Fenster: xterm muss die neuen Maße übernehmen.
+    setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   }, [idsKey]);
 
   const [isDesktop, setIsDesktop] = useState(

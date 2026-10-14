@@ -35,7 +35,15 @@ export const MAX_ZEILEN_MITTE = 4;
 export const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const rund = (v) => Math.round(v * 10) / 10;
 
-export function standardLayout(ids) {
+// Weitere Terminal-Fenster ("terminal:2", … — terminalFenster.js) sind keine
+// eigenen Zeilen: Sie teilen sich die Zeile des ersten Terminals und liegen
+// dort nebeneinander. Dafür ist die Verdopplung da.
+const istNebenTerminal = (id) => /^terminal:\d+$/.test(id);
+const LUECKE_X = 0.6;
+
+export function standardLayout(alleIds) {
+  const neben = alleIds.includes("terminal") ? alleIds.filter(istNebenTerminal) : [];
+  const ids = alleIds.filter((id) => !neben.includes(id));
   const spalten = [[], [], []];
   const dynamisch = [];
   for (const id of ids) {
@@ -62,6 +70,14 @@ export function standardLayout(ids) {
       y += h + LUECKE_Y;
     });
   });
+  if (neben.length) {
+    const { x, y, w, h } = out.terminal;
+    const reihe = ["terminal", ...neben];
+    const breite = (w - LUECKE_X * (reihe.length - 1)) / reihe.length;
+    reihe.forEach((id, i) => {
+      out[id] = { x: rund(x + i * (breite + LUECKE_X)), y, w: rund(breite), h };
+    });
+  }
   return out;
 }
 

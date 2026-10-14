@@ -6,6 +6,7 @@
 //   ?panel=keybar                Tastenleiste      -> tests/test_keybar_browser.cjs
 //   ?panel=terminal              xterm + Leiste    -> tests/test_terminal_browser.cjs
 //   ?panel=dateien               Datei-Panel       -> tests/test_dateien_browser.cjs
+//   ?panel=terminalfenster       Terminal verdoppeln -> tests/test_terminalfenster_browser.cjs
 //
 // Temporäre Datei — gehört nicht in den Auslieferungs-Build.
 import { createRoot } from "react-dom/client";
@@ -18,6 +19,8 @@ import "@xterm/xterm/css/xterm.css";
 import { fittenOhneSprung, wischScrollen } from "./termScroll";
 import { istSichtbar } from "./termVerbindung";
 import Workspace from "./components/Workspace";
+import TerminalPanel, { TerminalVorrat, useTerminalFenster } from "./components/TerminalPanel";
+import { panelId } from "./terminalFenster";
 import "./index.css";
 
 const platzhalter = (name) => (
@@ -301,6 +304,46 @@ if (welches === "terminal") {
       <FilesPanel refreshKey={0} onOpenFile={(f) => window.__aufrufe.push({ url: "editor", methode: "OPEN", body: f })} />
     </div>,
   );
+} else if (welches === "terminalfenster") {
+  // Terminal-Panel verdoppeln: echte Panels, echter Fenster-Manager, aber ein
+  // fetch-Doppel statt Backend. Zwei Verbindungen; auf "server" laufen schon
+  // zwei Sessions (main und 2). Die Terminals selbst bekommen keine
+  // WebSocket-Gegenstelle — geprüft werden Fenster und Tabs, nicht xterm.
+  window.fetch = (url) => {
+    const json = (data) => Promise.resolve({ ok: true, status: 200, json: async () => data });
+    if (String(url).startsWith("/api/connections"))
+      return json({ connections: [
+        { name: "server", user: "u", host: "h1" },
+        { name: "werkstatt", user: "u", host: "h2" },
+      ] });
+    if (String(url).startsWith("/api/ssh/sessions"))
+      return json({ sessions: [{ name: "server", sid: "main" }, { name: "server", sid: "2" }] });
+    return json({});
+  };
+  function Stand() {
+    const fenster = useTerminalFenster();
+    return (
+      <TerminalVorrat fenster={fenster}>
+        <div className="flex h-dvh flex-col">
+          <Workspace
+            tab="terminal"
+            viewMode="windows"
+            panels={[
+              { id: "dateien", title: "Dateien", body: platzhalter("Dateien") },
+              { id: "chat", title: "Chat", body: platzhalter("Chat") },
+              ...fenster.map((n) => ({
+                id: panelId(n),
+                title: n === 1 ? "Terminal" : `Terminal ${n}`,
+                body: <TerminalPanel n={n} />,
+              })),
+              { id: "agenten", title: "Agenten", body: platzhalter("Agenten") },
+            ]}
+          />
+        </div>
+      </TerminalVorrat>
+    );
+  }
+  createRoot(document.getElementById("root")).render(<Stand />);
 } else if (welches === "agenten") {
   window.fetch = fetchDoppel;
   createRoot(document.getElementById("root")).render(

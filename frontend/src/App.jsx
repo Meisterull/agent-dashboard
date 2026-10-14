@@ -5,7 +5,8 @@ import QuestionsBanner from "./components/QuestionsBanner";
 import Chat from "./components/Chat";
 import FilesPanel from "./components/FilesPanel";
 import AgentsPanel from "./components/AgentsPanel";
-import TerminalPanel from "./components/TerminalPanel";
+import TerminalPanel, { TerminalVorrat, useTerminalFenster } from "./components/TerminalPanel";
+import { panelId } from "./terminalFenster";
 import Workspace from "./components/Workspace";
 import ExternalFrame from "./components/ExternalFrame";
 import Settings from "./components/Settings";
@@ -125,6 +126,17 @@ export default function App() {
     setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   }, [viewMode]);
 
+  // Terminal-Fenster: 1 gibt es immer, weitere legt ◫ im Terminal-Panel an
+  // (TerminalPanel.jsx / terminalFenster.js).
+  const termFenster = useTerminalFenster();
+  useEffect(() => {
+    // Das geschlossene Fenster war der sichtbare Tab → zurück aufs erste.
+    setTab((t) =>
+      /^terminal:\d+$/.test(t) && !termFenster.some((n) => panelId(n) === t) ? "terminal" : t,
+    );
+  }, [termFenster]);
+  const termTabs = termFenster.slice(1).map((n) => [panelId(n), t("Terminal {0}", n)]);
+
   const bump = () => setRefreshKey((k) => k + 1);
 
   // Abmelden: Cookie serverseitig löschen und zurück zum Login. Scheitert der
@@ -226,6 +238,7 @@ export default function App() {
         onNew={() => flag("agenten")}
       />
 
+      <TerminalVorrat fenster={termFenster}>
       <Workspace
         tab={tab}
         viewMode={viewMode}
@@ -250,7 +263,12 @@ export default function App() {
             ),
             bodyClass: "bg-slate-100 dark:bg-slate-950",
           },
-          { id: "terminal", title: t("Terminal"), body: <TerminalPanel /> },
+          { id: "terminal", title: t("Terminal"), body: <TerminalPanel n={1} /> },
+          ...termFenster.slice(1).map((n) => ({
+            id: panelId(n),
+            title: t("Terminal {0}", n),
+            body: <TerminalPanel n={n} />,
+          })),
           {
             id: "agenten",
             title: t("Agenten"),
@@ -274,6 +292,7 @@ export default function App() {
           body: <Fehlergrenze titel={p.title}>{p.body}</Fehlergrenze>,
         }))}
       />
+      </TerminalVorrat>
 
       {/* Tab-Leiste unten: mobil immer, am Desktop nur im Tab-Modus.
           pb-[env(…)] hält die Knöpfe aus der Gesten-Zone am unteren
@@ -283,7 +302,7 @@ export default function App() {
           viewMode === "windows" ? "md:hidden" : ""
         }`}
       >
-        {[...TABS, ...extWindows.map((w) => [`ext:${w.name}`, w.name])].map(([id, label]) => (
+        {[...TABS, ...termTabs, ...extWindows.map((w) => [`ext:${w.name}`, w.name])].map(([id, label]) => (
           <button
             key={id}
             onClick={() => switchTab(id)}

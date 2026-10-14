@@ -61,6 +61,10 @@ export default {
   "Session läuft": "Session running",
   "Fenster schließen (Session läuft weiter)": "Close window (session keeps running)",
   "Weiteres Terminal auf dieser Verbindung öffnen": "Open another terminal on this connection",
+  "In das nächste Terminal-Fenster legen": "Move to the next terminal window",
+  "Terminal-Fenster verdoppeln (legt ein zweites daneben)": "Duplicate terminal window (places a second one beside it)",
+  "Dieses Terminal-Fenster schließen (Sessions laufen weiter)": "Close this terminal window (sessions keep running)",
+  "Terminal {0}": "Terminal {0}",
   "Verbindungen verwalten / neue anlegen": "Manage connections / create new",
   "Verbindung wählen, um ein Terminal zu öffnen": "Select a connection to open a terminal",
 };
