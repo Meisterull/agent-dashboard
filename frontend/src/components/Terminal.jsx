@@ -7,6 +7,7 @@ import KeyBar from "./KeyBar";
 import { tastaturOffen, tastaturSchliessen } from "../viewport";
 import { fittenOhneSprung, wischScrollen } from "../termScroll";
 import { imeEingabe } from "../termEingabe";
+import { kopierSauber, zeilenEnden } from "../termKopie";
 import { Herzschlag, Warteschlange, istSichtbar, plausibleGroesse } from "../termVerbindung";
 import { encodeKey, encodeChar } from "../keys";
 import { getSshBuffer } from "../api";
@@ -244,8 +245,15 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     // Kopieren: Strg+C mit aktiver Auswahl kopiert in die Zwischenablage
     // (statt SIGINT an die Shell); ohne Auswahl bleibt Strg+C das gewohnte
     // Abbrechen. Deckt auch Strg+Shift+C (sonst DevTools) und Strg+Einfg ab.
+    // Aufgeräumt (termKopie.js): keine Leerzeichen vom Zeilenrand, von der
+    // TUI umbrochene Links und Befehle wieder an einem Stück.
+    const auswahlText = () =>
+      kopierSauber(term.getSelection(), {
+        spalten: term.cols,
+        versatz: term.getSelectionPosition()?.start.x ?? 0,
+      });
     const copySelection = () => {
-      const text = term.getSelection();
+      const text = auswahlText();
       if (!text) return false;
       copyText(text, term);
       term.clearSelection();
@@ -274,7 +282,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     const handleMouseUp = () => {
       if (!dragFromTerm) return;
       dragFromTerm = false;
-      const text = term.getSelection();
+      const text = auswahlText();
       if (text) copyText(text, term);
     };
     termEl.addEventListener("mousedown", onTermMouseDown);
@@ -343,6 +351,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         retry = 0;
         setHinweis(null);
         herz.neueVerbindung();
+        // Nach einem Deploy steht hier die Verbindung wieder — die Seite
+        // selbst ist aber noch die alte (fassung.js).
+        window.dispatchEvent(new Event("fassung:pruefen"));
         // Der Server spielt beim Reattach den KOMPLETTEN Sitzungspuffer nach
         // (ssh_bridge.bridge). Ohne Leeren stünde der Verlauf nach jedem
         // Netz-Blip doppelt/dreifach im Terminal.
@@ -548,7 +559,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       if (line.isWrapped && parts.length) parts[parts.length - 1] += s;
       else parts.push(s);
     }
-    return parts.join("\n").replace(/\s+$/, "");
+    // Eine TUI füllt Zeilen mit echten Leerzeichen auf — die schneidet xterm
+    // nicht ab, also hier (termKopie.js).
+    return zeilenEnden(parts.join("\n")).replace(/\s+$/, "");
   };
 
   const openCopyMode = () => {
@@ -566,7 +579,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           .join("\n")
       : bufferToText(term.buffer.active);
     setCopied(false);
-    setCopyView({ text, alt, full: false });
+    setCopyView({ text, alt, full: false, spalten: term.cols });
   };
 
   // Serverseitigen Replay-Puffer laden — der echte Sitzungsverlauf, vom
@@ -575,7 +588,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     try {
       const data = await getSshBuffer(name, sid);
       setCopied(false);
-      setCopyView((v) => v && { ...v, text: data.text, full: true });
+      setCopyView((v) => v && { ...v, text: zeilenEnden(data.text), full: true });
     } catch {
       /* Session weg oder Netzfehler — der Schnappschuss bleibt stehen */
     }
@@ -589,6 +602,32 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   const closeCopyMode = () => {
     setCopyView(null);
     zurueckFokus();
+  };
+
+  // Markierten Ausschnitt kopieren (auch über das Kopieren-Menü am Handy):
+  // aufgeräumt wie die Auswahl im Terminal. Im Schnappschuss kennen wir die
+  // Breite und setzen umbrochene Links/Befehle zusammen; der volle Verlauf
+  // vom Server ist ein Mitschnitt ohne feste Breite.
+  const ausschnittKopieren = (e) => {
+    const auswahl = window.getSelection();
+    const roh = auswahl?.toString();
+    if (!roh || !e.clipboardData) return;
+    let versatz = 0;
+    try {
+      const anfang = auswahl.getRangeAt(0);
+      const davor = document.createRange();
+      davor.selectNodeContents(e.currentTarget);
+      davor.setEnd(anfang.startContainer, anfang.startOffset);
+      const text = davor.toString();
+      versatz = text.length - (text.lastIndexOf("\n") + 1);
+    } catch {
+      /* Auswahl beginnt außerhalb — dann eben ohne Versatz */
+    }
+    e.clipboardData.setData(
+      "text/plain",
+      kopierSauber(roh, { spalten: copyView.full ? 0 : copyView.spalten, versatz }),
+    );
+    e.preventDefault();
   };
 
   const copyAll = () => {
@@ -656,6 +695,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
               </button>
             </div>
             <pre
+              onCopy={ausschnittKopieren}
               // beim Öffnen ans Ende scrollen — da steht das Aktuelle
               ref={(el) => {
                 if (el) el.scrollTop = el.scrollHeight;

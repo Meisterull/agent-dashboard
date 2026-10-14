@@ -2,6 +2,7 @@ import { lsGet, lsSet } from "./speicher";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import TopBar from "./components/TopBar";
 import QuestionsBanner from "./components/QuestionsBanner";
+import NeueFassung from "./components/NeueFassung";
 import Chat from "./components/Chat";
 import FilesPanel from "./components/FilesPanel";
 import AgentsPanel from "./components/AgentsPanel";
@@ -232,6 +233,7 @@ export default function App() {
         }
         onLogout={abmelden}
       />
+      <NeueFassung />
       <QuestionsBanner
         refreshKey={refreshKey}
         onAnswered={bump}

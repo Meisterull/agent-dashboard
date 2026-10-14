@@ -64,4 +64,7 @@ export default {
   // Fehlergrenze.jsx (Review-Fix Welle B)
   "Dieses Panel ist abgestürzt.": "This panel crashed.",
   "Panel neu laden": "Reload panel",
+  "Neue Fassung des Dashboards verfügbar — Terminal-Sessions bleiben erhalten.":
+    "A new version of the dashboard is available — terminal sessions are kept.",
+  "Neu laden": "Reload",
 };

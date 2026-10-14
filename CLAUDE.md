@@ -186,6 +186,8 @@ cd frontend && node tests/test_terminalfenster.mjs  # Terminal-Fenster verdoppel
 cd frontend && node tests/test_woerter.mjs     # Wörterbuch-Konsistenz (Duplikate, Platzhalter)
 cd frontend && node tests/test_verbindung.mjs  # Terminal: Herzschlag, Eingabe-Warteschlange, Zwergen-Maße
 cd frontend && node tests/test_eingabe.mjs     # Terminal: Textvergleich für Wortvorschläge der Bildschirmtastatur
+cd frontend && node tests/test_kopie.mjs       # Terminal: kopierte Auswahl aufräumen (Leerzeichen, umbrochene Links/Befehle)
+cd frontend && node tests/test_fassung.mjs     # Hinweis „Neue Fassung — neu laden" nach einem Deploy
 # Im echten Browser (Prüfstand ohne Backend/Login, ?panel=… wählt den Teil) —
 # Aufruf steht im Kopf der Testdatei; Handy-Format + Touch-Emulation:
 #   tests/test_workspace_browser.cjs  Fensteranordnung (#24)
