@@ -322,6 +322,12 @@ if (welches === "terminal") {
       ] });
     if (String(url).startsWith("/api/ssh/sessions"))
       return json({ sessions: [{ name: "server", sid: "main" }, { name: "server", sid: "2" }] });
+    // Projekt-Terminals (11.10.2026): nur werkstatt hat welche.
+    if (String(url).startsWith("/api/projekte"))
+      return json({ projekte: { werkstatt: [
+        { name: "zeitalter", pfad: "/home/u/zeitalter", befehl: "claude --continue" },
+        { name: "bot", pfad: "/home/u/bot", befehl: "claude" },
+      ] } });
     return json({});
   };
   function Stand() {

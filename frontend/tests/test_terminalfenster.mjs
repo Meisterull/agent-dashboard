@@ -7,8 +7,9 @@
 // irgendetwas überschneidet.
 
 import {
-  MAX_FENSTER, fensterListe, freieSid, heimholen, istTerminalPanel, nebeneinander,
-  neueNummer, nummerVon, panelId, platzZurueck, tabsFuerKlick,
+  MAX_FENSTER, fensterListe, freieSid, heimholen, istProjektSid, istTerminalPanel, nebeneinander,
+  neueNummer, nummerVon, panelId, platzZurueck, projektSid, projektVon, tabLabel, tabsFuerKlick,
+  tabsFuerProjekt,
 } from "../src/terminalFenster.js";
 import { standardLayout } from "../src/workspaceLayout.js";
 
@@ -45,6 +46,21 @@ console.log("Klick auf eine Verbindung:");
   t = tabsFuerKlick("werkstatt", 1, [{ name: "werkstatt", sid: "main", fenster: 2 }], []);
   pruefe("auch ein eben erst geöffneter Tab wird nicht doppelt belegt", t[0].sid === "2", JSON.stringify(t));
   pruefe("freieSid zählt offene UND laufende", freieSid("server", [{ name: "server", sid: "3", fenster: 2 }], laeuft) === "4");
+}
+
+console.log("Projekt-Terminals:");
+{
+  pruefe("projektSid/istProjektSid/projektVon", projektSid("zeitalter") === "p:zeitalter" && istProjektSid("p:zeitalter") && !istProjektSid("p:") && !istProjektSid("2") && !istProjektSid("main") && projektVon("p:bot") === "bot" && projektVon("2") === null);
+  pruefe("tabLabel", tabLabel("w", "main") === "w" && tabLabel("w", "2") === "w ·2" && tabLabel("w", "p:zeitalter") === "w · zeitalter");
+  const laeuft = [{ name: "w", sid: "p:zeitalter" }];
+  pruefe("Projekt-Session zählt nicht für Nummern", freieSid("w", [], laeuft) === "2");
+  let o = tabsFuerProjekt("w", "zeitalter", 1, []);
+  pruefe("neuer Projekt-Tab", gleich(o, [{ name: "w", sid: "p:zeitalter", fenster: 1 }]));
+  pruefe("zweiter Klick im selben Fenster ändert nichts", tabsFuerProjekt("w", "zeitalter", 1, o) === o);
+  const o2 = tabsFuerProjekt("w", "zeitalter", 2, o);
+  pruefe("Klick in anderem Fenster holt den Tab herüber statt zu doppeln", o2.length === 1 && o2[0].fenster === 2);
+  const t = tabsFuerKlick("w", 1, [], laeuft);
+  pruefe("laufende Projekt-Session kommt beim Klick auf die Verbindung zurück", gleich(t, [{ name: "w", sid: "p:zeitalter", fenster: 1 }]));
 }
 
 console.log("Fenster schließen:");

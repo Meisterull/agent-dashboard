@@ -301,6 +301,10 @@ export const getSshBuffer = (name, sid) =>
     `/api/ssh/${encodeURIComponent(name)}/buffer?sid=${encodeURIComponent(sid)}`,
   );
 export const getSshSessions = () => jget("/api/ssh/sessions");
+// Projekt-Terminals (11.10.2026): {projekte: {verbindung: [{name, pfad, befehl}]}}
+export const getProjekte = () => jget("/api/projekte");
+export const putProjekte = (verbindung, projekte) =>
+  jsend(`/api/projekte/${encodeURIComponent(verbindung)}`, "PUT", { projekte });
 export const deleteSshSession = (name, sid) =>
   jsend(
     `/api/ssh/${encodeURIComponent(name)}/session?sid=${encodeURIComponent(sid)}`,

@@ -67,4 +67,23 @@ export default {
   "Terminal {0}": "Terminal {0}",
   "Verbindungen verwalten / neue anlegen": "Manage connections / create new",
   "Verbindung wählen, um ein Terminal zu öffnen": "Select a connection to open a terminal",
+
+  // TerminalPanel.jsx — Projekt-Terminals (11.10.2026)
+  "Projekt-Terminal öffnen (Claude Code in tmux)": "Open project terminal (Claude Code in tmux)",
+  "Projekt-Terminal beenden": "End project terminal",
+  "Projekt-Terminal „{0}“ wirklich beenden?\nDie tmux-Sitzung auf dem Zielrechner wird samt Claude Code gekillt. Die Unterhaltung bleibt — `claude --continue` holt sie zurück.":
+    "Really end project terminal \"{0}\"?\nThe tmux session on the target machine is killed along with Claude Code. The conversation remains — `claude --continue` brings it back.",
+
+  // ConnectionsModal.jsx — Projekte
+  "Projekte": "Projects",
+  "Projekt-Terminals: je Projekt eine dauerhafte Claude-Code-Sitzung (tmux) im Projektordner — Knopf 📁 in der Terminal-Leiste.":
+    "Project terminals: one persistent Claude Code session (tmux) per project in its folder — 📁 button in the terminal bar.",
+  "Name": "Name",
+  "Pfad auf dem Zielrechner": "Path on the target machine",
+  "Startbefehl": "Start command",
+  "+ Projekt": "+ project",
+  "Speichern": "Save",
+  "gespeichert ✓": "saved ✓",
+  "speichert…": "saving…",
+  "Projekt entfernen": "Remove project",
 };

@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState } from "react";
-import { getConnections, getSshSessions, deleteSshSession } from "../api";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { getConnections, getProjekte, getSshSessions, deleteSshSession } from "../api";
 import { bestaetigen, melden } from "./Dialog";
-import Terminal, { DEFAULT_SID } from "./Terminal";
+import Terminal from "./Terminal";
 import ConnectionsModal from "./ConnectionsModal";
 import { lsGet, lsSet } from "../speicher";
 import {
@@ -9,9 +9,12 @@ import {
   fensterListe,
   freieSid,
   heimholen,
+  istProjektSid,
   keyOf,
   neueNummer,
+  tabLabel,
   tabsFuerKlick,
+  tabsFuerProjekt,
 } from "../terminalFenster";
 import { t } from "../sprache";
 
@@ -33,6 +36,13 @@ import { t } from "../sprache";
 // ihres Fensters — warum, steht in terminalFenster.js. Deshalb lebt der
 // Zustand hier im <TerminalVorrat> (einmal, über der Arbeitsfläche) und nicht
 // mehr im Panel; jedes <TerminalPanel n={…}> zeigt nur seine Tabs.
+//
+// PROJEKT-TERMINALS (11.10.2026): Je Verbindung eine Liste von Projekten
+// (Dialog „+" → Projekte, /api/projekte). 📁 an der Verbindung klappt sie auf;
+// ein Tipp öffnet den Tab „werkstatt · zeitalter" (sid "p:zeitalter"), hinter
+// dem der Server eine tmux-Sitzung im Projektordner mit Claude Code startet
+// (app/projekte.py). Für die Tab-Logik ist das ein normaler Tab mit eigener
+// sid — ⇄, ◫, Auto-Reopen funktionieren unverändert. ⏻ killt die tmux-Sitzung.
 
 const ZUORDNUNG_KEY = "terminal-zuordnung-v1"; // {"name:sid": fensternummer}
 
@@ -82,6 +92,7 @@ const Kontext = createContext(null);
 
 export function TerminalVorrat({ fenster, children }) {
   const [connections, setConnections] = useState([]);
+  const [projekte, setProjekte] = useState({}); // {verbindung: [{name, pfad, befehl}]}
   const [open, setOpen] = useState([]); // offene Terminal-Tabs: {name, sid, fenster}
   const [running, setRunning] = useState([]); // serverseitige Sessions: {name, sid}
   const [pendingOpen, setPendingOpen] = useState([]); // beim Mount gefundene Sessions
@@ -97,6 +108,20 @@ export function TerminalVorrat({ fenster, children }) {
     load();
     window.addEventListener("connections:changed", load);
     return () => window.removeEventListener("connections:changed", load);
+  }, []);
+
+  useEffect(() => {
+    const load = () =>
+      getProjekte()
+        .then((d) => setProjekte(d.projekte || {}))
+        .catch(() => setProjekte({}));
+    load();
+    window.addEventListener("projekte:changed", load);
+    window.addEventListener("connections:changed", load);
+    return () => {
+      window.removeEventListener("projekte:changed", load);
+      window.removeEventListener("connections:changed", load);
+    };
   }, []);
 
   // autoOpen NUR beim Mount (Browser-Neustart/Login): dann kommen laufende
@@ -171,6 +196,24 @@ export function TerminalVorrat({ fenster, children }) {
     aktiviere(n, keyOf(tab));
   };
 
+  // 📁 — Projekt-Terminal in diesem Fenster öffnen (oder aus einem anderen
+  // Fenster herüberholen — die Session hat nur einen Client).
+  const vorratOpenRef = useRef(open);
+  vorratOpenRef.current = open;
+  const openProjekt = (name, projekt, n) => {
+    const neu = tabsFuerProjekt(name, projekt, n, vorratOpenRef.current);
+    const tab = neu.find((t) => t.name === name && t.sid === `p:${projekt}`);
+    setOpen(neu);
+    setActive((a) => ({
+      ...Object.fromEntries(
+        Object.entries(a).map(([f, k]) => [f, k === keyOf(tab) && Number(f) !== n ? null : k]),
+      ),
+      [n]: keyOf(tab),
+    }));
+    if (neu !== vorratOpenRef.current)
+      setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+  };
+
   // × — nur das Fenster schließen; die Session läuft serverseitig weiter.
   const close = (tab) => {
     setOpen((o) => o.filter((t) => keyOf(t) !== keyOf(tab)));
@@ -198,14 +241,20 @@ export function TerminalVorrat({ fenster, children }) {
   // Zustand kommt aus loadSessions(), nicht aus lokalem Wegfiltern: sonst
   // verschwindet der Punkt auch dann, wenn das Beenden gescheitert ist.
   const endSession = async (tab) => {
-    const label = tab.sid === DEFAULT_SID ? tab.name : `${tab.name} ·${tab.sid}`;
+    const label = tabLabel(tab.name, tab.sid);
+    const projekt = istProjektSid(tab.sid);
     if (
       !(await bestaetigen({
-        title: t("Session beenden"),
-        text: t(
-          "Session „{0}“ wirklich beenden?\nDie Shell auf dem Agenten-PC wird gekillt — Laufendes geht verloren.",
-          label,
-        ),
+        title: projekt ? t("Projekt-Terminal beenden") : t("Session beenden"),
+        text: projekt
+          ? t(
+              "Projekt-Terminal „{0}“ wirklich beenden?\nDie tmux-Sitzung auf dem Zielrechner wird samt Claude Code gekillt. Die Unterhaltung bleibt — `claude --continue` holt sie zurück.",
+              label,
+            )
+          : t(
+              "Session „{0}“ wirklich beenden?\nDie Shell auf dem Agenten-PC wird gekillt — Laufendes geht verloren.",
+              label,
+            ),
         ok: t("Beenden"),
         danger: true,
       }))
@@ -230,8 +279,8 @@ export function TerminalVorrat({ fenster, children }) {
   return (
     <Kontext.Provider
       value={{
-        fenster, connections, open, running, active,
-        aktiviere, activate, openExtra, close, verschieben, endSession, ended,
+        fenster, connections, projekte, open, running, active,
+        aktiviere, activate, openExtra, openProjekt, close, verschieben, endSession, ended,
       }}
     >
       {children}
@@ -244,9 +293,57 @@ export function TerminalVorrat({ fenster, children }) {
 const fensterWunsch = (aktion, n) =>
   window.dispatchEvent(new CustomEvent("terminal:fenster", { detail: { aktion, n } }));
 
+// 📁 mit aufklappbarer Projektliste einer Verbindung. Schließt bei Klick
+// daneben oder Escape; ein Tipp auf ein Projekt öffnet dessen Terminal.
+function ProjektMenue({ name, projekte, onWahl }) {
+  const [auf, setAuf] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!auf) return;
+    const zu = (e) => {
+      if (e.type === "keydown" ? e.key === "Escape" : !ref.current?.contains(e.target)) setAuf(false);
+    };
+    document.addEventListener("pointerdown", zu);
+    document.addEventListener("keydown", zu);
+    return () => {
+      document.removeEventListener("pointerdown", zu);
+      document.removeEventListener("keydown", zu);
+    };
+  }, [auf]);
+  return (
+    <span ref={ref} className="relative inline-flex">
+      <button
+        onClick={() => setAuf((a) => !a)}
+        title={t("Projekt-Terminal öffnen (Claude Code in tmux)")}
+        data-test={`projekte-${name}`}
+        className="rounded px-1 text-xs text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+      >
+        📁
+      </button>
+      {auf && (
+        <div className="absolute left-0 top-full z-20 mt-1 min-w-[10rem] rounded border border-slate-300 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800">
+          {projekte.map((p) => (
+            <button
+              key={p.name}
+              onClick={() => {
+                setAuf(false);
+                onWahl(p.name);
+              }}
+              title={`${p.pfad} — ${p.befehl}`}
+              className="block w-full px-3 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
 export default function TerminalPanel({ n = 1 }) {
   const {
-    fenster, connections, running, aktiviere, activate, openExtra,
+    fenster, connections, projekte, running, aktiviere, activate, openExtra, openProjekt,
     close, verschieben, endSession, ended, ...vorrat
   } = useContext(Kontext);
   const open = vorrat.open.filter((tab) => tab.fenster === n);
@@ -270,17 +367,27 @@ export default function TerminalPanel({ n = 1 }) {
         )}
         {connections.map((c) => {
           const tabs = open.filter((t) => t.name === c.name);
+          const projektListe = projekte[c.name] || [];
+          const menue = projektListe.length > 0 && (
+            <ProjektMenue
+              name={c.name}
+              projekte={projektListe}
+              onWahl={(p) => openProjekt(c.name, p, n)}
+            />
+          );
           if (tabs.length === 0)
             return (
-              <button
-                key={c.name}
-                onClick={() => activate(c.name, n)}
-                title={`${c.user}@${c.host}`}
-                className="rounded bg-slate-200 px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
-              >
-                {running.some((r) => r.name === c.name) && runningDot}
-                {c.name}
-              </button>
+              <span key={c.name} className="inline-flex items-center">
+                <button
+                  onClick={() => activate(c.name, n)}
+                  title={`${c.user}@${c.host}`}
+                  className="rounded bg-slate-200 px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                >
+                  {running.some((r) => r.name === c.name) && runningDot}
+                  {c.name}
+                </button>
+                {menue}
+              </span>
             );
           return (
             <span key={c.name} className="inline-flex items-center">
@@ -296,7 +403,7 @@ export default function TerminalPanel({ n = 1 }) {
                     }`}
                   >
                     {running.some((r) => keyOf(r) === keyOf(tab)) && runningDot}
-                    {tab.sid === DEFAULT_SID ? c.name : `${c.name} ·${tab.sid}`}
+                    {tabLabel(c.name, tab.sid)}
                   </button>
                   {fenster.length > 1 && (
                     <button
@@ -316,7 +423,7 @@ export default function TerminalPanel({ n = 1 }) {
                   </button>
                   <button
                     onClick={() => endSession(tab)}
-                    title={t("Session beenden")}
+                    title={istProjektSid(tab.sid) ? t("Projekt-Terminal beenden") : t("Session beenden")}
                     className="rounded px-1 text-xs text-slate-400 hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
                   >
                     ⏻
@@ -330,6 +437,7 @@ export default function TerminalPanel({ n = 1 }) {
               >
                 ⧉
               </button>
+              {menue}
             </span>
           );
         })}

@@ -144,7 +144,8 @@ Status eines Tasks: `pending` · `running` · `done` · `error` · `needs_confir
 | `app/mcp_scope.py` | Kanal-Identität + Tool-Allowlists je Agent (Port-Vergabe, Port-Map, `resolve_ident`) |
 | `app/auto_watcher.py` | Automatikmodus: hält pro Agent einen Remote-Watcher per SSH (`/api/automatik*`), stößt im Reconcile-Takt die Weckrufe an |
 | `app/weckruf.py` | Automatik-Weckruf: bündelt ungelesene Nachrichten/Ergebnisse/Rückfragen je Absender zu einem Task (`automatik_weckt`), mit Schleifenschutz |
-| `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal |
+| `app/ssh_bridge.py` | WebSocket ↔ asyncssh für das Browser-Terminal; Projekt-sids `p:<name>` starten eine tmux-Sitzung (ohne Replay, Resize-Wackler nach Reattach) |
+| `app/projekte.py` | Projekt-Terminals: Liste je Verbindung in `projekte.yaml`, tmux-Startzeile/Rückfall/Windows, kill + capture-pane |
 | `app/remote_files.py` | SFTP-Datei-Ops auf den Agenten-PCs (`/api/remote/…`) |
 | `app/upload.py` | Gestreamter Datei-Upload (#48): je Datei eine Anfrage, deren Rumpf die Bytes sind; Grenze `UPLOAD_MAX_MB` (5120 MB, `0` = keine) für nginx und Backend; abgebrochene Uploads hinterlassen kein Bruchstück |
 | `app/austausch.py` | Austausch-Ordner je Maschine: kopiert per SFTP von Maschine A nach `<ordner>/von-<A>/` auf Maschine B (nie überschreiben, `.teil` + Umbenennen, Deckel `AUSTAUSCH_MAX_MB`), Schalter in `settings.json` → `austausch`, Benachrichtigung als `message` (`/api/austausch*`, MCP `send_file`) |
@@ -393,7 +394,7 @@ Ergebnisses unterzugehen.
 | `components/FileViewer.jsx` | Datei-Inhalt im Modal |
 | `components/AgentsPanel.jsx` | MCP-Monitor: Inbox/Outbox je Agent mit Status-Badges, dazu der Abschnitt **Nachrichten** (alles Nicht-Task aus der Inbox: Hinweise, Antworten, Task-Ergebnisse) mit Zähler am Agenten-Kopf und ✓ zum Archivieren |
 | `termScroll.js` | Wischen im Terminal-Verlauf und Größenwechsel: xterm verliert bei einer Wischgeste das Berührungsziel (der DOM-Renderer ersetzt die Zeilen darunter) — die Geste wird per Pointer-Capture selbst geführt; dazu bleibt die Stelle im Verlauf erhalten, wenn die Bildschirmtastatur auf- oder zugeht |
-| `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; das ganze Panel lässt sich verdoppeln (◫, bis 4 Fenster nebeneinander, Tabs per ⇄ hinüberlegen — `terminalFenster.js`); pro Verbindung mehrere Terminals (⧉-Knopf, z. B. Claude Code + eigene Shell nebeneinander); Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf |
+| `components/TerminalPanel.jsx` / `Terminal.jsx` | SSH-Tabs + xterm.js über `/ws/ssh`; das ganze Panel lässt sich verdoppeln (◫, bis 4 Fenster nebeneinander, Tabs per ⇄ hinüberlegen — `terminalFenster.js`); pro Verbindung mehrere Terminals (⧉-Knopf, z. B. Claude Code + eigene Shell nebeneinander); Fenster schließen detacht nur — die Session läuft serverseitig weiter (`SSH_GRACE_SECONDS`, Default 24 h, `0` = unbegrenzt) und lässt sich auch von einem anderen PC wieder öffnen; beendet wird per ⏻-Knopf. **Projekt-Terminals** (📁 an der Verbindung, Liste im Dialog „+" → Projekte): Tab `werkstatt · zeitalter` = tmux-Sitzung `zeitalter` im Projektpfad mit Startbefehl (Default `claude --continue`); ⏻ killt die tmux-Sitzung nach Rückfrage, × detacht nur; „Voller Verlauf" im Kopier-Modus liest `tmux capture-pane` |
 | `components/Settings.jsx` | Einstellungen-Modal (Modellwahl/Sprache/externe Fenster) |
 | `components/Modal.jsx` | generischer Modal-Container (Escape schließt nur den obersten Dialog) |
 | `components/QuestionsBanner.jsx` | Banner offener Rückfragen (`/api/questions`), fremde Fragen eingeklappt |
@@ -443,7 +444,9 @@ Alle Endpunkte unter `/api` (nginx proxyt `/api` und `/ws` an `:5000`).
 | `POST` | `/api/automatik/notaus` | Body `{an}` — globaler Not-Aus (an = alle sofort hart stoppen) |
 | `GET` | `/api/ssh/sessions` | laufende Terminal-Sessions (`name`, `sid`, `attached`, `age`, `idle`) |
 | `DELETE` | `/api/ssh/{name}/session?sid=` | Terminal-Session explizit beenden (⏻-Knopf) |
-| `GET` | `/api/ssh/{name}/buffer?sid=` | Klartext-Replay-Puffer einer Session |
+| `GET` | `/api/ssh/{name}/buffer?sid=` | Klartext-Verlauf einer Session (Replay-Puffer; bei Projekt-Terminals `tmux capture-pane`) |
+| `GET` | `/api/projekte` | Projekt-Terminals je Verbindung: `{projekte: {verbindung: [{name, pfad, befehl}]}}` |
+| `PUT` | `/api/projekte/{verbindung}` | Projektliste ersetzen (`{projekte: [...]}`, leer = Verbindung raus); Name `[A-Za-z0-9_-]{1,32}`, Pfad/Befehl ohne Steuerzeichen |
 | `WS` | `/ws/ssh/{name}` | SSH-Terminal-Bridge (JSON `{type:"data"/"resize"}` rein, Text raus) |
 | `POST` | `/api/chat/stream` | wie `/api/chat`, als SSE-Strom (`start` → `tool`… → `done`/`aborted`/`error`) |
 | `POST` | `/api/chat/stream/{id}/cancel` | laufenden Stream-Turn anhalten |

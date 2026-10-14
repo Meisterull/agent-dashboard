@@ -7,6 +7,8 @@ import {
   createConnection,
   deleteConnection,
   getConnectionPubkey,
+  getProjekte,
+  putProjekte,
 } from "../api";
 
 // SSH-Verbindungen verwalten: anlegen (Server erzeugt das Schlüsselpaar,
@@ -48,6 +50,103 @@ function SetupHint({ result }) {
   );
 }
 
+// Projekt-Terminals (11.10.2026): je Verbindung eine Liste {name, pfad,
+// befehl}, gespeichert über PUT /api/projekte/<verbindung> (projekte.yaml).
+// Nach dem Speichern "projekte:changed" — das Terminal-Panel lädt dann neu.
+// Zeilen sind uncontrolled (defaultValue, GBoard-Regel wie unten) mit
+// stabilen Schlüsseln, damit Entfernen in der Mitte keine Werte verrutscht.
+let zeilenZaehler = 0;
+const neueZeile = (p = {}) => ({
+  id: ++zeilenZaehler,
+  name: p.name || "",
+  pfad: p.pfad || "",
+  befehl: p.befehl || "claude --continue",
+});
+
+function ProjekteEditor({ verbindung, projekte, onGespeichert }) {
+  const [auf, setAuf] = useState(false);
+  const [zeilen, setZeilen] = useState(() => projekte.map(neueZeile));
+  const [busy, setBusy] = useState(false);
+  const [ok, setOk] = useState(false);
+  const [fehler, setFehler] = useState(null);
+
+  const setze = (id, feld) => (e) =>
+    setZeilen((z) => z.map((r) => (r.id === id ? { ...r, [feld]: e.target.value } : r)));
+  const entferne = (id) => setZeilen((z) => z.filter((r) => r.id !== id));
+
+  async function speichern() {
+    setBusy(true);
+    setFehler(null);
+    setOk(false);
+    try {
+      const res = await putProjekte(
+        verbindung,
+        zeilen.map(({ name, pfad, befehl }) => ({
+          name: name.trim(),
+          pfad: pfad.trim(),
+          befehl: befehl.trim(),
+        })),
+      );
+      setZeilen(res.projekte.map(neueZeile));
+      setOk(true);
+      onGespeichert();
+      window.dispatchEvent(new CustomEvent("projekte:changed"));
+    } catch (err) {
+      setFehler(String(err.message || err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const feld =
+    "min-w-0 rounded border border-slate-300 px-1.5 py-1 font-mono text-[11px] dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100";
+  return (
+    <div className="ml-2 border-l border-slate-200 pl-2 dark:border-slate-700">
+      <button
+        onClick={() => setAuf((a) => !a)}
+        data-test={`projekte-editor-${verbindung}`}
+        className="text-[11px] text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+      >
+        {auf ? "▾" : "▸"} 📁 {t("Projekte")} ({zeilen.length})
+      </button>
+      {auf && (
+        <div className="mb-2 mt-1 space-y-1">
+          {zeilen.map((z) => (
+            <div key={z.id} className="grid grid-cols-[6rem_1fr_1fr_auto] items-center gap-1">
+              <input defaultValue={z.name} onChange={setze(z.id, "name")} placeholder={t("Name")} className={feld} />
+              <input defaultValue={z.pfad} onChange={setze(z.id, "pfad")} placeholder={t("Pfad auf dem Zielrechner")} className={feld} />
+              <input defaultValue={z.befehl} onChange={setze(z.id, "befehl")} placeholder={t("Startbefehl")} className={feld} />
+              <button
+                onClick={() => entferne(z.id)}
+                title={t("Projekt entfernen")}
+                className="rounded px-1 text-slate-400 hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
+              >
+                🗑
+              </button>
+            </div>
+          ))}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setZeilen((z) => [...z, neueZeile()])}
+              className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-800"
+            >
+              {t("+ Projekt")}
+            </button>
+            <button
+              onClick={speichern}
+              disabled={busy}
+              className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+            >
+              {busy ? t("speichert…") : ok ? t("gespeichert ✓") : t("Speichern")}
+            </button>
+            {fehler && <span className="text-[11px] text-red-600 dark:text-red-400">{fehler}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ConnectionsModal({ onClose }) {
   const [connections, setConnections] = useState([]);
   const [form, setForm] = useState({ name: "", host: "", port: "22", user: "" });
@@ -56,13 +155,19 @@ export default function ConnectionsModal({ onClose }) {
   const [result, setResult] = useState(null); // {name, public_key, setup_command}
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [projekte, setProjekte] = useState(null); // null = noch nicht geladen
 
   const load = () =>
     getConnections()
       .then((d) => setConnections(d.connections))
       .catch(() => setConnections([]));
+  const loadProjekte = () =>
+    getProjekte()
+      .then((d) => setProjekte(d.projekte || {}))
+      .catch(() => setProjekte({}));
   useEffect(() => {
     load();
+    loadProjekte();
   }, []);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -137,11 +242,14 @@ export default function ConnectionsModal({ onClose }) {
           {connections.length === 0 && (
             <p className="text-xs text-slate-400">{t("keine Verbindungen")}</p>
           )}
+          {connections.length > 0 && (
+            <p className="mb-1 text-[11px] text-slate-400">
+              {t("Projekt-Terminals: je Projekt eine dauerhafte Claude-Code-Sitzung (tmux) im Projektordner — Knopf 📁 in der Terminal-Leiste.")}
+            </p>
+          )}
           {connections.map((c) => (
-            <div
-              key={c.name}
-              className="flex items-center gap-2 border-b border-slate-100 py-1 text-xs dark:border-slate-800"
-            >
+            <div key={c.name} className="border-b border-slate-100 py-1 text-xs dark:border-slate-800">
+            <div className="flex items-center gap-2">
               <span className="font-mono font-medium">{c.name}</span>
               <span className="min-w-0 flex-1 truncate text-slate-400">
                 {c.user}@{c.host}:{c.port}
@@ -171,6 +279,14 @@ export default function ConnectionsModal({ onClose }) {
                   agents.yaml
                 </span>
               )}
+            </div>
+            {projekte && (
+              <ProjekteEditor
+                verbindung={c.name}
+                projekte={projekte[c.name] || []}
+                onGespeichert={loadProjekte}
+              />
+            )}
             </div>
           ))}
         </div>

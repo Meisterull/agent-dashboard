@@ -69,6 +69,8 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   GET  /api/ssh/sessions           laufende Terminal-Sessions (Badge/Auto-Reopen)
   DEL  /api/ssh/{name}/session     Terminal-Session explizit beenden (?sid=…)
   GET  /api/ssh/{name}/buffer      Klartext-Replay-Puffer einer Session (?sid=…)
+  GET  /api/projekte               Projekt-Terminals je Verbindung ({verbindung: [...]})
+  PUT  /api/projekte/{verbindung}  Projektliste einer Verbindung ersetzen
   WS   /ws/ssh/{name}              SSH-Terminal-Bridge (xterm.js)
 
 Start (lokal):  cd backend && uvicorn main:app --host 127.0.0.1 --port 5000
@@ -120,7 +122,8 @@ from app.integrations import list_integrations
 from app.mailbox import AGENT_NAME_RE, ORCHESTRATOR, Mailbox, normalize_envelope
 from app.mailbox import pflege as mailbox_pflege
 from app.orchestrator_core import mcp_session, run_turn
-from app.ssh_bridge import bridge as ssh_bridge, get_buffer, kill_session, list_sessions
+from app import projekte
+from app.ssh_bridge import bridge as ssh_bridge, hole_verlauf, kill_session, list_sessions
 
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/workspace"))
 MAILBOXES = WORKSPACE / "mailboxes"
@@ -1365,6 +1368,12 @@ async def connection_delete(name: str) -> dict:
         p = KEYS_DIR / f"{name}{suffix}"
         if p.exists():
             p.unlink()
+    # Projekt-Terminals der Verbindung mitnehmen — Pfade gehören zu DIESER
+    # Maschine, nicht zu einer später gleich benannten.
+    try:
+        projekte.entferne_verbindung(name)
+    except Exception:
+        pass
     # Der Austausch-Schalter hängt am NAMEN: bliebe er stehen, empfinge eine
     # später gleich benannte (andere!) Maschine sofort Dateien, ohne dass
     # jemand den Ordner dort eingeschaltet hätte.
@@ -1629,10 +1638,36 @@ async def ssh_session_buffer(name: str, sid: str) -> dict:
     zum xterm-Puffer enthält er auch, was eine Alt-Screen-TUI (Claude Code)
     nur neu gezeichnet statt gescrollt hat.
     """
-    text = get_buffer(name, sid)
+    text = await hole_verlauf(name, sid)
     if text is None:
         raise HTTPException(404, f"Keine laufende Terminal-Session '{sid}' für '{name}'.")
     return {"name": name, "sid": sid, "text": text}
+
+
+# --- Projekt-Terminals (11.10.2026, app/projekte.py) -------------------------
+
+@app.get("/api/projekte")
+async def projekte_alle() -> dict:
+    """{verbindung: [{name, pfad, befehl}]} — fürs Terminal-Panel und den Dialog."""
+    return {"projekte": await asyncio.to_thread(projekte.lade_alle)}
+
+
+class ProjekteIn(BaseModel):
+    projekte: list[dict]
+
+
+@app.put("/api/projekte/{verbindung}")
+async def projekte_setzen(verbindung: str, body: ProjekteIn) -> dict:
+    """Projektliste einer Verbindung ersetzen (leere Liste = Verbindung raus)."""
+    if not _CONN_NAME_RE.match(verbindung):
+        raise HTTPException(400, "Name: nur Buchstaben/Zahlen/_/-, max. 32 Zeichen")
+    if not any(a.get("name") == verbindung for a in load_agents_full()):
+        raise HTTPException(404, f"Verbindung '{verbindung}' gibt es nicht")
+    try:
+        liste = await asyncio.to_thread(projekte.speichere, verbindung, body.projekte)
+    except projekte.ProjektFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"verbindung": verbindung, "projekte": liste}
 
 
 @app.websocket("/ws/ssh/{name}")

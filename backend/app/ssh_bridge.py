@@ -32,8 +32,19 @@ import time
 import uuid
 from collections import deque
 
+from app import projekte
 from app.config import agent_connection as _agent_connection  # auch von remote_files genutzt
 from app.ssh_connect import connect_ssh
+
+# Projekt-Terminals (11.10.2026, app/projekte.py): eine sid "p:<projekt>" startet
+# statt der nackten Shell eine tmux-Sitzung im Projektpfad (oder den Rückfall
+# ohne tmux). Beim Reattach wird für sie KEIN Puffer nachgespielt — tmux
+# zeichnet den Bildschirm beim Anhängen selbst; der Puffer bleibt trotzdem
+# gefüllt, weil _pump ihn für alle Sessions führt. Und für alle Sessions gilt
+# nach einem Reattach der „Resize-Wackler": Spalten −1 und zurück, damit eine
+# laufende TUI (Claude Code, tmux) sich per SIGWINCH neu zeichnet — der nach-
+# gespielte Rohstrom war für die alte Fenstergröße gezeichnet und stand nach
+# einem Browser-Neustart in der neuen Breite zerrissen da.
 
 # Überlebenszeit ohne verbundenen Client; 0 = unbegrenzt (nur explizites
 # Beenden oder Shell-Exit räumen auf). Env: SSH_GRACE_SECONDS.
@@ -58,6 +69,9 @@ class _Session:
         self.closed = False
         self.started = time.time()
         self.detached_at: float | None = None  # None = Client hängt dran
+        self.projekt: dict | None = None       # Projekt-Terminal (sid "p:…")
+        self.tmux = False                      # läuft auf dem Zielrechner in tmux
+        self.neuzeichnen = False               # nach Reattach: Resize-Wackler fällig
 
 
 _sessions: dict[str, _Session] = {}
@@ -100,6 +114,24 @@ def get_buffer(agent_name: str, sid: str) -> str | None:
     return strip_ansi("".join(sess.buffer))
 
 
+async def hole_verlauf(agent_name: str, sid: str) -> str | None:
+    """Wie get_buffer — für tmux-Projekt-Terminals aber der echte Verlauf
+    aus tmux (capture-pane, Scrollback + Bildschirm) statt des Rohstroms."""
+    sess = _sessions.get(f"{agent_name}:{sid}")
+    if not sess or sess.closed:
+        return None
+    if sess.projekt and sess.tmux:
+        try:
+            ergebnis = await sess.conn.run(
+                projekte.tmux_verlauf_kommando(sess.projekt), check=False, timeout=15
+            )
+            if ergebnis.exit_status == 0 and ergebnis.stdout is not None:
+                return str(ergebnis.stdout).rstrip("\n")
+        except Exception:
+            pass
+    return strip_ansi("".join(sess.buffer))
+
+
 def _buffer_append(sess: _Session, data: str) -> None:
     sess.buffer.append(data)
     sess.buf_len += len(data)
@@ -107,12 +139,23 @@ def _buffer_append(sess: _Session, data: str) -> None:
         sess.buf_len -= len(sess.buffer.popleft())
 
 
-async def _kill(sess: _Session, notify: bool = True) -> None:
-    """Session endgültig beenden und aufräumen."""
+async def _kill(sess: _Session, notify: bool = True, tmux_auch: bool = False) -> None:
+    """Session endgültig beenden und aufräumen.
+
+    tmux_auch: die tmux-Sitzung auf dem Zielrechner mit beenden — NUR beim
+    ausdrücklichen Beenden (⏻ / kill). Endet der SSH-Prozess von selbst,
+    hat der Mensch vielleicht gerade bewusst detacht (Strg-b d) oder tmux
+    ist schon weg; die Sitzung dann zu killen wäre Datenverlust.
+    """
     sess.closed = True
     _sessions.pop(sess.key, None)
     if sess.expire_task:
         sess.expire_task.cancel()
+    if tmux_auch and sess.projekt and sess.tmux:
+        try:
+            await sess.conn.run(projekte.tmux_kill_kommando(sess.projekt), check=False, timeout=15)
+        except Exception:
+            pass
     ws, sess.ws = sess.ws, None
     if ws and notify:
         try:
@@ -172,7 +215,7 @@ async def kill_session(agent_name: str, sid: str) -> bool:
     sess = _sessions.get(f"{agent_name}:{sid}")
     if not sess:
         return False
-    await _kill(sess)
+    await _kill(sess, tmux_auch=True)
     return True
 
 
@@ -186,10 +229,39 @@ def list_sessions() -> list[dict]:
             "attached": s.ws is not None,
             "age": int(now - s.started),
             "idle": int(now - s.detached_at) if s.detached_at else 0,
+            "projekt": s.projekt["name"] if s.projekt else None,
         }
         for s in list(_sessions.values())
         if not s.closed
     ]
+
+
+async def _wackler(sess: _Session, cols: int, rows: int) -> None:
+    """Resize-Wackler nach Reattach: erst eine Spalte schmaler, dann die
+    echte Größe (vom Aufrufer gesetzt) — zwei SIGWINCH, auf die eine TUI
+    (Claude Code, tmux) mit komplettem Neuzeichnen antwortet. Nötig, weil die
+    neue Größe der alten gleichen kann und dann gar kein Signal käme."""
+    try:
+        sess.proc.change_terminal_size(max(MIN_COLS, cols - 1), rows)
+        await asyncio.sleep(0.05)
+    except Exception:
+        pass
+
+
+async def _projekt_start(conn, projekt: dict) -> tuple[str, bool]:
+    """Startkommando für ein Projekt-Terminal bestimmen: POSIX mit tmux (oder
+    dem tmux-losen Rückfall in derselben Zeile) bzw. Windows ohne tmux.
+    Rückgabe (befehl, tmux_erwartet) — ob tmux wirklich da ist, entscheidet
+    die Shell-Zeile selbst; `tmux_erwartet` steuert nur kill/Verlauf."""
+    windows = False
+    try:
+        ergebnis = await conn.run("uname -s", check=False, timeout=10)
+        windows = ergebnis.exit_status != 0
+    except Exception:
+        windows = False
+    if windows:
+        return projekte.windows_startkommando(projekt), False
+    return projekte.posix_startkommando(projekt), True
 
 
 async def bridge(websocket, agent_name: str) -> None:
@@ -213,7 +285,10 @@ async def bridge(websocket, agent_name: str) -> None:
         # Schnappschuss VOR dem Senden (N10): _pump hängt nebenher an und
         # verwirft links, sobald BUFFER_LIMIT greift — mit laufendem Index
         # würden dabei Stücke übersprungen oder doppelt gesendet.
-        schnappschuss = list(sess.buffer)
+        # Projekt-Terminal: kein Replay — tmux zeichnet beim Anhängen selbst,
+        # und der Rohstrom passte nach einem Browser-Neustart ohnehin nicht
+        # mehr zur neuen Breite. Der Wackler unten holt den Bildschirm.
+        schnappschuss = [] if sess.projekt else list(sess.buffer)
         try:
             for teil in schnappschuss:
                 await websocket.send_text(teil)
@@ -228,6 +303,7 @@ async def bridge(websocket, agent_name: str) -> None:
             return
         sess.ws = websocket
         sess.detached_at = None
+        sess.neuzeichnen = True
     else:
         conn_cfg = _agent_connection(agent_name)
         if not conn_cfg or not conn_cfg.get("host"):
@@ -235,15 +311,34 @@ async def bridge(websocket, agent_name: str) -> None:
             await websocket.close(code=4404)
             return
 
+        projekt = None
+        if projekte.ist_projekt_sid(sid):
+            projekt = projekte.finde(agent_name, projekte.projekt_name_aus_sid(sid))
+            if projekt is None:
+                await websocket.send_text(
+                    f"\r\n[Kein Projekt '{projekte.projekt_name_aus_sid(sid)}' für '{agent_name}' — "
+                    "unter + → Projekte anlegen]\r\n"
+                )
+                await websocket.close(code=4404)
+                return
+
+        tmux = False
         try:
             conn = await connect_ssh(conn_cfg)
-            proc = await conn.create_process(term_type="xterm-256color", term_size=(80, 24))
+            if projekt is None:
+                proc = await conn.create_process(term_type="xterm-256color", term_size=(80, 24))
+            else:
+                befehl, tmux = await _projekt_start(conn, projekt)
+                proc = await conn.create_process(
+                    befehl, term_type="xterm-256color", term_size=(80, 24)
+                )
         except Exception as exc:  # noqa: BLE001
             await websocket.send_text(f"\r\n[SSH-Verbindung fehlgeschlagen: {exc}]\r\n")
             await websocket.close(code=4404)
             return
 
         sess = _Session(key, agent_name, sid, conn, proc)
+        sess.projekt, sess.tmux = projekt, tmux
         _sessions[key] = sess
         sess.ws = websocket
         sess.pump_task = asyncio.create_task(_pump(sess))
@@ -263,11 +358,14 @@ async def bridge(websocket, agent_name: str) -> None:
                 # und meldete so 7 Spalten — die Shell brach danach jede Zeile
                 # in Siebener-Häppchen um, dauerhaft sichtbar im Replay.
                 if cols >= MIN_COLS and rows >= MIN_ROWS:
+                    if sess.neuzeichnen:
+                        sess.neuzeichnen = False
+                        await _wackler(sess, cols, rows)
                     sess.proc.change_terminal_size(cols, rows)
             elif mtype == "ping":
                 await websocket.send_bytes(PONG)
             elif mtype == "kill":
-                await _kill(sess, notify=False)
+                await _kill(sess, notify=False, tmux_auch=True)
                 break
     except Exception:
         pass

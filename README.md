@@ -44,6 +44,10 @@ No SaaS, no telemetry, one hardened Docker container on your own server.
 - **Real SSH terminals in the browser** — tabs per host, several terminals per
   connection, sessions survive disconnects (reattach later, even from another
   device), swipe-scrolling that actually works on touch screens.
+- **Project terminals** — a project list per connection (path + start command,
+  default `claude --continue`); one tap on 📁 opens a persistent tmux session
+  in the project folder with Claude Code running. It survives dashboard
+  restarts and redraws cleanly on reattach.
 - **File exchange between machines** — switch on an exchange folder per
   machine; agents (`send_file`) and you (file panel) drop files into another
   machine's folder. The dashboard copies disk to disk over SFTP, so binaries

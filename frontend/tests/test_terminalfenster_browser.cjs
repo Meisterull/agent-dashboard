@@ -161,6 +161,29 @@ const klick = (page, id, text) =>
   pruefe("vier Terminal-Fenster, überschneidungsfrei", k.filter((x) => x.id.startsWith("terminal")).length === 4 && ueberlappungen(k).length === 0, ueberlappungen(k).join(" "));
   pruefe("mehr geht nicht: ◫ ist verschwunden", !(await page.$('[data-test="terminal-verdoppeln"]')));
 
+  console.log("Projekt-Terminals:");
+  /* Nur werkstatt hat Projekte (fetch-Doppel) → nur dort ein 📁. Ein Tipp auf
+     ein Projekt öffnet den Tab „werkstatt · zeitalter"; derselbe Tipp in einem
+     anderen Fenster holt den Tab dorthin, statt ihn zu doppeln. */
+  pruefe("📁 nur an der Verbindung mit Projekten",
+    !!(await page.$('section[data-panel-id="terminal"] [data-test="projekte-werkstatt"]'))
+    && !(await page.$('section[data-panel-id="terminal"] [data-test="projekte-server"]')));
+  await page.click('section[data-panel-id="terminal"] [data-test="projekte-werkstatt"]');
+  await warte(150);
+  await klick(page, "terminal", "zeitalter");
+  await warte(250);
+  pruefe("Projekt-Tab „werkstatt · zeitalter“ im ersten Fenster",
+    (await tabs(page, "terminal")).includes("werkstatt · zeitalter"), await tabs(page, "terminal"));
+  await page.click('section[data-panel-id="terminal:2"] [data-test="projekte-werkstatt"]');
+  await warte(150);
+  await klick(page, "terminal:2", "zeitalter");
+  await warte(250);
+  pruefe("im zweiten Fenster geöffnet = herübergeholt, nicht gedoppelt",
+    (await tabs(page, "terminal:2")).includes("werkstatt · zeitalter")
+    && !(await tabs(page, "terminal")).includes("werkstatt · zeitalter"),
+    { eins: await tabs(page, "terminal"), zwei: await tabs(page, "terminal:2") });
+  pruefe("Projektmenü ist nach der Wahl zu", !(await page.$eval('section[data-panel-id="terminal:2"]', (s) => [...s.querySelectorAll("button")].some((b) => b.textContent.trim() === "bot"))));
+
   pruefe("keine Skriptfehler", skriptfehler.length === 0, skriptfehler.join(" | "));
   await browser.close();
   console.log(fehler ? `\n${fehler} Fehler` : "\nAlles grün");

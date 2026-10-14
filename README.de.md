@@ -47,6 +47,10 @@ Docker-Container auf deinem eigenen Server.
   Verbindung, Sessions überleben Verbindungsabbrüche (später wieder andocken,
   auch von einem anderen Gerät), Wisch-Scrollen, das auf Touchscreens
   wirklich funktioniert.
+- **Projekt-Terminals** — je Verbindung eine Projektliste (Pfad + Startbefehl,
+  Default `claude --continue`); ein Tipp auf 📁 öffnet eine dauerhafte
+  tmux-Sitzung im Projektordner mit laufendem Claude Code. Sie überlebt
+  Dashboard-Neustarts und zeichnet sich beim Wiederanhängen sauber neu.
 - **Dateiaustausch zwischen Maschinen** — je Maschine lässt sich ein
   Austausch-Ordner einschalten; Agenten (`send_file`) und du (Datei-Panel)
   legen Dateien in den Ordner einer anderen Maschine. Das Dashboard kopiert

@@ -20,6 +20,36 @@ export const nummerVon = (id) => (id === "terminal" ? 1 : Number(id.split(":")[1
 export const DEFAULT_SID = "main";
 export const keyOf = (t) => `${t.name}:${t.sid}`;
 
+// --- Projekt-Terminals (11.10.2026) ------------------------------------------
+// Ein Projekt-Tab hat die sid "p:<projekt>" — der Server (app/projekte.py)
+// startet dafür eine tmux-Sitzung im Projektpfad statt einer nackten Shell.
+// Die Nummern-Logik (freieSid) bleibt davon unberührt: "p:…" kollidiert nie
+// mit "2", "3", …; laufende Projekt-Sessions kommen beim Mount wie alle
+// anderen zurück (tabsFuerKlick/Auto-Reopen kennen nur name+sid).
+export const PROJEKT_PRAEFIX = "p:";
+export const projektSid = (projekt) => PROJEKT_PRAEFIX + projekt;
+export const istProjektSid = (sid) =>
+  typeof sid === "string" && sid.startsWith(PROJEKT_PRAEFIX) && sid.length > PROJEKT_PRAEFIX.length;
+export const projektVon = (sid) => (istProjektSid(sid) ? sid.slice(PROJEKT_PRAEFIX.length) : null);
+
+// Beschriftung eines Tabs: "werkstatt", "werkstatt ·2", "werkstatt · zeitalter".
+export function tabLabel(name, sid) {
+  if (sid === DEFAULT_SID) return name;
+  if (istProjektSid(sid)) return `${name} · ${projektVon(sid)}`;
+  return `${name} ·${sid}`;
+}
+
+// Projekt in Fenster `n` öffnen: Liegt der Tab schon in einem anderen Fenster,
+// wird er hierher geholt (eine Session hat serverseitig genau EINEN Client —
+// ein zweiter Tab nähme ihn dem ersten weg); sonst kommt er neu dazu. Gibt
+// die neue Tab-Liste zurück.
+export function tabsFuerProjekt(name, projekt, n, open) {
+  const sid = projektSid(projekt);
+  const da = open.find((t) => t.name === name && t.sid === sid);
+  if (da) return da.fenster === n ? open : open.map((t) => (t === da ? { ...t, fenster: n } : t));
+  return [...open, { name, sid, fenster: n }];
+}
+
 // Gespeicherte Fensterliste säubern: 1 ist immer dabei, keine Dopplungen,
 // nur ganze Zahlen ≥ 2, höchstens MAX_FENSTER.
 export function fensterListe(roh) {

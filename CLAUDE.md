@@ -116,6 +116,11 @@ backend/
                            mehrere Terminals pro Verbindung möglich;
                            SSH_GRACE_SECONDS Default 24 h, 0 = ∞;
                            GET /api/ssh/sessions fürs UI-Badge/Auto-Reopen)
+    projekte.py            Projekt-Terminals (11.10.2026): {verbindung: [{name,
+                           pfad, befehl}]} in /workspace/config/projekte.yaml
+                           (PUT /api/projekte/<verbindung>, Dialog „+" → Projekte);
+                           sid "p:<name>" → ssh_bridge startet die tmux-Zeile
+                           (posix_startkommando) statt der Shell; s. Gotchas
     mcp_tunnel.py          Reverse-SSH-Tunnel: MCP-Server auf die Agenten-PCs
                            (supervisord `mcp-tunnel`, Gate MCP_TUNNEL_ENABLED)
     auto_watcher.py        Automatikmodus (Issue #12): hält pro Agent einen
@@ -208,6 +213,7 @@ python scripts/agent_watcher.py --agent frontend --root /tmp/mb/mailboxes --dry-
 # Tests: alles Standardlib, läuft auf dem Host wie im Container
 cd backend && python -m tests.run_alle             # alle Module (je eigener Prozess)
 cd backend && python -m tests.test_mcp_tools       # einzelnes Modul
+cd backend && python -m tests.test_projekte        # Projekt-Terminals: YAML, tmux-Zeile, Brücke
 
 # Ganzer Stack
 docker compose up --build                      # nginx+api+mcp(+tunnel) via supervisord
@@ -593,6 +599,26 @@ der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Bl�
   und cp1252 tolerant — nur echte Binärdaten (NUL-Bytes) werden abgelehnt. Das
   `encoding` aus dem Lese-Ergebnis geht beim Speichern mit zurück, die Datei bleibt
   also in ihrer Kodierung (Windows-Agenten-PCs!). Gilt für Workspace UND SFTP.
+- **Projekt-Terminals + tmux** (11.10.2026, `app/projekte.py`, per /ausfragen
+  abgenommen): Tab `werkstatt · zeitalter` = sid `p:zeitalter`; die Brücke führt
+  auf dem Zielrechner EINE Shell-Zeile aus: `has-session -t =name` (exakt) →
+  sonst `new-session -d -c <pfad>` + Startbefehl per `send-keys -l` (literal, die
+  Eingabe wartet im PTY bis die Shell liest) → `status off`, `mouse on`,
+  `history-limit 50000` (global, VOR dem Anlegen — wirkt nur für neue Fenster)
+  → `exec attach -d` (wirft andere Clients ab, gewählt). **tmux 3.4 nimmt das
+  `=`-Präfix nur bei has-/kill-session an**, bei send-keys/set-option/
+  capture-pane/attach heißt es „can't find pane" — dort der nackte Name (die
+  exakte Sitzung existiert dann schon, sie gewinnt vor Präfix-Treffern). Ohne
+  tmux (Windows-PC: `uname -s` scheitert) Rückfall `cd && befehl` ohne
+  Dauerhaftigkeit. **Kein Replay** für Projekt-Sessions beim Reattach (tmux
+  zeichnet selbst); tmux-kill NUR bei ⏻/kill, nie wenn der SSH-Prozess von
+  selbst endet (Strg-b d = bewusstes Detach). **Resize-Wackler** für ALLE
+  Sessions nach Reattach (`_wackler`: Spalten −1, dann echt): der nachgespielte
+  Rohstrom ist für die alte Breite gezeichnet; erst SIGWINCH lässt Claude Code/
+  tmux komplett neu zeichnen — ist die Größe gleich geblieben, käme sonst gar
+  keins. Verlauf im Kopier-Modus = `capture-pane -p -J -S -` über
+  `hole_verlauf`. Vorbelegung liegt NUR im Volume (`workspace/config/
+  projekte.yaml`, uid 10001 — per `docker exec -u app` schreiben), nicht im Repo.
 - **Terminal + ausgeblendetes Panel:** Workspace.jsx versteckt inaktive Panels mit
   `hidden` (display:none), und App.jsx feuert nach jedem Tab-Wechsel ein `resize`.
   Ein xterm darin darf dann NICHT fitten und keine Größe melden — `istSichtbar()`
