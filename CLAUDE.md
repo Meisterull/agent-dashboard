@@ -145,6 +145,13 @@ frontend/                  React 18 + Vite 6 + Tailwind v4 (komplettes Dashboard
                            (DOM-Renderer ersetzt die Zeilen) — Zeiger festhalten
                            statt nativ scrollen; fittenOhneSprung hält die
                            Stelle im Verlauf beim Tastatur-Wechsel
+  src/termEingabe.js       Bildschirmtastatur im Terminal (10.10.2026): xterm schickt
+                           nach einem angenommenen Wortvorschlag die GANZE Zeile noch
+                           einmal (`neu.replace(alt, "")` im CompositionHelper) — auf
+                           Touch-Geräten fangen wir keyCode-229-/input-/composition-
+                           Ereignisse an der Terminal-Wurzel ab und schicken den echten
+                           Unterschied (Rücktasten + neuer Schluss). Was am Textfeld
+                           vorbei ans Terminal geht (Tastenleiste), ruft `leeren()`
 scripts/agent_watcher.py   Remote-Watcher, nur Standardlib. Transporte: --root
                            (Datei-Mailbox) ODER --mcp-url (über den gebundenen
                            MCP-Kanal, kein Mount); auf stdin: "stop"/EOF = sanft
@@ -178,12 +185,13 @@ cd frontend && node tests/test_layout.mjs      # Fensteranordnung, rein rechneri
 cd frontend && node tests/test_terminalfenster.mjs  # Terminal-Fenster verdoppeln: Tab-Zuordnung, Nebeneinander
 cd frontend && node tests/test_woerter.mjs     # Wörterbuch-Konsistenz (Duplikate, Platzhalter)
 cd frontend && node tests/test_verbindung.mjs  # Terminal: Herzschlag, Eingabe-Warteschlange, Zwergen-Maße
+cd frontend && node tests/test_eingabe.mjs     # Terminal: Textvergleich für Wortvorschläge der Bildschirmtastatur
 # Im echten Browser (Prüfstand ohne Backend/Login, ?panel=… wählt den Teil) —
 # Aufruf steht im Kopf der Testdatei; Handy-Format + Touch-Emulation:
 #   tests/test_workspace_browser.cjs  Fensteranordnung (#24)
 #   tests/test_terminalfenster_browser.cjs  Terminal verdoppeln (◫/⇄/✕, ?panel=terminalfenster)
 #   tests/test_agents_browser.cjs     Agenten-Panel: Nachrichten (#33)
-#   tests/test_terminal_browser.cjs   Terminal wischen/Größenwechsel (#35)
+#   tests/test_terminal_browser.cjs   Terminal wischen/Größenwechsel (#35), Wortvorschläge
 #   tests/test_keybar_browser.cjs     Tastenleiste bleibt wischbar
 #   tests/test_dateien_browser.cjs    Datei-Panel: Austausch-Ordner (📥/📤)
 
@@ -588,6 +596,10 @@ der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Bl�
   Ein xterm darin darf dann NICHT fitten und keine Größe melden — `istSichtbar()`
   aus termVerbindung.js prüfen (Browser-Test in test_terminal_browser.cjs).
   Der Server verwirft resize < 20×3 zusätzlich (`ssh_bridge.MIN_COLS/MIN_ROWS`).
+  Gefittet wird außerdem über einen ResizeObserver am Terminal-Container
+  (10.10.2026): Textzeile (Aa), Rückfragen-Banner und gezogene Fenster ändern den
+  Platz ohne window-resize — bis zum nächsten Tab-Wechsel passten Zeilen/Spalten
+  dann nicht zum sichtbaren Bereich.
 - **Terminal-Fenster verdoppeln** (07.10.2026, `frontend/src/terminalFenster.js`): ◫ in
   der SSH-Leiste legt ein weiteres Terminal-Panel daneben (Panel-Ids `terminal`,
   `terminal:2`, … — höchstens 4, Liste in localStorage `terminal-fenster-v1`). Die

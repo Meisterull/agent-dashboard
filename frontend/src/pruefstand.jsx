@@ -17,6 +17,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { fittenOhneSprung, wischScrollen } from "./termScroll";
+import { imeEingabe } from "./termEingabe";
 import { istSichtbar } from "./termVerbindung";
 import Workspace from "./components/Workspace";
 import TerminalPanel, { TerminalVorrat, useTerminalFenster } from "./components/TerminalPanel";
@@ -259,7 +260,10 @@ if (welches === "terminal") {
     for (let i = 1; i <= 300; i++) term.writeln(`Zeile ${i} — Ausgabe im Verlauf`);
     // Dieselben zwei Handgriffe wie in Terminal.jsx — der Test prüft damit den
     // Code, der auch produktiv läuft, nicht eine Nachbildung.
-    if (!new URLSearchParams(location.search).has("roh")) wischScrollen(term);
+    if (!new URLSearchParams(location.search).has("roh")) {
+      wischScrollen(term);
+      window.__ime = imeEingabe(term);
+    }
     window.__term = term;
     // Was xterm an die ANWENDUNG schickt (Maus-Reports, Pfeiltasten): der
     // TUI-Test liest hier mit, statt eine echte PTY zu brauchen.

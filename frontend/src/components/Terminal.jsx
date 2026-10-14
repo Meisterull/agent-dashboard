@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import KeyBar from "./KeyBar";
 import { tastaturOffen, tastaturSchliessen } from "../viewport";
 import { fittenOhneSprung, wischScrollen } from "../termScroll";
+import { imeEingabe } from "../termEingabe";
 import { Herzschlag, Warteschlange, istSichtbar, plausibleGroesse } from "../termVerbindung";
 import { encodeKey, encodeChar } from "../keys";
 import { getSshBuffer } from "../api";
@@ -127,6 +128,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   const [hinweis, setHinweis] = useState(null);
   const warteRef = useRef(new Warteschlange()); // Eingaben während der Trennung
   const herzRef = useRef(null); // Herzschlag der laufenden Verbindung
+  const imeRef = useRef(null); // Bildschirmtastatur-Übersetzer (termEingabe.js)
   const [mods, setMods] = useState({ ctrl: false, alt: false, shift: false });
   const modsRef = useRef(mods);
   modsRef.current = mods;
@@ -152,6 +154,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
 
   const handleKey = (key, fixed = {}) => {
     sendRaw(encodeKey(key, { ...modsRef.current, ...fixed }));
+    // Die Taste ging am Textfeld der Bildschirmtastatur vorbei — dessen Stand
+    // passt nicht mehr zur Zeile im Terminal (termEingabe.js).
+    imeRef.current?.leeren();
     clearMods();
   };
 
@@ -219,6 +224,11 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     // Hat eine TUI das Sagen (Claude Code: Alternativpuffer/Maus-Reporting),
     // reicht dieselbe Geste den Fingerweg als Mausrad an die Anwendung weiter.
     const scrollGeste = wischScrollen(term);
+
+    // Wortvorschläge der Bildschirmtastatur: xterm schickt nach einem
+    // angenommenen Vorschlag die ganze Zeile noch einmal (termEingabe.js).
+    const ime = imeEingabe(term);
+    imeRef.current = ime;
 
     // Hinweis-Badge: schaltet eine TUI Maus-Reporting ein (?1000h/?1006h),
     // deaktiviert xterm.js seinen Selection-Service und setzt die Klasse
@@ -471,6 +481,22 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     requestAnimationFrame(() => {
       if (!gone) onResize();
     });
+    // Nicht jede Größenänderung ist ein Fenster-resize: Textzeile (Aa) auf/zu,
+    // das Rückfragen-Banner, ein gezogenes oder verdoppeltes Fenster ändern
+    // den Platz des Terminals, ohne dass window etwas meldet. Bis zum nächsten
+    // Tab-Wechsel passten dann Zeilen/Spalten nicht zum sichtbaren Bereich —
+    // TUI-Dialoge (Rückfragen in Claude Code) standen verschoben oder
+    // abgeschnitten da (10.10.2026). Der Beobachter am Container fängt alles.
+    // Kurz warten, bis die Größe steht: beim Ziehen eines Fensters bekäme die
+    // Shell sonst jede Zwischengröße gemeldet.
+    let fitTimer = null;
+    const groesse = new ResizeObserver(() => {
+      clearTimeout(fitTimer);
+      fitTimer = setTimeout(() => {
+        if (!gone) onResize();
+      }, 120);
+    });
+    groesse.observe(termEl);
 
     return () => {
       gone = true;
@@ -484,7 +510,11 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       setMouseCaptured(false);
       setTakenOver(false);
       mouseObs.disconnect();
+      groesse.disconnect();
+      clearTimeout(fitTimer);
       scrollGeste();
+      ime.abraeumen();
+      imeRef.current = null;
       termEl.removeEventListener("mousedown", onTermMouseDown);
       document.removeEventListener("mouseup", handleMouseUp);
       window.removeEventListener("resize", onResize);

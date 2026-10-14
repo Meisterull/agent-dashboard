@@ -209,6 +209,66 @@ const pruefe = (was, ok, zusatz = "") => {
     await page.close();
   }
 
+  // Befund vom 10.10.2026: nach einem angenommenen Wortvorschlag stand die
+  // ganze bisher getippte Zeile doppelt im Terminal (termEingabe.js). Android
+  // meldet Tasten als keyCode 229 und ändert danach das versteckte Textfeld —
+  // genau diese Ereignisfolge wird hier nachgestellt.
+  const tippen = async (page, schritte) => {
+    await page.evaluate(() => {
+      window.__term.focus();
+      window.__daten.length = 0;
+    });
+    for (const neu of schritte) {
+      await page.evaluate((wert) => {
+        const feld = window.__term.textarea;
+        const los = (ev) => feld.dispatchEvent(ev);
+        los(new KeyboardEvent("keydown", { keyCode: 229, key: "Unidentified", bubbles: true, cancelable: true }));
+        los(new InputEvent("beforeinput", { inputType: "insertCompositionText", bubbles: true, cancelable: true }));
+        feld.value = wert;
+        los(new InputEvent("input", { inputType: "insertCompositionText", bubbles: true }));
+        los(new KeyboardEvent("keyup", { keyCode: 229, key: "Unidentified", bubbles: true }));
+      }, neu);
+      await new Promise((r) => setTimeout(r, 30)); // xterm vergleicht per setTimeout(0)
+    }
+    // Was stünde in der Zeile? Rücktasten auf das Gesendete anwenden.
+    return page.evaluate(() => {
+      let zeile = "";
+      for (const z of Array.from(window.__daten.join("")))
+        zeile = z === "\x7f" ? Array.from(zeile).slice(0, -1).join("") : zeile + z;
+      return { zeile, roh: window.__daten.join("") };
+    });
+  };
+  // „tse" getippt, Vorschlag „Test " angenommen, dann weitergeschrieben
+  const FOLGE = ["d", "da", "das", "das ", "das t", "das ts", "das tse", "das Test ", "das Test h", "das Test hi"];
+
+  console.log("\nWortvorschlag ohne Gegenmaßnahme (xterm pur):");
+  {
+    const { page } = await messen(`${ZIEL}&roh`);
+    const { zeile } = await tippen(page, FOLGE);
+    pruefe("Befund bestätigt: die Zeile steht doppelt da", zeile !== "das Test hi" && zeile.includes("das Test"), JSON.stringify(zeile));
+    await page.close();
+  }
+
+  console.log("\nWortvorschlag mit termEingabe.js:");
+  {
+    const { page } = await messen(ZIEL);
+    const { zeile, roh } = await tippen(page, FOLGE);
+    pruefe("in der Zeile steht genau das Getippte", zeile === "das Test hi", JSON.stringify(zeile));
+    pruefe("ersetzt wurde nur das letzte Wort (3 Rücktasten)", roh.split("\x7f").length - 1 === 3, JSON.stringify(roh));
+
+    // Echte Enter-Taste läuft weiter über xterm und setzt den Stand zurück
+    await page.keyboard.press("Enter");
+    await new Promise((r) => setTimeout(r, 50));
+    const danach = await tippen(page, ["l", "ls"]);
+    pruefe("nach Enter beginnt der Vergleich neu", danach.zeile === "ls", JSON.stringify(danach.roh));
+
+    // Tastenleiste schickt am Textfeld vorbei → leeren() setzt neu auf
+    await page.evaluate(() => window.__ime.leeren());
+    const neu = await tippen(page, ["x"]);
+    pruefe("nach leeren() kommt nur das neue Zeichen", neu.roh === "x", JSON.stringify(neu.roh));
+    await page.close();
+  }
+
   await browser.close();
   console.log(fehler ? `\n${fehler} Prüfung(en) fehlgeschlagen` : "\nalles grün");
   process.exit(fehler ? 1 : 0);
