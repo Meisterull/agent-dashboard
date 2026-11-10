@@ -125,11 +125,18 @@ def read_file(relpath: str) -> dict[str, Any]:
     }
 
 
-def write_file(relpath: str, content: str, encoding: str = "utf-8") -> dict[str, Any]:
-    """Editor-Speichern: Datei komplett überschreiben (Kodierung der Datei erhalten)."""
+def write_file(relpath: str, content: str, encoding: str = "utf-8",
+               neu: bool = False) -> dict[str, Any]:
+    """Editor-Speichern: Datei komplett überschreiben (Kodierung der Datei erhalten).
+
+    `neu=True` (Datei-Panel „Neue Datei"): vorhandene Dateien werden NICHT
+    angefasst — Bug-Hunt 22.10.2026: ein vorhandener Name wurde sonst
+    kommentarlos auf 0 Byte gekürzt."""
     p = _safe(relpath)
     if p.is_dir():
         raise FilesError(f"ist ein Verzeichnis: {relpath}")
+    if neu and (p.exists() or p.is_symlink()):
+        raise FilesError(f"existiert schon: {relpath}")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(encode_text(content, encoding))
     return {"path": relpath, "size": p.stat().st_size}
@@ -152,13 +159,26 @@ def make_dir(relpath: str) -> dict[str, Any]:
     return {"path": str(p.relative_to(WORKSPACE))}
 
 
+def _eintrag(relpath: str) -> Path:
+    """Der angeklickte Eintrag selbst, NICHT sein Symlink-Ziel (Bug-Hunt
+    22.10.2026): `_safe` löst auf, und delete/rename trafen dadurch den
+    echten Ordner hinter einem Link. Der Elternordner muss im Workspace
+    liegen (und nicht gesperrt sein); der Link darf zeigen, wohin er will."""
+    rel = (relpath or "").lstrip("/")
+    roh = WORKSPACE / rel
+    if roh.is_symlink():
+        _safe(str(Path(rel).parent))
+        return roh
+    return _safe(relpath)
+
+
 def rename(relpath: str, new_relpath: str) -> dict[str, Any]:
     """Datei/Ordner umbenennen bzw. verschieben (beides workspace-intern)."""
-    src = _safe(relpath)
+    src = _eintrag(relpath)
     dst = _safe(new_relpath)
-    if not src.exists():
+    if not (src.exists() or src.is_symlink()):
         raise FilesError(f"nicht gefunden: {relpath}")
-    if dst.exists():
+    if dst.exists() or dst.is_symlink():
         raise FilesError(f"Ziel existiert schon: {new_relpath}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dst)
@@ -166,11 +186,13 @@ def rename(relpath: str, new_relpath: str) -> dict[str, Any]:
 
 
 def delete(relpath: str) -> dict[str, Any]:
-    """Datei oder Ordner (rekursiv) löschen."""
-    p = _safe(relpath)
+    """Datei oder Ordner (rekursiv) löschen; ein Symlink wird nur ausgehängt."""
+    p = _eintrag(relpath)
     if p == WORKSPACE:
         raise FilesError("Workspace-Wurzel kann nicht gelöscht werden")
-    if p.is_dir():
+    if p.is_symlink():
+        p.unlink()
+    elif p.is_dir():
         shutil.rmtree(p)
     elif p.exists():
         p.unlink()
@@ -184,6 +206,11 @@ def upload_ziel(rel_dir: str, filename: str) -> Path:
     wird auf den Basename gekürzt. Getrennt von save_upload, damit der
     gestreamte Upload (app/upload.py, #48) dieselben Prüfungen durchläuft."""
     base = _safe(rel_dir)
+    if not base.exists():
+        # Zielordner anlegen (Bug-Hunt 22.10.2026): der Chat lädt nach
+        # uploads/chat/<Datum>, und den Tagesordner legte niemand an —
+        # Anhänge scheiterten immer mit „kein Verzeichnis".
+        base.mkdir(parents=True, exist_ok=True)
     if not base.is_dir():
         raise FilesError(f"kein Verzeichnis: {rel_dir}")
     # Review N: Path.name schützt nur vor "/" — Windows-Clients schicken

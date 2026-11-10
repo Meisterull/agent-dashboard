@@ -43,6 +43,11 @@ export default {
   "Aktualisieren": "Refresh",
   "✓ kopiert": "✓ copied",
   "Alles kopieren": "Copy all",
+  "Markierung kopieren": "Copy selection",
+  // Terminal.jsx — Kopier-Menü bei langem Druck (termLangdruck.js)
+  "Zeile kopieren": "Copy line",
+  "Absatz kopieren": "Copy paragraph",
+  "Markieren …": "Select …",
   "Schließen": "Close",
 
   // Terminal.jsx — Textzeile

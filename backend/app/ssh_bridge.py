@@ -72,6 +72,8 @@ class _Session:
         self.projekt: dict | None = None       # Projekt-Terminal (sid "p:…")
         self.tmux = False                      # läuft auf dem Zielrechner in tmux
         self.neuzeichnen = False               # nach Reattach: Resize-Wackler fällig
+        self.cols: int | None = None           # zuletzt gesetzte Größe — gleiche Größe
+        self.rows: int | None = None           # heißt: kein SIGWINCH, kein Neuzeichnen
 
 
 _sessions: dict[str, _Session] = {}
@@ -322,10 +324,26 @@ async def bridge(websocket, agent_name: str) -> None:
                 await websocket.close(code=4404)
                 return
 
+        # Container-Shell (Issue #49): sid "c:docker:<name>" / "c:lxc:<vmid>".
+        container_befehl = None
+        if sid.startswith("c:"):
+            from app import container  # spät: container → remote_files → ssh_bridge
+
+            try:
+                container_befehl = container.shell_befehl(agent_name, sid)
+            except container.ContainerFehler as exc:
+                await websocket.send_text(f"\r\n[{exc}]\r\n")
+                await websocket.close(code=4404)
+                return
+
         tmux = False
         try:
             conn = await connect_ssh(conn_cfg)
-            if projekt is None:
+            if container_befehl is not None:
+                proc = await conn.create_process(
+                    container_befehl, term_type="xterm-256color", term_size=(80, 24)
+                )
+            elif projekt is None:
                 proc = await conn.create_process(term_type="xterm-256color", term_size=(80, 24))
             else:
                 befehl, tmux = await _projekt_start(conn, projekt)
@@ -358,10 +376,23 @@ async def bridge(websocket, agent_name: str) -> None:
                 # und meldete so 7 Spalten — die Shell brach danach jede Zeile
                 # in Siebener-Häppchen um, dauerhaft sichtbar im Replay.
                 if cols >= MIN_COLS and rows >= MIN_ROWS:
+                    gleich = (cols, rows) == (sess.cols, sess.rows)
                     if sess.neuzeichnen:
                         sess.neuzeichnen = False
-                        await _wackler(sess, cols, rows)
-                    sess.proc.change_terminal_size(cols, rows)
+                        # Replay-Session bei unveränderter Größe: der nachgespielte
+                        # Rohstrom stimmt schon. Jedes SIGWINCH ließe Claude Code
+                        # den Bildschirm NEU zeichnen, ohne den alten zu löschen —
+                        # die letzte Antwort stand dann zwei- bis dreimal
+                        # untereinander (Screenshots 12./14.10.2026). Nur tmux
+                        # (kein Replay, Fenster leer) braucht den Wackler.
+                        if gleich and not sess.projekt:
+                            continue
+                        if gleich:
+                            await _wackler(sess, cols, rows)
+                            gleich = False
+                    if not gleich:
+                        sess.proc.change_terminal_size(cols, rows)
+                        sess.cols, sess.rows = cols, rows
             elif mtype == "ping":
                 await websocket.send_bytes(PONG)
             elif mtype == "kill":

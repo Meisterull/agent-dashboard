@@ -2,7 +2,12 @@ import { lsGet, lsSet } from "../speicher";
 import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
+import { SCHRIFT_FAMILIE, schriftenLaden, schriftFuerSpalten, vergroessernErlaubt } from "../termSchrift";
+import { tastaturRahmen } from "../termTastatur";
+import { langDruck, pufferZeileBei } from "../termLangdruck";
+import { logischeZeilen, textBei } from "../termAbsatz";
 import KeyBar from "./KeyBar";
 import { tastaturOffen, tastaturSchliessen } from "../viewport";
 import { fittenOhneSprung, wischScrollen } from "../termScroll";
@@ -103,11 +108,17 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   const fitRef = useRef(null);
   const wsRef = useRef(null);
   const termRef = useRef(null); // xterm-Instanz, für Kopier-Modus außerhalb des Effects
+  // Am Handy: Größe → Spaltenzahl (ohne zu fitten), für die Mindestspalten-Sperre.
+  const spaltenRef = useRef(null);
   // Zeigt eine TUI-App (z.B. Claude Code) Maus-Interesse an (?1000h & Co.),
   // deaktiviert xterm.js die eigene Auswahl komplett — dann hilft nur
   // Shift+Ziehen oder der Kopier-Modus. Der Zustand steuert den Hinweis-Badge.
   const [mouseCaptured, setMouseCaptured] = useState(false);
   const [copyView, setCopyView] = useState(null); // {text} | null = Kopier-Modus
+  // Langer Druck (termLangdruck.js): {x, y, treffer} | null — Kopier-Menü am Finger
+  const [langMenue, setLangMenue] = useState(null);
+  const [kopiertHinweis, setKopiertHinweis] = useState(false);
+  const huelleRef = useRef(null);
   const [copied, setCopied] = useState(false);
   // Textzeile (primär fürs Handy): Androids Wortvorschläge laufen als
   // IME-Komposition, und direkt im xterm wird angenommener Text dabei
@@ -172,10 +183,14 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   const schriftAendern = (schritt) => {
     const term = termRef.current;
     if (!term) return;
-    const neue = Math.min(
-      SCHRIFT_MAX,
-      Math.max(SCHRIFT_MIN, (term.options.fontSize || 13) + schritt),
-    );
+    const alt = term.options.fontSize || 13;
+    const neue = Math.min(SCHRIFT_MAX, Math.max(SCHRIFT_MIN, alt + schritt));
+    // Am Handy nicht so groß, dass Claude Code unter MIN_SPALTEN rutscht:
+    // dann zerfallen Rückfragen-Reiter und Statuszeilen (termSchrift.js).
+    if (spaltenRef.current && !vergroessernErlaubt(alt, neue, spaltenRef.current)) {
+      term.options.fontSize = alt;
+      return;
+    }
     term.options.fontSize = neue;
     lsSet("term.fontSize", String(neue));
     fitRef.current?.(); // fittet und meldet die neue Größe an die Gegenseite
@@ -203,6 +218,11 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   useEffect(() => {
     const term = new XTerm({
       fontSize: leseSchrift(),
+      // Mitgelieferte Schrift (termSchrift.js) — die Android-Ersatzschrift
+      // zeigt viele Claude-Code-Zeichen als leere Kästchen.
+      fontFamily: SCHRIFT_FAMILIE,
+      // Für das Unicode-11-Addon (term.unicode) nötig.
+      allowProposedApi: true,
       theme: { background: "#1e293b" },
       cursorBlink: true,
       // Auf dem Mac erzwingt ⌥+Ziehen die Auswahl, wenn eine TUI die Maus
@@ -212,9 +232,25 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Zeichenbreiten wie Claude Code (Unicode 11): mit den alten Tabellen
+    // zählt xterm Zeichen wie ✔ ☒ ⏺ anders breit als die TUI, Reste alter
+    // Zeilen blieben stehen (Rückfragen-Dialog, 08.11.2026).
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
     const termEl = ref.current;
     const sichtbar = () => istSichtbar(termEl);
     term.open(termEl);
+    const grob = window.matchMedia("(pointer: coarse)").matches;
+    // Spalten bei Schriftgröße g, ohne die Größe wirklich zu ändern.
+    const spaltenBei = (g) => {
+      const vorher = term.options.fontSize;
+      term.options.fontSize = g;
+      const cols = fit.proposeDimensions()?.cols;
+      term.options.fontSize = vorher;
+      return cols ?? Infinity;
+    };
+    spaltenRef.current = grob ? spaltenBei : null;
     // Ausgeblendet (display:none) misst das FitAddon Unsinn — dann bleibt es
     // bei 80×24, bis das Panel vorne liegt (termVerbindung.js, Befund 1).
     if (sichtbar()) fit.fit();
@@ -469,10 +505,32 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     // abwarten — dieselbe Prüfung wie beim Zurückkommen in die App.
     window.addEventListener("online", onVisible);
 
+    // Bildschirmtastatur ohne Größenänderung (termTastatur.js): bei offener
+    // Tastatur behält das Terminal seine Höhe und wird nur hochgeschoben —
+    // sonst zeichnet Claude Code bei jedem Auf-/Zuklappen neu und lässt die
+    // alte Fassung im Verlauf stehen (doppelte Texte, 08.11.2026).
+    const rahmen = grob ? tastaturRahmen(termEl, term, tastaturOffen) : null;
+    // Langer Druck → Kopier-Menü an der Stelle (statt erst ⎘ umzuschalten).
+    const langWeg = grob
+      ? langDruck(termEl, ({ x, y }) => {
+          const zeile = pufferZeileBei(term, y);
+          const treffer = zeile >= 0 ? textBei(logischeZeilen(term.buffer.active), zeile) : null;
+          if (!treffer) return;
+          navigator.vibrate?.(15);
+          const r = huelleRef.current?.getBoundingClientRect();
+          setLangMenue({ x: x - (r?.left || 0), y: y - (r?.top || 0), treffer });
+        })
+      : null;
+    const cursorWeg = rahmen ? term.onCursorMove(() => rahmen.nachfuehren()) : null;
+
     const onResize = () => {
       // Ausgeblendet (display:none) sind die Maße Messmüll — nicht fitten,
       // nichts melden (termVerbindung.js, Befund 1).
       if (!sichtbar()) return;
+      // VOR dem fit: hält bei offener Tastatur die gemerkte Höhe fest, dann
+      // misst das FitAddon dieselben Zeilen wie vorher und es geht kein
+      // resize an die Gegenseite.
+      rahmen?.anwenden();
       // Die Tastatur auf- oder zuzuklappen ändert die Zeilenzahl, und xterm
       // setzt den Blick dabei ans Ende. Wer gerade im Verlauf zurückgeblättert
       // hat, verlor damit jedes Mal seine Stelle — auf dem Handy passiert das
@@ -484,6 +542,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     // Bei geöffneter Bildschirmtastatur feuert `resize` je nach Browser gar
     // nicht (Issue #27) — dann läge die Prompt-Zeile unter der Tastatur.
     window.visualViewport?.addEventListener("resize", onResize);
+    // viewport.js meldet Tastatur auf/zu als eigenes Ereignis (die Erkennung
+    // braucht die größte je gesehene Höhe, die hier nicht bekannt ist).
+    window.addEventListener("tastatur", onResize);
     fitRef.current = onResize;
     // Direkt nach dem Mount noch einmal fitten, sobald das Layout steht:
     // Das fit() beim open() misst am Handy oft zu früh (Flex-Layout und
@@ -491,6 +552,21 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     // Breite umbrochen. Der rAF-Fit kommt vor der ersten Server-Antwort.
     requestAnimationFrame(() => {
       if (!gone) onResize();
+    });
+    // Die Webschrift kommt nach dem ersten Messen: xterm misst die Zellbreite
+    // neu, sobald fontFamily gesetzt wird — danach neu fitten. Am Handy dabei
+    // eine gemerkte, zu große Schrift auf MIN_SPALTEN herunterholen.
+    schriftenLaden(term.options.fontSize).then(() => {
+      if (gone) return;
+      term.options.fontFamily = SCHRIFT_FAMILIE;
+      if (grob && sichtbar()) {
+        const passend = schriftFuerSpalten(term.options.fontSize, spaltenBei, undefined, SCHRIFT_MIN);
+        if (passend !== term.options.fontSize) {
+          term.options.fontSize = passend;
+          lsSet("term.fontSize", String(passend));
+        }
+      }
+      onResize();
     });
     // Nicht jede Größenänderung ist ein Fenster-resize: Textzeile (Aa) auf/zu,
     // das Rückfragen-Banner, ein gezogenes oder verdoppeltes Fenster ändern
@@ -508,6 +584,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       }, 120);
     });
     groesse.observe(termEl);
+    // Bei eingefrorener Höhe ändert sich termEl nicht mehr, wohl aber der
+    // Platz drumherum (Textzeile Aa, Banner) — dann den Versatz nachziehen.
+    if (termEl.parentElement) groesse.observe(termEl.parentElement);
 
     return () => {
       gone = true;
@@ -517,6 +596,7 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       setHinweis(null);
       fitRef.current = null;
       termRef.current = null;
+      spaltenRef.current = null;
       reconnectRef.current = null;
       setMouseCaptured(false);
       setTakenOver(false);
@@ -530,6 +610,11 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       document.removeEventListener("mouseup", handleMouseUp);
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
+      window.removeEventListener("tastatur", onResize);
+      cursorWeg?.dispose();
+      rahmen?.loesen();
+      langWeg?.();
+      setLangMenue(null);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onVisible);
       try {
@@ -550,21 +635,15 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
   // zusammengesetzt (nur echte Zeilenenden werden getrimmt, sonst gingen
   // Leerzeichen an Umbruchgrenzen verloren).
   const bufferToText = (buf) => {
-    const parts = [];
-    for (let i = 0; i < buf.length; i++) {
-      const line = buf.getLine(i);
-      if (!line) continue;
-      const continued = i + 1 < buf.length && buf.getLine(i + 1)?.isWrapped;
-      const s = line.translateToString(!continued);
-      if (line.isWrapped && parts.length) parts[parts.length - 1] += s;
-      else parts.push(s);
-    }
+    // Dieselbe Zeilenzählung wie beim langen Druck (termAbsatz.js) — sonst
+    // landet „Markieren …" in der falschen Zeile.
+    const parts = logischeZeilen(buf).map((z) => z.text);
     // Eine TUI füllt Zeilen mit echten Leerzeichen auf — die schneidet xterm
     // nicht ab, also hier (termKopie.js).
     return zeilenEnden(parts.join("\n")).replace(/\s+$/, "");
   };
 
-  const openCopyMode = () => {
+  const openCopyMode = (markiere = null) => {
     const term = termRef.current;
     if (!term) return;
     // Im Alt-Screen (TUI wie Claude Code) hat der aktive Puffer KEINEN
@@ -579,7 +658,14 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           .join("\n")
       : bufferToText(term.buffer.active);
     setCopied(false);
-    setCopyView({ text, alt, full: false, spalten: term.cols });
+    // markiere = {von, bis} logische Zeilen des aktiven Puffers; im Alt-Screen
+    // steht der normale Puffer davor (dessen Zeilen mitzählen).
+    let mark = null;
+    if (markiere) {
+      const vorn = alt ? logischeZeilen(term.buffer.normal).length : 0;
+      mark = { von: markiere.von + vorn, bis: markiere.bis + vorn };
+    }
+    setCopyView({ text, alt, full: false, spalten: term.cols, markiere: mark });
   };
 
   // Serverseitigen Replay-Puffer laden — der echte Sitzungsverlauf, vom
@@ -628,11 +714,45 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
       kopierSauber(roh, { spalten: copyView.full ? 0 : copyView.spalten, versatz }),
     );
     e.preventDefault();
+    // Kopiert = fertig: zurück ins Terminal (08.11.2026).
+    setTimeout(() => {
+      closeCopyMode();
+      kurzKopiert();
+    }, 0);
+  };
+
+  // Markierung im Overlay per Knopf kopieren — am Handy zeigt Android für
+  // eine vom Programm gesetzte Markierung kein eigenes Kopieren-Menü.
+  const markierungKopieren = () => {
+    const roh = window.getSelection()?.toString();
+    if (!roh) return;
+    copyText(kopierSauber(roh, { spalten: copyView.full ? 0 : copyView.spalten }), null);
+    closeCopyMode();
+    kurzKopiert();
   };
 
   const copyAll = () => {
-    copyText(copyView.text, null); // kein Refokus — das Overlay bleibt offen
-    setCopied(true);
+    copyText(copyView.text, null);
+    closeCopyMode();
+    kurzKopiert();
+  };
+
+  const kurzKopiert = () => {
+    setKopiertHinweis(true);
+    setTimeout(() => setKopiertHinweis(false), 1500);
+  };
+
+  // Aus dem Langdruck-Menü
+  const langKopieren = (text) => {
+    const term = termRef.current;
+    copyText(kopierSauber(text, { spalten: term?.cols || 0 }), null);
+    setLangMenue(null);
+    kurzKopiert();
+  };
+  const langMarkieren = () => {
+    const tr = langMenue?.treffer;
+    setLangMenue(null);
+    if (tr) openCopyMode({ von: tr.von, bis: tr.bis });
   };
 
   const overlayBtn =
@@ -640,8 +760,36 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
 
   return (
     <div className="flex h-full w-full flex-col">
-      <div className="relative min-h-0 w-full flex-1">
+      <div ref={huelleRef} className="relative min-h-0 w-full flex-1">
         <div ref={ref} className="h-full w-full" />
+        {kopiertHinweis && (
+          <div className="pointer-events-none absolute left-1/2 top-2 z-30 -translate-x-1/2 rounded border border-emerald-600 bg-slate-900/90 px-2 py-1 text-[11px] text-emerald-300">
+            {t("✓ kopiert")}
+          </div>
+        )}
+        {langMenue && (
+          <>
+            <div className="absolute inset-0 z-20" onPointerDown={() => setLangMenue(null)} />
+            <div
+              className="absolute z-30 w-60 max-w-[90%] rounded-md border border-slate-600 bg-slate-900 p-1 shadow-xl"
+              style={{
+                left: Math.max(4, Math.min(langMenue.x - 120, (huelleRef.current?.clientWidth || 300) - 244)),
+                top: Math.max(4, Math.min(langMenue.y + 12, (huelleRef.current?.clientHeight || 300) - 150)),
+              }}
+            >
+              <div className="truncate px-2 py-1 text-[11px] text-slate-400">{langMenue.treffer.zeile}</div>
+              <button onClick={() => langKopieren(langMenue.treffer.zeile)} className="block w-full rounded px-2 py-2 text-left text-sm text-slate-100 hover:bg-slate-700">
+                {t("Zeile kopieren")}
+              </button>
+              <button onClick={() => langKopieren(langMenue.treffer.absatz)} className="block w-full rounded px-2 py-2 text-left text-sm text-slate-100 hover:bg-slate-700">
+                {t("Absatz kopieren")}
+              </button>
+              <button onClick={langMarkieren} className="block w-full rounded px-2 py-2 text-left text-sm text-slate-100 hover:bg-slate-700">
+                {t("Markieren …")}
+              </button>
+            </div>
+          </>
+        )}
         {takenOver && !copyView && (
           <div className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-2 rounded border border-amber-600 bg-slate-900/90 px-2 py-1 text-[11px] text-amber-300">
             <span>{t("Sitzung in einem anderen Fenster übernommen")}</span>
@@ -687,6 +835,9 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
               <button onClick={refreshCopyMode} className={overlayBtn}>
                 {t("Aktualisieren")}
               </button>
+              <button onPointerDown={(e) => e.preventDefault()} onClick={markierungKopieren} className={overlayBtn}>
+                {t("Markierung kopieren")}
+              </button>
               <button onClick={copyAll} className={overlayBtn}>
                 {copied ? t("✓ kopiert") : t("Alles kopieren")}
               </button>
@@ -695,10 +846,36 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
               </button>
             </div>
             <pre
+              // neuer Inhalt (Aktualisieren, Voller Verlauf) = neues Element,
+              // damit Scrollen/Vormarkieren im ref erneut greift
+              key={`${copyView.full ? "voll" : "bild"}-${copyView.text.length}`}
               onCopy={ausschnittKopieren}
               // beim Öffnen ans Ende scrollen — da steht das Aktuelle
               ref={(el) => {
-                if (el) el.scrollTop = el.scrollHeight;
+                if (!el || el.dataset.bereit === "1") return;
+                el.dataset.bereit = "1";
+                const m = copyView.markiere;
+                const knoten = el.firstChild;
+                if (!m || !knoten) {
+                  el.scrollTop = el.scrollHeight;
+                  return;
+                }
+                // Langer Druck → „Markieren …": Absatz vormarkieren und hinscrollen.
+                const zeilen = copyView.text.split("\n");
+                const anfang = zeilen.slice(0, m.von).reduce((n, z) => n + z.length + 1, 0);
+                const ende = zeilen.slice(0, m.bis + 1).reduce((n, z) => n + z.length + 1, 0) - 1;
+                try {
+                  const r = document.createRange();
+                  r.setStart(knoten, Math.min(anfang, knoten.length));
+                  r.setEnd(knoten, Math.max(0, Math.min(ende, knoten.length)));
+                  const sel = window.getSelection();
+                  sel.removeAllRanges();
+                  sel.addRange(r);
+                  const zh = el.scrollHeight / Math.max(1, zeilen.length);
+                  el.scrollTop = Math.max(0, m.von * zh - el.clientHeight / 3);
+                } catch {
+                  el.scrollTop = el.scrollHeight;
+                }
               }}
               className="min-h-0 flex-1 select-text overflow-auto whitespace-pre px-2 py-1 font-mono text-[13px] leading-snug text-slate-200"
             >

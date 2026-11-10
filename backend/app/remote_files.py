@@ -242,14 +242,23 @@ async def read_file(agent_name: str, path: str) -> dict[str, Any]:
 
 
 async def write_file(
-    agent_name: str, path: str, content: str, encoding: str = "utf-8"
+    agent_name: str, path: str, content: str, encoding: str = "utf-8",
+    neu: bool = False,
 ) -> dict[str, Any]:
-    """Editor-Speichern: Datei komplett überschreiben (Kodierung der Datei erhalten)."""
+    """Editor-Speichern: Datei komplett überschreiben (Kodierung der Datei erhalten).
+    `neu=True`: vorhandene Datei nie anfassen (Bug-Hunt 22.10.2026, s. files.write_file)."""
     try:
         data = encode_text(content, encoding)
     except FilesError as exc:
         raise RemoteFilesError(str(exc)) from exc
     async with sftp_client(agent_name) as sftp:
+        if neu:
+            try:
+                await sftp.lstat(path)
+            except Exception:  # noqa: BLE001 — gibt es nicht: gut
+                pass
+            else:
+                raise RemoteFilesError(f"existiert schon: {path}")
         try:
             async with sftp.open(path, "wb") as f:
                 await f.write(data)
@@ -374,11 +383,23 @@ async def _fuehre_aus(conn, befehl: str, frist: float) -> tuple[str, bool, str]:
     `frist` Sekunden wird der Prozess beendet und das bis dahin Gelesene
     geliefert. Bricht der Aufrufer ab (Browser weg), stirbt der Prozess mit."""
     proc = await conn.create_process(befehl, encoding=None)
-    roh, fehler, abgebrochen = b"", b"", False
+    roh, fehler, abgebrochen = bytearray(), bytearray(), False
+
+    async def _sammle(strom, ziel: bytearray) -> None:
+        # Stückweise anhängen (Bug-Hunt 22.10.2026): mit EINEM read() bis EOF
+        # ging beim Zeitdeckel alles schon Gelesene verloren — die Suche
+        # meldete „0 Treffer" statt der bis dahin gefundenen.
+        while True:
+            try:
+                stueck = await strom.read(65536)
+            except TypeError:          # Strom ohne Größenargument (Tests/alte asyncssh)
+                stueck = await strom.read()
+            if not stueck:
+                return
+            ziel += stueck
 
     async def lese() -> None:
-        nonlocal roh, fehler
-        roh, fehler = await asyncio.gather(proc.stdout.read(), proc.stderr.read())
+        await asyncio.gather(_sammle(proc.stdout, roh), _sammle(proc.stderr, fehler))
 
     try:
         try:
@@ -399,7 +420,7 @@ async def _fuehre_aus(conn, befehl: str, frist: float) -> tuple[str, bool, str]:
             return decode_text(b)[0]
         except FilesError:
             return b.decode("utf-8", "replace")
-    return als_text(roh), abgebrochen, als_text(fehler)
+    return als_text(bytes(roh)), abgebrochen, als_text(bytes(fehler))
 
 
 async def _system(agent_name: str, conn) -> str:

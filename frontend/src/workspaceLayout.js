@@ -41,6 +41,28 @@ const rund = (v) => Math.round(v * 10) / 10;
 const istNebenTerminal = (id) => /^terminal:\d+$/.test(id);
 const LUECKE_X = 0.6;
 
+// Leere Spalten geben ihre Breite ab (Issue #50: ausgeblendete Fenster sollen
+// ihren Platz freigeben). Die belegten Spalten teilen sich dann die ganze
+// Breite im Verhältnis ihrer Standardbreiten; sind alle drei belegt, gilt das
+// Raster unverändert.
+const RAND_X = SPALTEN[0].x;
+const LUECKE_SPALTE = rund(SPALTEN[1].x - SPALTEN[0].x - SPALTEN[0].w);
+function spaltenBreiten(belegt) {
+  if (belegt.every(Boolean)) return SPALTEN;
+  const genutzt = SPALTEN.filter((_, i) => belegt[i]);
+  if (!genutzt.length) return SPALTEN;
+  const frei = 100 - 2 * RAND_X - LUECKE_SPALTE * (genutzt.length - 1);
+  const summe = genutzt.reduce((a, s) => a + s.w, 0);
+  let x = RAND_X;
+  return SPALTEN.map((s, i) => {
+    if (!belegt[i]) return s;
+    const w = rund((frei * s.w) / summe);
+    const r = { x: rund(x), w };
+    x += w + LUECKE_SPALTE;
+    return r;
+  });
+}
+
 export function standardLayout(alleIds) {
   const neben = alleIds.includes("terminal") ? alleIds.filter(istNebenTerminal) : [];
   const ids = alleIds.filter((id) => !neben.includes(id));
@@ -58,9 +80,10 @@ export function standardLayout(alleIds) {
   }
 
   const out = {};
+  const breiten = spaltenBreiten(spalten.map((s) => s.length > 0));
   spalten.forEach((spalte, si) => {
     if (!spalte.length) return;
-    const { x, w } = SPALTEN[si];
+    const { x, w } = breiten[si];
     const nutzbar = 100 - 2 * RAND_Y - LUECKE_Y * (spalte.length - 1);
     const summe = spalte.reduce((a, id) => a + (GEWICHT[id] ?? GEWICHT_STANDARD), 0);
     let y = RAND_Y;

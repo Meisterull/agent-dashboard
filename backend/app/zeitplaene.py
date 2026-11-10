@@ -263,16 +263,19 @@ def _stempel(name: str, soll_iso: str) -> None:
 
 
 def _poste(plan: dict[str, Any], soll: datetime,
-           schwelle: int = 0) -> dict[str, Any]:
+           schwelle: int = 0, stempeln: bool = True) -> dict[str, Any]:
     """Einen fälligen Plan als normalen Task posten und den Termin stempeln.
 
     Gestempelt wird AUCH bei Fehlern (unbekannter Agent, kaputte Rolle,
     erreichte Verbrauchsschwelle): ein Termin = höchstens ein Versuch —
-    sonst feuert das Log alle 30 s."""
+    sonst feuert das Log alle 30 s. `stempeln=False` für den ▶-Knopf
+    (Bug-Hunt 22.10.2026): ein Testlauf um 10:00 stempelte den Kalendertag
+    und der echte 20:00-Lauf fiel aus."""
     soll_iso = soll.isoformat(timespec="seconds")
     name = plan.get("name") or "?"
     agent = str(plan.get("agent") or "")
-    _stempel(name, soll_iso)
+    if stempeln:
+        _stempel(name, soll_iso)
     if agent not in _bekannte_agenten():
         print(f"[planer] {name}: Agent {agent!r} unbekannt — Termin übersprungen",
               flush=True)
@@ -313,7 +316,7 @@ def jetzt_ausfuehren(name: str) -> dict[str, Any]:
     plan = next((p for p in plaene if p.get("name") == name), None)
     if plan is None:
         raise ZeitplanFehler(f"kein Plan namens {name!r}")
-    return _poste(plan, datetime.now().astimezone())
+    return _poste(plan, datetime.now().astimezone(), stempeln=False)
 
 
 def tick(jetzt: datetime | None = None) -> list[dict[str, Any]]:

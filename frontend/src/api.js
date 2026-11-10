@@ -125,7 +125,7 @@ export const downloadUrl = (source, path) =>
     ? `/api/files/download?path=${encodeURIComponent(path)}`
     : `/api/remote/${encodeURIComponent(source)}/download?path=${encodeURIComponent(path)}`;
 
-export async function saveFile(source, path, content, encoding = "utf-8") {
+export async function saveFile(source, path, content, encoding = "utf-8", neu = false) {
   const url =
     source === "ws"
       ? "/api/files/content"
@@ -133,7 +133,7 @@ export async function saveFile(source, path, content, encoding = "utf-8") {
   const res = await fetch(url, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path, content, encoding }),
+    body: JSON.stringify({ path, content, encoding, neu }),
   });
   if (!res.ok) {
     notifyUnauthorized(res);
@@ -295,6 +295,22 @@ export const deleteAustausch = (name) =>
   jsend(`/api/austausch/${encodeURIComponent(name)}`, "DELETE");
 export const sendeDateien = (von, an, pfade, nachricht) =>
   jsend("/api/austausch/senden", "POST", { von, an, pfade, nachricht });
+
+// Container-Fenster (backend/app/container.py, Issue #49) — nur lesend.
+const cPfad = (name, quelle, ziel) =>
+  `/api/container/${encodeURIComponent(name)}/${encodeURIComponent(quelle)}/${encodeURIComponent(ziel)}`;
+export const getContainerSchalter = () => jget("/api/container");
+export const setContainerSchalter = (name, schalter) =>
+  jsend(`/api/container/${encodeURIComponent(name)}/schalter`, "PUT", schalter);
+export const getContainer = (name) => jget(`/api/container/${encodeURIComponent(name)}`);
+export const getContainerDateien = (name, quelle, ziel, pfad) =>
+  jget(`${cPfad(name, quelle, ziel)}/dateien?pfad=${encodeURIComponent(pfad)}`);
+export const getContainerDatei = (name, quelle, ziel, pfad) =>
+  jget(`${cPfad(name, quelle, ziel)}/lesen?pfad=${encodeURIComponent(pfad)}`);
+export const containerDownloadUrl = (name, quelle, ziel, pfad) =>
+  `${cPfad(name, quelle, ziel)}/download?pfad=${encodeURIComponent(pfad)}`;
+export const getContainerLogs = (name, quelle, ziel, zeilen) =>
+  jget(`${cPfad(name, quelle, ziel)}/logs?zeilen=${zeilen}`);
 
 export const getSshBuffer = (name, sid) =>
   jget(

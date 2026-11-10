@@ -84,7 +84,7 @@ export default function WorkspaceViews({
       <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
         {ueberschreibt
           ? t("„{0}“ gibt es schon und wird ersetzt.", sauber)
-          : t("Sichert die aktuelle Anordnung samt Reihenfolge der Fenster.")}
+          : t("Sichert die aktuelle Anordnung samt Reihenfolge und Sichtbarkeit der Fenster.")}
       </p>
 
       {namen.length === 0 ? (

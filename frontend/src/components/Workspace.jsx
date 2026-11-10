@@ -8,6 +8,7 @@ import {
   standardLayout,
 } from "../workspaceLayout";
 import { istTerminalPanel, nebeneinander, platzZurueck } from "../terminalFenster";
+import { sichtbareIds, versteckteText } from "../fensterSichtbar";
 import { t } from "../sprache";
 
 // Fenster-Manager für den Desktop (md+): jedes Panel ist ein frei
@@ -26,12 +27,20 @@ import { t } from "../sprache";
 // einem externen noVNC-Fenster hin- und herzuschalten. In allen Modi
 // bleiben alle Panels dauerhaft gemountet (nur versteckt), damit
 // Chat-Zustand und SSH-Sessions Wechsel überleben.
+//
+// Ausgeblendete Fenster (Issue #50, `versteckt` aus App.jsx) bleiben ebenso
+// gemountet, bekommen aber keinen Platz: Layout, "Fenster anordnen" und
+// Maximieren rechnen nur über die sichtbaren. Ein- oder Ausblenden ordnet
+// die sichtbaren Fenster neu an, damit der frei gewordene Platz genutzt wird
+// (wer seine Anordnung behalten will, speichert sie als Ansicht — die bringt
+// die Sichtbarkeit mit).
 
 const LS_KEY = "workspace-layout-v1";
 const VIEWS_KEY = "workspace-views-v1";
 
 const MIN_W_PX = 240;
 const MIN_H_PX = 150;
+const KEINE = new Set();
 
 // Nur Gespeichertes; Lücken füllt der Materialisierungs-Effekt aus der
 // Standardanordnung, sobald die Panel-Liste feststeht.
@@ -72,6 +81,8 @@ export default function Workspace({
   panels,
   attention = {},
   onFocusPanel,
+  versteckt = KEINE,
+  onVerstecktSetzen,
 }) {
   const containerRef = useRef(null);
   const [layout, setLayout] = useState(loadLayout);
@@ -84,6 +95,12 @@ export default function Workspace({
   panelsRef.current = panels;
   const onFocusRef = useRef(onFocusPanel);
   onFocusRef.current = onFocusPanel;
+  const verstecktRef = useRef(versteckt);
+  verstecktRef.current = versteckt;
+  const onVerstecktRef = useRef(onVerstecktSetzen);
+  onVerstecktRef.current = onVerstecktSetzen;
+  const sichtbarJetzt = () =>
+    sichtbareIds(panelsRef.current.map((p) => p.id), verstecktRef.current);
 
   // Ids, die in DIESER Sitzung schon einmal als Panel da waren. Nur solche
   // dürfen beim Verschwinden aus dem Layout fliegen — beim Start sind die
@@ -109,9 +126,11 @@ export default function Workspace({
       // Neue Fenster bekommen ihren Platz aus der Standardanordnung ALLER
       // Panels — die vorhandenen bleiben aber, wo der Nutzer sie hingezogen
       // hat. Wer eine saubere Aufteilung will, drückt "Fenster anordnen".
-      const std = standardLayout(alleIds);
+      // Ausgeblendete bekommen hier keinen Platz — beim Einblenden ordnet der
+      // Sichtbarkeits-Effekt unten ohnehin neu an.
+      const std = standardLayout(sichtbareIds(alleIds, verstecktRef.current));
       for (const id of alleIds) {
-        if (!out[id]) {
+        if (!out[id] && std[id]) {
           // Ein weiteres Terminal-Fenster legt sich NEBEN die vorhandenen
           // (terminalFenster.nebeneinander) — dafür ist die Verdopplung da.
           // Nur wenn es in DIESER Sitzung hinzukommt; beim Laden ohne
@@ -122,7 +141,7 @@ export default function Workspace({
             istTerminalPanel(id) && id !== "terminal" && gesehenRef.current.size && breitePx
               ? nebeneinander(
                   alleIds
-                    .filter((x) => istTerminalPanel(x) && out[x])
+                    .filter((x) => istTerminalPanel(x) && out[x] && std[x])
                     .map((x) => ({ id: x, rect: out[x] })),
                   id,
                   (MIN_W_PX / breitePx) * 100,
@@ -193,9 +212,29 @@ export default function Workspace({
     // xterm neu fitten, sobald die neuen Maße stehen
     setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
 
+  // Ein-/Ausblenden (Issue #50): sichtbare Fenster neu anordnen. Nicht beim
+  // ersten Render (gespeicherte Anordnung gilt) und nicht, wenn eine Ansicht
+  // gerade ihre eigene Anordnung samt Sichtbarkeit mitgebracht hat.
+  const verstecktKey = versteckteText(versteckt);
+  // Vergleich mit dem letzten Stand statt „erster Lauf"-Flag: StrictMode
+  // führt Effekte doppelt aus, ein Flag löste dann beim Start ein Neuordnen aus.
+  const letzterKeyRef = useRef(verstecktKey);
+  const ansichtBringtLayoutRef = useRef(false);
+  useEffect(() => {
+    if (letzterKeyRef.current === verstecktKey) return;
+    letzterKeyRef.current = verstecktKey;
+    if (ansichtBringtLayoutRef.current) {
+      ansichtBringtLayoutRef.current = false;
+      return;
+    }
+    window.dispatchEvent(new Event("workspace:reset"));
+  }, [verstecktKey]);
+
   useEffect(() => {
     const onReset = () => {
-      setLayout(standardLayout(panelsRef.current.map((p) => p.id)));
+      // Rechtecke ausgeblendeter Fenster fallen mit weg — sie bekommen beim
+      // Einblenden ohnehin einen neuen Platz.
+      setLayout(standardLayout(sichtbarJetzt()));
       localStorage.removeItem(LS_KEY);
       nachLayoutwechsel();
     };
@@ -249,6 +288,7 @@ export default function Workspace({
       [sauber]: {
         layout: structuredClone(layoutRef.current),
         order: [...order],
+        versteckt: [...verstecktRef.current],
         gespeichert: new Date().toISOString(),
       },
     };
@@ -261,11 +301,20 @@ export default function Workspace({
     const view = views[name];
     if (!view) return;
     const alleIds = panelsRef.current.map((p) => p.id);
-    const std = standardLayout(alleIds);
+    // Ältere Ansichten (vor #50) kennen keine Sichtbarkeit — dann bleibt die
+    // aktuelle, und die Ansicht liefert nur die Anordnung.
+    const mitSichtbarkeit = Array.isArray(view.versteckt);
+    const versteckt = mitSichtbarkeit ? new Set(view.versteckt) : verstecktRef.current;
+    const std = standardLayout(sichtbareIds(alleIds, versteckt));
     const neu = {};
     for (const id of alleIds) {
       const r = view.layout?.[id];
-      neu[id] = gueltigesRect(r) ? normRect(r) : std[id];
+      if (gueltigesRect(r)) neu[id] = normRect(r);
+      else if (std[id]) neu[id] = std[id];
+    }
+    if (mitSichtbarkeit && versteckteText(versteckt) !== versteckteText(verstecktRef.current)) {
+      ansichtBringtLayoutRef.current = true;
+      onVerstecktRef.current?.(versteckt);
     }
     setLayout(neu);
     setOrder(() => {
@@ -300,8 +349,7 @@ export default function Workspace({
       let next;
       if (isMax) {
         next =
-          prevRects.current[id] ||
-          defaultRect(id, panelsRef.current.map((p) => p.id));
+          prevRects.current[id] || defaultRect(id, sichtbarJetzt());
       } else {
         prevRects.current[id] = r;
         next = { x: 0, y: 0, w: 100, h: 100 };
@@ -390,7 +438,8 @@ export default function Workspace({
 
   // Fallback für den ersten Render nach einer Panel-Änderung — der
   // Materialisierungs-Effekt läuft erst danach.
-  const standard = standardLayout(panels.map((p) => p.id));
+  const standard = standardLayout(sichtbareIds(panels.map((p) => p.id), versteckt));
+  const alleWeg = panels.every((p) => versteckt.has(p.id)); // dann gilt alles (sichtbareIds)
 
   return (
     <div
@@ -408,8 +457,9 @@ export default function Workspace({
         />
       )}
       {panels.map(({ id, title, body, bodyClass = "bg-white dark:bg-slate-900" }) => {
+        const weg = versteckt.has(id) && !alleWeg;
         const r = layout[id] || standard[id];
-        const style = windowed
+        const style = windowed && !weg && r
           ? {
               left: `${r.x}%`,
               top: `${r.y}%`,
@@ -420,7 +470,9 @@ export default function Workspace({
               minHeight: `${MIN_H_PX}px`,
             }
           : undefined;
-        const cls = windowed
+        const cls = weg
+          ? "hidden"
+          : windowed
           ? "absolute flex flex-col overflow-hidden rounded-lg border border-slate-300 shadow-lg dark:border-slate-700"
           : tab === id
             ? "absolute inset-0 flex flex-col"

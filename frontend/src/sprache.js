@@ -24,8 +24,9 @@ import chat from "./sprache/woerter_chat";
 import agenten from "./sprache/woerter_agenten";
 import dateien from "./sprache/woerter_dateien";
 import workspace from "./sprache/woerter_workspace";
+import container from "./sprache/woerter_container";
 
-const WOERTER = { ...kern, ...terminal, ...chat, ...agenten, ...dateien, ...workspace };
+const WOERTER = { ...kern, ...terminal, ...chat, ...agenten, ...dateien, ...workspace, ...container };
 
 const SCHLUESSEL = "ui.sprache";
 

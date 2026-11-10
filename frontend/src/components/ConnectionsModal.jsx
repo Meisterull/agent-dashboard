@@ -9,6 +9,8 @@ import {
   getConnectionPubkey,
   getProjekte,
   putProjekte,
+  getContainerSchalter,
+  setContainerSchalter,
 } from "../api";
 
 // SSH-Verbindungen verwalten: anlegen (Server erzeugt das Schlüsselpaar,
@@ -147,6 +149,37 @@ function ProjekteEditor({ verbindung, projekte, onGespeichert }) {
   );
 }
 
+// Container-Schalter je Verbindung (Issue #49): Docker / Proxmox. Wirkt sofort;
+// "container:changed" lässt App.jsx das Container-Fenster ein-/ausblenden.
+function ContainerHaken({ verbindung, schalter, onGeaendert }) {
+  const [fehler, setFehler] = useState(null);
+  const s = schalter || { docker: false, proxmox: false };
+  const umschalten = async (art) => {
+    setFehler(null);
+    try {
+      await setContainerSchalter(verbindung, { [art]: !s[art] });
+      onGeaendert();
+      window.dispatchEvent(new Event("container:changed"));
+    } catch (e) {
+      setFehler(String(e.message || e));
+    }
+  };
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400" data-container-haken={verbindung}>
+      <span>{t("Container-Fenster:")}</span>
+      <label className="flex cursor-pointer items-center gap-1">
+        <input type="checkbox" checked={s.docker} onChange={() => umschalten("docker")} />
+        {t("Docker")}
+      </label>
+      <label className="flex cursor-pointer items-center gap-1" title={t("LXC-Container mit Shell/Dateien/Logs, VMs nur zur Ansicht; braucht root bzw. sudo für pct/qm")}>
+        <input type="checkbox" checked={s.proxmox} onChange={() => umschalten("proxmox")} />
+        {t("Proxmox")}
+      </label>
+      {fehler && <span className="text-red-600 dark:text-red-400">{fehler}</span>}
+    </div>
+  );
+}
+
 export default function ConnectionsModal({ onClose }) {
   const [connections, setConnections] = useState([]);
   const [form, setForm] = useState({ name: "", host: "", port: "22", user: "" });
@@ -156,6 +189,11 @@ export default function ConnectionsModal({ onClose }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [projekte, setProjekte] = useState(null); // null = noch nicht geladen
+  const [cSchalter, setCSchalter] = useState(null);
+  const loadSchalter = () =>
+    getContainerSchalter()
+      .then((d) => setCSchalter(d.schalter || {}))
+      .catch(() => setCSchalter({}));
 
   const load = () =>
     getConnections()
@@ -168,6 +206,7 @@ export default function ConnectionsModal({ onClose }) {
   useEffect(() => {
     load();
     loadProjekte();
+    loadSchalter();
   }, []);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -280,6 +319,9 @@ export default function ConnectionsModal({ onClose }) {
                 </span>
               )}
             </div>
+            {cSchalter && (
+              <ContainerHaken verbindung={c.name} schalter={cSchalter[c.name]} onGeaendert={loadSchalter} />
+            )}
             {projekte && (
               <ProjekteEditor
                 verbindung={c.name}

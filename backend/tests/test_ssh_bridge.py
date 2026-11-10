@@ -221,9 +221,10 @@ class TestKontrollkanal(unittest.TestCase):
             {"type": "resize", "cols": 45, "rows": 2},
             {"type": "resize", "cols": 45, "rows": 30},
         )
-        # _lauf hängt an eine BESTEHENDE Session an → der erste brauchbare
-        # resize bringt den Wackler mit (44, dann 45; test_projekte.py).
-        self.assertEqual(sess.proc.groessen, [(44, 30), (45, 30)])
+        # _lauf hängt an eine BESTEHENDE Session ohne bekannte Größe an → die
+        # erste brauchbare Größe ist eine Änderung und geht einmal durch; den
+        # Wackler gibt es nur noch für tmux bei gleicher Größe (test_projekte.py).
+        self.assertEqual(sess.proc.groessen, [(45, 30)])
 
     def test_daten_gehen_weiter_an_stdin(self):
         _, sess = self._lauf({"type": "data", "data": "ls\r"})

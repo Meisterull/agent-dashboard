@@ -65,6 +65,12 @@ backend/
                            am Modell vorbei, also auch Binäres/Großes. Schalter
                            in settings.json `austausch` (/api/austausch, 📥 im
                            Datei-Panel), MCP-Tool send_file, 📤 an der Dateizeile
+    container.py           Container-Fenster (Issue #49): Docker/Proxmox je Rechner NUR
+                           lesend über die SSH-Verbindung (docker ps/logs/exec ls|head|cat,
+                           pct list/exec, qm list = VMs nur Ansicht); Schalter in
+                           settings.json `container` (Verbindungen-Dialog); sudo -n-Rückfall
+                           bei „permission denied"; Shell = sid "c:docker:<name>" /
+                           "c:lxc:<vmid>" in ssh_bridge (docker exec -it / pct enter)
     chat_store.py          SQLite-Persistenz der Chat-Sessions (/workspace/chat.db)
     events.py              Mailbox-Wächter (F4/F10): watchfiles (mtime-Fallback) →
                            SSE-Broadcaster für GET /api/events + Push-Auslöser
@@ -193,6 +199,10 @@ cd frontend && node tests/test_verbindung.mjs  # Terminal: Herzschlag, Eingabe-W
 cd frontend && node tests/test_eingabe.mjs     # Terminal: Textvergleich für Wortvorschläge der Bildschirmtastatur
 cd frontend && node tests/test_kopie.mjs       # Terminal: kopierte Auswahl aufräumen (Leerzeichen, umbrochene Links/Befehle)
 cd frontend && node tests/test_fassung.mjs     # Hinweis „Neue Fassung — neu laden" nach einem Deploy
+cd frontend && node tests/test_schrift.mjs     # Terminal-Schrift: Mindestspalten am Handy (rein rechnerisch)
+cd frontend && node tests/test_tastatur.mjs    # Tastatur ohne Größenänderung: Versatz-Rechnung
+cd frontend && node tests/test_absatz.mjs      # Langer Druck: Zeile/Absatz unter dem Finger
+cd frontend && node tests/test_fenstersichtbar.mjs  # Fenster ein-/ausblenden (#50): Sichtbarkeit, Ersatz-Tab, letztes bleibt
 # Im echten Browser (Prüfstand ohne Backend/Login, ?panel=… wählt den Teil) —
 # Aufruf steht im Kopf der Testdatei; Handy-Format + Touch-Emulation:
 #   tests/test_workspace_browser.cjs  Fensteranordnung (#24)
@@ -201,6 +211,11 @@ cd frontend && node tests/test_fassung.mjs     # Hinweis „Neue Fassung — neu
 #   tests/test_terminal_browser.cjs   Terminal wischen/Größenwechsel (#35), Wortvorschläge
 #   tests/test_keybar_browser.cjs     Tastenleiste bleibt wischbar
 #   tests/test_dateien_browser.cjs    Datei-Panel: Austausch-Ordner (📥/📤)
+#   tests/test_schrift_browser.cjs    Terminal-Schrift geladen, Unicode 11, ≥ 50 Spalten (?panel=schrift)
+#   tests/test_tastatur_browser.cjs   Tastatur auf/zu: Zeilen bleiben, Cursor sichtbar (?panel=tastatur, ?roh = Gegenprobe)
+#   tests/test_langdruck_browser.cjs  Langer Druck → Zeile/Absatz, Tipp/Wisch lösen nicht aus (?panel=langdruck)
+#   tests/test_fenster_browser.cjs    Fenster ein-/ausblenden (#50): Platz frei, kein Remount, Neuladen, Ansicht (?panel=fenster)
+#   tests/test_container_browser.cjs  Container-Fenster (#49): Karten, Knöpfe je Zustand, Shell-Ereignis, Logs, Dateien (?panel=container)
 
 # Backend (braucht: pip install -r backend/requirements.txt + ANTHROPIC_API_KEY)
 cd backend && python -m mcp_server             # Tools, :9000
@@ -214,6 +229,7 @@ python scripts/agent_watcher.py --agent frontend --root /tmp/mb/mailboxes --dry-
 cd backend && python -m tests.run_alle             # alle Module (je eigener Prozess)
 cd backend && python -m tests.test_mcp_tools       # einzelnes Modul
 cd backend && python -m tests.test_projekte        # Projekt-Terminals: YAML, tmux-Zeile, Brücke
+cd backend && python -m tests.test_container       # Container-Fenster: Parser, Prüfungen, sudo-Rückfall, Shell-sid
 
 # Ganzer Stack
 docker compose up --build                      # nginx+api+mcp(+tunnel) via supervisord
@@ -579,6 +595,26 @@ Container. Beim LLM-Pfad ehrlich kennzeichnen, was verifiziert ist und was nicht
 der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Blöcke,
 `stop_reason` — nie gegen die echte API gelaufen, hier läuft Ollama).
 
+## Bug-Hunt 22.10.2026 (Stand 268e28e)
+
+Multi-Agent-Lauf (16 Leser, 4 Zweitprüfer, Rest wegen Kontolimit von Hand bewiesen): 48 bestätigte
+Fehler, Bericht in Claudes Memory (`reference_agent_dashboard_bugreport_2026-10-22.md`), 144 Verdachte
+mit Bewertung ≤ 3 ungeprüft. Gefixt in Runde 1 (Tests `tests/test_bughunt_2026_10_22.py`):
+- **Neue Datei** überschrieb eine vorhandene gleichen Namens mit 0 Byte → `write_file(…, neu=True)`
+  (lokal + SFTP per `lstat`), `FileWriteIn.neu`, `saveFile(…, neu)` in api.js.
+- **▶-Testknopf** eines Zeitplans stempelte `letzter_lauf` → der reguläre Lauf desselben Kalendertags
+  fiel aus (Tagesregel in `ist_faellig`). `_poste(stempeln=False)` für `jetzt_ausfuehren`.
+- **Remote-Suche** lieferte nach dem Zeitdeckel „0 Treffer": `_fuehre_aus` las mit EINEM `read()` bis
+  EOF, `wait_for` warf das Gelesene weg → jetzt stückweise in `bytearray`s. Test-Fakes für Ströme
+  müssen sich wie Ströme verhalten (Daten einmal, dann `b""`), sonst Endlosschleife.
+- **Symlink löschen/umbenennen** traf das Ziel (`_safe` löst auf) → `_eintrag()` nimmt den rohen Pfad,
+  wenn er ein Link ist; `delete` hängt Links nur aus.
+- **Chat-Anhänge** scheiterten immer („kein Verzeichnis: uploads/chat/<Datum>") — niemand legte den
+  Tagesordner an. `upload_ziel` legt fehlende Zielordner jetzt an (Datei an der Stelle bleibt Fehler).
+Offen aus dem Bericht: 29 MITTEL (u. a. Watcher-Abstürze an kaputten Dateien, Geister-Mailbox via
+`answer reply_to`, Symlink-Leaks in `files.suche`/`upload_ziel`, BOM in Rollen-Dateien, Reattach-Lücke
+in ssh_bridge, Reload-Schleife im Privatmodus) und 11 NIEDRIG.
+
 ## Gotchas
 
 - **Auth:** alle /api-Routen außer health/auth verlangen das Session-Cookie
@@ -612,11 +648,23 @@ der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Bl�
   tmux (Windows-PC: `uname -s` scheitert) Rückfall `cd && befehl` ohne
   Dauerhaftigkeit. **Kein Replay** für Projekt-Sessions beim Reattach (tmux
   zeichnet selbst); tmux-kill NUR bei ⏻/kill, nie wenn der SSH-Prozess von
-  selbst endet (Strg-b d = bewusstes Detach). **Resize-Wackler** für ALLE
-  Sessions nach Reattach (`_wackler`: Spalten −1, dann echt): der nachgespielte
-  Rohstrom ist für die alte Breite gezeichnet; erst SIGWINCH lässt Claude Code/
-  tmux komplett neu zeichnen — ist die Größe gleich geblieben, käme sonst gar
-  keins. Verlauf im Kopier-Modus = `capture-pane -p -J -S -` über
+  selbst endet (Strg-b d = bewusstes Detach). **Resize-Wackler** (`_wackler`:
+  Spalten −1, dann echt) NUR für tmux-Sessions bei unveränderter Größe nach
+  Reattach — dort ist nichts nachgespielt und ohne SIGWINCH bliebe das Fenster
+  leer. Replay-Sessions bekommen bei gleicher Größe GAR KEIN Resize (14.10.2026):
+  Claude Code zeichnet auf jedes SIGWINCH den Bildschirm neu, ohne den alten zu
+  löschen — Replay + Wackler ließen die letzte Antwort zwei- bis dreimal
+  untereinander stehen. Die Brücke merkt sich `sess.cols/rows` und reicht nur
+  echte Änderungen weiter. Jede echte Größenänderung ist ein Neuzeichnen von
+  Claude Code (im Pseudo-Terminal nachgemessen, 08.11.2026: Cursor-hoch und
+  drüberschreiben, KEIN \e[2J/\e[3J — was schon im Verlauf liegt, bleibt als
+  Kopie stehen). Darum ändert die Tastatur am Handy die Größe nicht mehr
+  (`frontend/src/termTastatur.js`): bei offener Tastatur behält das Terminal die
+  zuletzt ohne Tastatur gemessene Höhe, wird absolut positioniert und so weit
+  hochgeschoben, dass die Cursorzeile sichtbar bleibt; `anwenden()` läuft in
+  `onResize` VOR dem fit, das Ereignis `tastatur` aus viewport.js stößt es an,
+  der ResizeObserver beobachtet zusätzlich die Hülle. Breitenänderungen (Drehen,
+  Schriftgröße) zeichnen weiter neu — selten. Verlauf im Kopier-Modus = `capture-pane -p -J -S -` über
   `hole_verlauf`. Vorbelegung liegt NUR im Volume (`workspace/config/
   projekte.yaml`, uid 10001 — per `docker exec -u app` schreiben), nicht im Repo.
 - **Terminal + ausgeblendetes Panel:** Workspace.jsx versteckt inaktive Panels mit
@@ -628,6 +676,32 @@ der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Bl�
   (10.10.2026): Textzeile (Aa), Rückfragen-Banner und gezogene Fenster ändern den
   Platz ohne window-resize — bis zum nächsten Tab-Wechsel passten Zeilen/Spalten
   dann nicht zum sichtbaren Bereich.
+- **Terminal-Schrift + Zeichenbreiten** (08.11.2026, `frontend/src/termSchrift.js`):
+  Ohne eigene Schrift fiel xterm am Android-Handy auf eine Ersatzschrift ohne
+  viele Claude-Code-Zeichen (⏵⏵, ☐/☒ der Rückfragen-Reiter, ✻ ◐ ⏺ → leere
+  Kästchen). Mitgeliefert in `frontend/public/fonts/` (Lizenzen daneben):
+  DejaVu Sans Mono (Familie „Terminal Mono") + Noto Sans Symbols 2, Teilmenge
+  symbols („Terminal Symbole", per unicode-range nur bei Bedarf geladen);
+  ⎿ und ⧉ übernimmt die Systemschrift. `@font-face` in index.css. Die Webschrift
+  kommt nach dem ersten Messen — `schriftenLaden()` abwarten, dann fontFamily
+  NEU setzen (xterm misst die Zellbreite dabei neu) und fitten. Dazu
+  `@xterm/addon-unicode11` (`allowProposedApi: true`, activeVersion "11"):
+  mit den Unicode-6-Tabellen zählte xterm manche Symbole anders breit als
+  Claude Code, Reste alter Zeilen blieben stehen. **Mindestspalten am Handy**
+  (`pointer: coarse`): unter `MIN_SPALTEN` (50) kürzt Claude Code die Reiter
+  einer Mehrfach-Rückfrage zu „Tes…" — eine gemerkte zu große Schrift wird
+  beim Start verkleinert, A+ bleibt an der Grenze stehen.
+- **Kopieren am Handy per langem Druck** (08.11.2026, `termLangdruck.js` +
+  `termAbsatz.js`): native Auswahl geht im Terminal nicht (touch-action: none
+  fürs Wischen, Maus-Übernahme durch Claude Code, xterm baut Zeilen bei jeder
+  Ausgabe neu). 500 ms ruhiger Finger (≤ 10 px) → Menü am Finger: „Zeile
+  kopieren", „Absatz kopieren" (Block bis zur Leerzeile, ohne ●/⏺/⎿/❯-Marke,
+  ohne │-Rahmen), „Markieren …" = Kopier-Modus mit vormarkiertem Absatz.
+  `bufferToText` zählt Zeilen über `logischeZeilen` — dieselbe Zählung wie das
+  Menü, sonst markiert „Markieren …" daneben. Der Kopier-Modus schließt sich
+  nach jedem Kopieren (Menü, „Markierung kopieren", „Alles kopieren") und
+  zeigt kurz „✓ kopiert". Android bietet für programmgesetzte Markierungen
+  kein eigenes Kopieren-Menü → Knopf „Markierung kopieren".
 - **Terminal-Fenster verdoppeln** (07.10.2026, `frontend/src/terminalFenster.js`): ◫ in
   der SSH-Leiste legt ein weiteres Terminal-Panel daneben (Panel-Ids `terminal`,
   `terminal:2`, … — höchstens 4, Liste in localStorage `terminal-fenster-v1`). Die
@@ -651,6 +725,30 @@ der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Bl�
   `onPointerDownCapture` der `<section>` greift bei externen Fenstern deshalb nur
   auf der Titelleiste; das Nach-vorn-Holen beim Klick INS Fenster hängt an
   `window.blur` + `document.activeElement` (Workspace.jsx).
+- **Container-Fenster** (Issue #49, `app/container.py`, `components/ContainerPanel.jsx`,
+  per /ausfragen abgenommen 10.11.2026): erste Ausbaustufe NUR lesend — kein
+  Start/Stopp/Hochladen. Panel „Container" gibt es nur, wenn ein Rechner einen
+  Haken hat; Aktualisieren nur per Knopf (keine Dauer-Abfrage). Shell öffnet per
+  Ereignis `terminal:oeffnen` {name, sid} einen Tab im Terminal-Fenster
+  (TerminalVorrat), App.jsx wechselt in der Tab-Ansicht dorthin. **Falle:**
+  `docker exec` liefert Exit 127 auch, wenn IM Container ein Befehl fehlt
+  (distroless ohne ls) — „Werkzeug fehlt" nur bei `<werkzeug>: command not
+  found` der Shell. BusyBox-ls kennt kein `--time-style` → Rückfall ohne
+  Zeitstempel. Echt getestet 10.11.2026 gegen 39 Docker-Container dieses
+  Servers (Test-uvicorn aus dem Prod-Image mit gemountetem backend/, eigener
+  Workspace, Port 5949 — `USER` muss gesetzt sein, sonst scheitert asyncssh);
+  Proxmox nur gegen nachgebaute pct/qm-Ausgaben.
+- **Fenster ein-/ausblenden** (Issue #50, `frontend/src/fensterSichtbar.js` +
+  `components/FensterAuswahl.jsx`): Haken im Menü „Fenster" der TopBar und im
+  Abschnitt „Fenster" der Einstellungen (wirkt sofort, NICHT über Speichern).
+  Pro Gerät im localStorage `workspace-versteckt-v1`. Ausgeblendet = `hidden`
+  + kein Platz im Layout + kein Tab, aber **weiter gemountet** (SSH-Sessions,
+  Chat-Zustand bleiben). Jeder Wechsel ordnet die sichtbaren Fenster neu an
+  (`workspace:reset`); `standardLayout` gibt dafür die Breite leerer Spalten
+  an die belegten ab (bei allen drei belegt unverändert). Ansichten speichern
+  `versteckt` mit (ältere ohne Feld lassen die Sichtbarkeit in Ruhe). Das
+  letzte sichtbare Fenster lässt sich nicht abwählen; ein Push-Sprung auf ein
+  ausgeblendetes Fenster blendet es wieder ein.
 - **Externe Fenster** (`settings.external_windows`, Settings-Dialog): `IP:Port[/pfad]`
   wird im Frontend zu `/ext/<ip>/<port>/…` — nginx proxyt das per `auth_request`
   (Session-Cookie) NUR auf private IPv4-Ziele, WebSocket-fähig (noVNC/websockify,

@@ -43,6 +43,10 @@ Endpunkte (alle unter /api, nginx proxyt /api -> 127.0.0.1:5000):
   PUT  /api/austausch/{name}       Ordner anlegen + Empfang einschalten
   DEL  /api/austausch/{name}       Empfang ausschalten (löscht nichts)
   POST /api/austausch/senden       Dateien Maschine → Austausch-Ordner einer anderen
+  GET  /api/container              Container-Schalter je Rechner (Issue #49)
+  PUT  /api/container/{name}/schalter  Docker/Proxmox für einen Rechner an/aus
+  GET  /api/container/{name}       Container des Rechners (docker ps, pct list, qm list)
+  GET  /api/container/{name}/{quelle}/{ziel}/dateien|lesen|download|logs  (nur lesend)
   POST /mcp/{agent}               MCP-Kanal über HTTPS (Bearer-Token je Agent)
   GET  /api/connections            SSH-Verbindungen (ohne Credentials)
   POST /api/connections            neue SSH-Verbindung (+ Key-Erzeugung)
@@ -116,6 +120,7 @@ from app.files import (
 )
 from app.remote_files import RemoteFilesError
 from app import austausch
+from app import container
 from app import upload
 from app.austausch import AustauschError
 from app.integrations import list_integrations
@@ -917,6 +922,7 @@ class FileWriteIn(BaseModel):
     # Kodierung aus dem Lese-Ergebnis (utf-8/utf-8-sig/utf-16/cp1252) —
     # so bleibt eine Windows-Datei beim Speichern eine Windows-Datei.
     encoding: str = "utf-8"
+    neu: bool = False   # Datei-Panel „Neue Datei": vorhandene nie überschreiben
 
 
 def _attachment(filename: str) -> dict[str, str]:
@@ -962,7 +968,7 @@ def _inline(filename: str, medientyp: str) -> dict[str, str]:
 @app.put("/api/files/content")
 async def file_write(body: FileWriteIn) -> dict:
     try:
-        return write_file(body.path, body.content, body.encoding)
+        return write_file(body.path, body.content, body.encoding, neu=body.neu)
     except FilesError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -1100,7 +1106,8 @@ async def remote_read(name: str, path: str) -> dict:
 @app.put("/api/remote/{name}/file")
 async def remote_write(name: str, body: FileWriteIn) -> dict:
     try:
-        return await remote_files.write_file(name, body.path, body.content, body.encoding)
+        return await remote_files.write_file(name, body.path, body.content, body.encoding,
+                                             neu=body.neu)
     except RemoteFilesError as exc:
         raise HTTPException(502, str(exc)) from exc
 
@@ -1202,6 +1209,101 @@ async def remote_upload(request: Request, name: str, path: str,
                 raise HTTPException(413, str(upload.UploadZuGross())) from exc
             raise HTTPException(502, str(exc)) from exc
     return {"saved": saved}
+
+
+# --- Container-Fenster (app/container.py, Issue #49) -----------------------
+# Nur lesend; Shell im Container läuft über /ws/ssh mit sid "c:<quelle>:<ziel>".
+
+class ContainerSchalterIn(BaseModel):
+    docker: bool | None = None
+    proxmox: bool | None = None
+
+
+def _container_http(exc: container.ContainerFehler) -> HTTPException:
+    return HTTPException(exc.status, str(exc))
+
+
+@app.get("/api/container")
+async def container_schalter_liste() -> dict:
+    return {"schalter": await asyncio.to_thread(container.schalter)}
+
+
+@app.put("/api/container/{name}/schalter")
+async def container_schalter_setzen(name: str, body: ContainerSchalterIn) -> dict:
+    if not any(a.get("name") == name for a in load_agents_full()):
+        raise HTTPException(404, f"Keine Verbindung '{name}'")
+    eintrag = await asyncio.to_thread(container.setze_schalter, name, body.docker, body.proxmox)
+    return {"name": name, **eintrag}
+
+
+@app.get("/api/container/{name}")
+async def container_liste(name: str) -> dict:
+    try:
+        return await container.liste(name)
+    except container.ContainerFehler as exc:
+        raise _container_http(exc) from exc
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/container/{name}/{quelle}/{ziel}/dateien")
+async def container_dateien(name: str, quelle: str, ziel: str, pfad: str = "/") -> dict:
+    try:
+        return await container.dateien(name, quelle, ziel, pfad)
+    except container.ContainerFehler as exc:
+        raise _container_http(exc) from exc
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/container/{name}/{quelle}/{ziel}/lesen")
+async def container_lesen(name: str, quelle: str, ziel: str, pfad: str) -> dict:
+    try:
+        return await container.lesen(name, quelle, ziel, pfad)
+    except container.ContainerFehler as exc:
+        raise _container_http(exc) from exc
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/container/{name}/{quelle}/{ziel}/download")
+async def container_download(name: str, quelle: str, ziel: str, pfad: str) -> StreamingResponse:
+    import posixpath
+
+    quelle_strom = container.herunterladen(name, quelle, ziel, pfad)
+    # Ersten Block VOR dem Response-Start holen (wie _remote_strom): scheitert
+    # schon der, gibt es einen Fehlerstatus statt einer leeren Datei.
+    try:
+        try:
+            erster = await quelle_strom.__anext__()
+        except StopAsyncIteration:
+            erster = None
+    except container.ContainerFehler as exc:
+        raise _container_http(exc) from exc
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    async def strom():
+        if erster is not None:
+            yield erster
+            async for teil in quelle_strom:
+                yield teil
+
+    return StreamingResponse(
+        strom(),
+        media_type="application/octet-stream",
+        headers=_attachment(posixpath.basename(pfad) or "download"),
+    )
+
+
+@app.get("/api/container/{name}/{quelle}/{ziel}/logs")
+async def container_logs(name: str, quelle: str, ziel: str, zeilen: int = 200) -> dict:
+    try:
+        return await container.logs(name, quelle, ziel, zeilen)
+    except container.ContainerFehler as exc:
+        raise _container_http(exc) from exc
+    except RemoteFilesError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 # --- Austausch-Ordner je Maschine (app/austausch.py) ------------------------
@@ -1380,6 +1482,11 @@ async def connection_delete(name: str) -> dict:
     try:
         austausch.schalte_aus(name)
     except AustauschError:
+        pass
+    # Container-Schalter ebenso (Issue #49).
+    try:
+        container.entferne_verbindung(name)
+    except Exception:  # noqa: BLE001
         pass
     return {"deleted": name}
 

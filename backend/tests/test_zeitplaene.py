@@ -149,7 +149,7 @@ class VerwaltungTests(unittest.TestCase):
         gespeichert = zeitplaene.speichere_plaene([plan])
         self.assertEqual(gespeichert[0]["letzter_lauf"], "2026-09-02T07:00:00")
 
-    def test_jetzt_ausfuehren_postet_task_mit_rolle_und_stempelt(self):
+    def test_jetzt_ausfuehren_postet_task_mit_rolle_und_stempelt_nicht(self):
         rollen.speichere_rolle(
             "review", "---\npermission_mode: default\nallowed_tools: []\n---\nPrüfe.")
         Mailbox(zeitplaene.MAILBOX_ROOT, "werkstatt")  # Mailbox anlegen
@@ -164,8 +164,10 @@ class VerwaltungTests(unittest.TestCase):
         env = json.loads(inbox[0].read_text(encoding="utf-8"))
         self.assertEqual(env["rolle"], "review")
         self.assertEqual(env["rollen_prompt"], "Prüfe.")
+        # Bug-Hunt 22.10.2026: der ▶-Test stempelt NICHT — sonst fiel der
+        # reguläre Lauf desselben Kalendertags aus (ist_faellig: Tagesregel).
         plaene, _ = zeitplaene.lade_plaene()
-        self.assertTrue(plaene[0].get("letzter_lauf"))
+        self.assertFalse(plaene[0].get("letzter_lauf"))
 
     def test_verbrauchsschwelle_pausiert_geplante_tasks(self):
         box = Mailbox(zeitplaene.MAILBOX_ROOT, "werkstatt")

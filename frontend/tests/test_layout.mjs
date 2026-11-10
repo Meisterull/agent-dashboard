@@ -111,8 +111,18 @@ console.log("\nSonderfälle:");
   pruefe("nur ein externes Fenster", !!nurExt["ext:a"] && paare(nurExt).length === 0,
     JSON.stringify(nurExt["ext:a"]));
   const ohneChat = standardLayout(["dateien", "agenten"]);
-  pruefe("fehlende Kern-Panels lassen ihre Spalte leer",
+  pruefe("fehlende Kern-Panels: überschneidungsfrei",
     paare(ohneChat).length === 0 && Object.keys(ohneChat).length === 2);
+  // Issue #50: ausgeblendete Fenster geben ihren Platz frei — leere Spalten
+  // verschwinden, die belegten füllen die ganze Breite.
+  for (const ids of [["chat", "terminal"], ["dateien", "chat"], ["chat", "agenten"], ["dateien"], ["dateien", "agenten"]]) {
+    const l = standardLayout(ids);
+    const links = Math.min(...Object.values(l).map((r) => r.x));
+    const rechts = Math.max(...Object.values(l).map((r) => r.x + r.w));
+    pruefe(`ohne die übrigen Panels: ${ids.join("+")} füllt die Breite`,
+      paare(l).length === 0 && links <= 0.5 && rechts >= 99.4 && rechts <= 100.01,
+      `${links}…${rechts}`);
+  }
   const unbekannt = defaultRect("ext:neu", KERN);
   pruefe("defaultRect kennt auch eine noch nicht gelistete Id", !!unbekannt,
     JSON.stringify(unbekannt));

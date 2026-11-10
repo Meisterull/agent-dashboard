@@ -9,7 +9,7 @@
 import {
   MAX_FENSTER, fensterListe, freieSid, heimholen, istProjektSid, istTerminalPanel, nebeneinander,
   neueNummer, nummerVon, panelId, platzZurueck, projektSid, projektVon, tabLabel, tabsFuerKlick,
-  tabsFuerProjekt,
+  tabsFuerProjekt, containerSid, containerVon, tabsFuerSid,
 } from "../src/terminalFenster.js";
 import { standardLayout } from "../src/workspaceLayout.js";
 
@@ -118,6 +118,22 @@ console.log("Standardanordnung mit mehreren Terminal-Fenstern:");
   const ohne = standardLayout(["dateien", "chat", "terminal", "agenten"]);
   const mit = standardLayout(["dateien", "chat", "terminal", "terminal:2", "agenten"]);
   pruefe("Chat, Dateien und Agenten bleiben, wo sie waren", ["dateien", "chat", "agenten"].every((id) => gleich(ohne[id], mit[id])));
+}
+
+console.log("\nContainer-Shell (Issue #49):");
+{
+  const sid = containerSid("docker", "nginx");
+  pruefe("sid-Form c:docker:nginx", sid === "c:docker:nginx");
+  pruefe("zurückgelesen", JSON.stringify(containerVon(sid)) === JSON.stringify({ quelle: "docker", ziel: "nginx" }));
+  pruefe("kaputte sids → null", containerVon("c:docker:") === null && containerVon("p:x") === null && containerVon("main") === null);
+  pruefe("Beschriftung Docker", tabLabel("server", sid) === "server · 🐳 nginx", tabLabel("server", sid));
+  pruefe("Beschriftung LXC", tabLabel("pve", containerSid("lxc", "101")) === "pve · 📦 101");
+  pruefe("kein Projekt-Tab", !istProjektSid(sid));
+  pruefe("freieSid zählt c:… nicht als Nummer", freieSid("server", [{ name: "server", sid }], []) === "2");
+  const offen = [{ name: "server", sid: "main", fenster: 1 }];
+  const neu = tabsFuerSid("server", sid, 1, offen);
+  pruefe("öffnet neuen Tab", neu.length === 2 && neu[1].sid === sid && neu[1].fenster === 1);
+  pruefe("zweimal öffnen doppelt nicht", tabsFuerSid("server", sid, 1, neu) === neu);
 }
 
 console.log(fehler ? `\n${fehler} Fehler` : "\nAlles grün");

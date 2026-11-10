@@ -7,6 +7,11 @@
 //   ?panel=terminal              xterm + Leiste    -> tests/test_terminal_browser.cjs
 //   ?panel=dateien               Datei-Panel       -> tests/test_dateien_browser.cjs
 //   ?panel=terminalfenster       Terminal verdoppeln -> tests/test_terminalfenster_browser.cjs
+//   ?panel=schrift               Terminal-Schrift, Unicode 11, Mindestspalten -> tests/test_schrift_browser.cjs
+//   ?panel=tastatur              Tastatur ohne Größenänderung -> tests/test_tastatur_browser.cjs
+//   ?panel=langdruck             Langer Druck → Zeile/Absatz  -> tests/test_langdruck_browser.cjs
+//   ?panel=fenster               Fenster ein-/ausblenden (#50) -> tests/test_fenster_browser.cjs
+//   ?panel=container             Container-Fenster (#49)       -> tests/test_container_browser.cjs
 //
 // Temporäre Datei — gehört nicht in den Auslieferungs-Build.
 import { createRoot } from "react-dom/client";
@@ -15,13 +20,22 @@ import FilesPanel from "./components/FilesPanel";
 import KeyBar from "./components/KeyBar";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
+import { SCHRIFT_FAMILIE, schriftenLaden, schriftFuerSpalten } from "./termSchrift";
+import { tastaturRahmen } from "./termTastatur";
+import { langDruck, pufferZeileBei } from "./termLangdruck";
+import { logischeZeilen, textBei } from "./termAbsatz";
 import { fittenOhneSprung, wischScrollen } from "./termScroll";
 import { imeEingabe } from "./termEingabe";
 import { istSichtbar } from "./termVerbindung";
 import Workspace from "./components/Workspace";
 import TerminalPanel, { TerminalVorrat, useTerminalFenster } from "./components/TerminalPanel";
 import { panelId } from "./terminalFenster";
+import FensterMenue from "./components/FensterAuswahl";
+import ContainerPanel from "./components/ContainerPanel";
+import { LS_VERSTECKT, umschalten, versteckteLesen, versteckteText } from "./fensterSichtbar";
+import { useEffect as useEffectP, useState as useStateP } from "react";
 import "./index.css";
 
 const platzhalter = (name) => (
@@ -284,6 +298,122 @@ if (welches === "terminal") {
       host.parentElement.style.display = ja ? "none" : "";
     };
   }, 0);
+} else if (welches === "schrift") {
+  // Dieselbe Terminal-Konfiguration wie Terminal.jsx (Schrift, Unicode 11,
+  // Mindestspalten am Handy), dazu die Zeilen einer Claude-Code-Mehrfachfrage.
+  const wurzel = document.getElementById("root");
+  wurzel.innerHTML = '<div id="termhost" style="height:100dvh;width:100%"></div>';
+  const start = Number(new URLSearchParams(location.search).get("groesse") || 16);
+  const term = new XTerm({ fontSize: start, fontFamily: SCHRIFT_FAMILIE, allowProposedApi: true, theme: { background: "#1e293b" } });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.loadAddon(new Unicode11Addon());
+  term.unicode.activeVersion = "11";
+  term.open(document.getElementById("termhost"));
+  const spaltenBei = (g) => {
+    const vorher = term.options.fontSize;
+    term.options.fontSize = g;
+    const cols = fit.proposeDimensions()?.cols;
+    term.options.fontSize = vorher;
+    return cols ?? Infinity;
+  };
+  window.__term = term;
+  window.__bereit = schriftenLaden(start).then((geladen) => {
+    term.options.fontFamily = SCHRIFT_FAMILIE;
+    const vorher = spaltenBei(start);
+    term.options.fontSize = schriftFuerSpalten(start, spaltenBei, undefined, 9);
+    fit.fit();
+    term.write("\x1b[2J\x1b[H");
+    term.writeln("← \x1b[7m☐ Test 1\x1b[0m  ☒ Test 2  ☐ Test 3  ✔ Submit →");
+    term.writeln("");
+    term.writeln("❯ 1. Erste Option mit längerem Text");
+    term.writeln("  2. [✔] Alpha   3. [ ] Beta");
+    term.writeln("⏵⏵ auto mode on · ✻ ◐ ⏺ ⎿ ⧉");
+    term.writeln("╭──────────╮");
+    term.writeln("│ Rahmen   │");
+    term.writeln("╰──────────╯");
+    return {
+      geladen,
+      monoGeladen: document.fonts.check(`${start}px "Terminal Mono"`),
+      symboleGeladen: document.fonts.check(`${start}px "Terminal Symbole"`, "⏵"),
+      unicode: term.unicode.activeVersion,
+      spaltenVorher: vorher,
+      groesse: term.options.fontSize,
+      spalten: term.cols,
+      breiteHaken: term.unicode.getStringCellWidth ? term.unicode.getStringCellWidth("✔☒⏺") : null,
+    };
+  });
+} else if (welches === "tastatur") {
+  // Tastatur auf/zu ohne echtes Handy: die Hülle wird kleiner gestellt, ein
+  // Schalter ersetzt viewport.js. Gezählt wird jede Größenänderung von xterm
+  // (das wäre ein resize an die Gegenseite = Neuzeichnen von Claude Code).
+  const wurzel = document.getElementById("root");
+  wurzel.innerHTML = '<div id="huelle" style="position:relative;height:700px;width:100%"><div id="termhost" style="height:100%;width:100%"></div></div>';
+  const huelle = document.getElementById("huelle");
+  const host = document.getElementById("termhost");
+  const term = new XTerm({ fontSize: 13, theme: { background: "#1e293b" } });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  let offen = false;
+  const roh = new URLSearchParams(location.search).has("roh");
+  const rahmen = roh ? null : tastaturRahmen(host, term, () => offen);
+  if (rahmen) term.onCursorMove(() => rahmen.nachfuehren());
+  window.__groessen = 0;
+  term.onResize(() => window.__groessen++);
+  const neuMessen = () => { rahmen?.anwenden(); fit.fit(); };
+  neuMessen();
+  for (let i = 1; i <= 120; i++) term.writeln(`Zeile ${i}`);
+  term.write("❯ Eingabe");
+  window.__term = term;
+  window.__tastatur = (auf) => new Promise((fertig) => {
+    offen = auf;
+    huelle.style.height = auf ? "300px" : "700px";
+    neuMessen();
+    setTimeout(() => {
+      const zelle = host.querySelector(".xterm-screen").clientHeight / term.rows;
+      const cursorOben = host.getBoundingClientRect().top + term.buffer.active.cursorY * zelle;
+      const h = huelle.getBoundingClientRect();
+      fertig({ zeilen: term.rows, groessen: window.__groessen, cursorSichtbar: cursorOben >= h.top && cursorOben + zelle <= h.bottom + 1 });
+    }, 100);
+  });
+} else if (welches === "langdruck") {
+  // Echtes xterm mit Claude-Code-artigem Inhalt, Wischen (termScroll.js) UND
+  // langer Druck (termLangdruck.js) an derselben Wurzel wie in Terminal.jsx.
+  const wurzel = document.getElementById("root");
+  wurzel.innerHTML = '<div id="termhost" style="height:100dvh;width:100%"></div>';
+  const host = document.getElementById("termhost");
+  const term = new XTerm({ fontSize: 13, theme: { background: "#1e293b" } });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  fit.fit();
+  for (let i = 1; i <= 80; i++) term.writeln(`Verlauf ${i}`);
+  term.writeln("");
+  term.writeln("> zeig mir den Befehl");
+  term.writeln("");
+  term.writeln("● Hier ist der Befehl, mit dem du die App baust und installierst:");
+  term.writeln("  ./kapsel/bauen.sh install");
+  term.writeln("");
+  term.write("> ");
+  wischScrollen(term);
+  window.__treffer = [];
+  langDruck(host, ({ y }) => {
+    const zeile = pufferZeileBei(term, y);
+    window.__treffer.push(zeile >= 0 ? textBei(logischeZeilen(term.buffer.active), zeile) : null);
+  });
+  // Bildschirm-Y der Mitte einer Zeile, die `text` enthält
+  window.__yVon = (text) => {
+    const buf = term.buffer.active;
+    for (let i = 0; i < buf.length; i++) {
+      if (buf.getLine(i)?.translateToString(true).includes(text)) {
+        const r = host.querySelector(".xterm-screen").getBoundingClientRect();
+        return r.top + (i - buf.viewportY + 0.5) * (r.height / term.rows);
+      }
+    }
+    return null;
+  };
+  window.__term = term;
 } else if (welches === "keybar") {
   // Die Leiste allein, mit allen Knöpfen wie im Terminal — geprüft wird, ob
   // sie sich am Handy waagerecht wischen lässt (sie ist breiter als jedes
@@ -354,6 +484,105 @@ if (welches === "terminal") {
     );
   }
   createRoot(document.getElementById("root")).render(<Stand />);
+} else if (welches === "fenster") {
+  // Fenster ein-/ausblenden (Issue #50): Hakenmenü + Workspace wie in App.jsx,
+  // Sichtbarkeit im localStorage. Jedes Panel zählt seine Mounts mit — der
+  // Test weist damit nach, dass Ausblenden NICHT unmountet.
+  window.__mounts = {};
+  function Zaehler({ name }) {
+    useEffectP(() => {
+      window.__mounts[name] = (window.__mounts[name] || 0) + 1;
+    }, []);
+    return platzhalter(name);
+  }
+  function Stand() {
+    const [versteckt, setVersteckt] = useStateP(() =>
+      versteckteLesen(localStorage.getItem(LS_VERSTECKT)),
+    );
+    useEffectP(() => localStorage.setItem(LS_VERSTECKT, versteckteText(versteckt)), [versteckt]);
+    const liste = panels.map((p) => ({ ...p, body: <Zaehler name={p.id} /> }));
+    const ids = liste.map((p) => p.id);
+    return (
+      <div className="flex h-dvh flex-col">
+        <div className="flex justify-end gap-2 border-b p-1">
+          <button data-ansichten onClick={() => window.dispatchEvent(new Event("workspace:views"))}>
+            Ansichten
+          </button>
+          <FensterMenue
+            fenster={liste.map(({ id, title }) => ({ id, title }))}
+            versteckt={versteckt}
+            onUmschalten={(id) => setVersteckt((v) => umschalten(v, id, ids))}
+          />
+        </div>
+        <Workspace
+          tab="chat"
+          viewMode="windows"
+          panels={liste}
+          versteckt={versteckt}
+          onVerstecktSetzen={setVersteckt}
+        />
+      </div>
+    );
+  }
+  createRoot(document.getElementById("root")).render(<Stand />);
+} else if (welches === "container") {
+  // Container-Fenster (Issue #49) gegen ein fetch-Doppel: zwei Rechner, auf
+  // "server" Docker, auf "pve" Proxmox mit LXC + VM. Aufgerufene URLs landen
+  // in window.__abrufe, "terminal:oeffnen" in window.__shells.
+  window.__abrufe = [];
+  window.__shells = [];
+  window.addEventListener("terminal:oeffnen", (e) => window.__shells.push(e.detail));
+  const antw = (d, status = 200) =>
+    Promise.resolve(new Response(JSON.stringify(d), { status, headers: { "Content-Type": "application/json" } }));
+  const LISTEN = {
+    server: {
+      container: [
+        { quelle: "docker", id: "nginx", name: "nginx", image: "nginx:1.27", status: "Up 3 days", laeuft: true, ports: "0.0.0.0:80->80/tcp" },
+        { quelle: "docker", id: "alt", name: "alt", image: "busybox", status: "Exited (0)", laeuft: false, ports: "" },
+      ],
+      fehler: {},
+    },
+    pve: {
+      container: [
+        { quelle: "lxc", id: "101", name: "pihole", image: "LXC 101", status: "running", laeuft: true },
+        { quelle: "lxc", id: "102", name: "cloud", image: "LXC 102", status: "stopped", laeuft: false },
+        { quelle: "vm", id: "200", name: "win11", image: "VM 8192 MB RAM", status: "running", laeuft: true, nur_ansicht: true },
+      ],
+      fehler: {},
+    },
+  };
+  window.fetch = (url) => {
+    const u = new URL(url, location.origin);
+    window.__abrufe.push(u.pathname + u.search);
+    const p = u.pathname;
+    if (p === "/api/container")
+      return antw({ schalter: { server: { docker: true, proxmox: false }, pve: { docker: false, proxmox: true } } });
+    const m = p.match(/^\/api\/container\/([^/]+)(?:\/([^/]+)\/([^/]+)\/(\w+))?$/);
+    if (!m) return antw({ detail: "unbekannt" }, 404);
+    const [, rechner, , ziel, was] = m;
+    if (!was) return antw({ verbindung: rechner, ...LISTEN[rechner] });
+    if (was === "logs") {
+      const z = Number(u.searchParams.get("zeilen"));
+      return antw({ text: Array.from({ length: 3 }, (_, i) => `${ziel} zeile ${i + 1} von ${z}`).join("\n"), zeilen: z, herkunft: "docker logs" });
+    }
+    if (was === "dateien") {
+      const pfad = u.searchParams.get("pfad");
+      if (pfad === "/geheim") return antw({ detail: "Keine Berechtigung" }, 403);
+      return antw({
+        pfad,
+        eintraege: pfad === "/"
+          ? [{ name: "etc", typ: "dir", groesse: 4096 }, { name: "geheim", typ: "dir", groesse: 4096 }, { name: "readme.txt", typ: "file", groesse: 12 }]
+          : [{ name: "nginx.conf", typ: "file", groesse: 30 }],
+      });
+    }
+    if (was === "lesen") return antw({ pfad: u.searchParams.get("pfad"), text: "inhalt von " + u.searchParams.get("pfad"), gekuerzt: false });
+    return antw({ detail: "?" }, 404);
+  };
+  createRoot(document.getElementById("root")).render(
+    <div className="flex h-dvh flex-col">
+      <ContainerPanel />
+    </div>,
+  );
 } else if (welches === "agenten") {
   window.fetch = fetchDoppel;
   createRoot(document.getElementById("root")).render(

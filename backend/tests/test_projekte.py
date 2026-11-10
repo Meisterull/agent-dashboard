@@ -203,10 +203,11 @@ class _WS:
         self._qp = {"sid": sid}
 
 
-def _session(sid, projekt=None, tmux=False):
+def _session(sid, projekt=None, tmux=False, groesse=(120, 40)):
     key = f"werkstatt:{sid}"
     s = ssh_bridge._Session(key, "werkstatt", sid, _Conn(), _Proc())
     s.projekt, s.tmux = projekt, tmux
+    s.cols, s.rows = groesse
     s.buffer.append("alter output")
     s.buf_len = len("alter output")
     ssh_bridge._sessions[key] = s
@@ -223,20 +224,36 @@ class TestBruecke(unittest.TestCase):
         asyncio.run(ssh_bridge.bridge(ws, "werkstatt"))
         return ws
 
-    def test_normale_session_bekommt_replay_und_wackler(self):
+    def test_normale_session_gleiche_groesse_nur_replay(self):
+        # Reattach mit unveränderter Größe: Replay reicht, KEIN SIGWINCH — sonst
+        # zeichnet Claude Code die Antwort noch einmal unter die nachgespielte.
         s = _session("main")
         ws = self._reattach(s, [{"type": "resize", "cols": 120, "rows": 40},
+                                {"type": "resize", "cols": 120, "rows": 40},
                                 {"type": "resize", "cols": 100, "rows": 40}])
         self.assertIn("alter output", ws.gesendet)
-        # erster resize nach Reattach: Wackler (119) + echte Größe; der zweite ohne
-        self.assertEqual(s.proc.groessen, [(119, 40), (120, 40), (100, 40)])
+        self.assertEqual(s.proc.groessen, [(100, 40)])
         self.assertFalse(s.neuzeichnen)
+        self.assertEqual((s.cols, s.rows), (100, 40))
+
+    def test_normale_session_neue_groesse_ohne_wackler(self):
+        # Größe geändert: die echte Änderung ist schon das eine Signal, das
+        # Claude Code zum Neuzeichnen braucht — kein zusätzlicher Wackler.
+        s = _session("main")
+        self._reattach(s, [{"type": "resize", "cols": 100, "rows": 40}])
+        self.assertEqual(s.proc.groessen, [(100, 40)])
 
     def test_projekt_session_ohne_replay(self):
-        s = _session("p:zeitalter", {"name": "zeitalter", "pfad": "/x", "befehl": "claude"}, tmux=True)
+        p = {"name": "zeitalter", "pfad": "/x", "befehl": "claude"}
+        # gleiche Größe: tmux hat nichts nachgespielt → Wackler holt den Bildschirm
+        s = _session("p:zeitalter", p, tmux=True, groesse=(80, 24))
         ws = self._reattach(s, [{"type": "resize", "cols": 80, "rows": 24}])
         self.assertNotIn("alter output", ws.gesendet)
         self.assertEqual(s.proc.groessen, [(79, 24), (80, 24)])
+        # andere Größe: die Änderung selbst zeichnet
+        s2 = _session("p:zeitalter", p, tmux=True, groesse=(120, 40))
+        self._reattach(s2, [{"type": "resize", "cols": 80, "rows": 24}])
+        self.assertEqual(s2.proc.groessen, [(80, 24)])
 
     def test_kill_nimmt_tmux_nur_ausdruecklich_mit(self):
         p = {"name": "zeitalter", "pfad": "/x", "befehl": "claude"}

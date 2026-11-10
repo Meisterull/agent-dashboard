@@ -32,10 +32,25 @@ export const istProjektSid = (sid) =>
   typeof sid === "string" && sid.startsWith(PROJEKT_PRAEFIX) && sid.length > PROJEKT_PRAEFIX.length;
 export const projektVon = (sid) => (istProjektSid(sid) ? sid.slice(PROJEKT_PRAEFIX.length) : null);
 
-// Beschriftung eines Tabs: "werkstatt", "werkstatt ·2", "werkstatt · zeitalter".
+// Container-Shells (Issue #49, ContainerPanel.jsx): sid "c:docker:<name>" bzw.
+// "c:lxc:<vmid>" — die Brücke startet dafür `docker exec -it` / `pct enter`
+// (backend/app/container.py). Kollidiert wie "p:…" nie mit "2", "3", ….
+export const CONTAINER_PRAEFIX = "c:";
+export const containerSid = (quelle, ziel) => `${CONTAINER_PRAEFIX}${quelle}:${ziel}`;
+export function containerVon(sid) {
+  if (typeof sid !== "string" || !sid.startsWith(CONTAINER_PRAEFIX)) return null;
+  const [quelle, ...rest] = sid.slice(CONTAINER_PRAEFIX.length).split(":");
+  const ziel = rest.join(":");
+  return quelle && ziel ? { quelle, ziel } : null;
+}
+
+// Beschriftung eines Tabs: "werkstatt", "werkstatt ·2", "werkstatt · zeitalter",
+// "server · 🐳 nginx", "pve · 📦 101".
 export function tabLabel(name, sid) {
   if (sid === DEFAULT_SID) return name;
   if (istProjektSid(sid)) return `${name} · ${projektVon(sid)}`;
+  const c = containerVon(sid);
+  if (c) return `${name} · ${c.quelle === "docker" ? "🐳" : "📦"} ${c.ziel}`;
   return `${name} ·${sid}`;
 }
 
@@ -44,7 +59,11 @@ export function tabLabel(name, sid) {
 // ein zweiter Tab nähme ihn dem ersten weg); sonst kommt er neu dazu. Gibt
 // die neue Tab-Liste zurück.
 export function tabsFuerProjekt(name, projekt, n, open) {
-  const sid = projektSid(projekt);
+  return tabsFuerSid(name, projektSid(projekt), n, open);
+}
+
+// Dasselbe für eine beliebige feste sid (Container-Shell, Issue #49).
+export function tabsFuerSid(name, sid, n, open) {
   const da = open.find((t) => t.name === name && t.sid === sid);
   if (da) return da.fenster === n ? open : open.map((t) => (t === da ? { ...t, fenster: n } : t));
   return [...open, { name, sid, fenster: n }];

@@ -15,6 +15,7 @@ import {
   tabLabel,
   tabsFuerKlick,
   tabsFuerProjekt,
+  tabsFuerSid,
 } from "../terminalFenster";
 import { t } from "../sprache";
 
@@ -213,6 +214,25 @@ export function TerminalVorrat({ fenster, children }) {
     if (neu !== vorratOpenRef.current)
       setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   };
+
+  // Von außen öffnen (Container-Fenster, Issue #49): Ereignis
+  // "terminal:oeffnen" {name, sid} — Tab im ersten Terminal-Fenster bzw. dort,
+  // wo er schon liegt. Gleiches Muster wie openProjekt.
+  useEffect(() => {
+    const on = (e) => {
+      const { name, sid } = e.detail || {};
+      if (!name || !sid) return;
+      const vorher = vorratOpenRef.current;
+      const da = vorher.find((t) => t.name === name && t.sid === sid);
+      const n = da ? da.fenster : 1;
+      const neu = tabsFuerSid(name, sid, n, vorher);
+      setOpen(neu);
+      setActive((a) => ({ ...a, [n]: `${name}:${sid}` }));
+      setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+    };
+    window.addEventListener("terminal:oeffnen", on);
+    return () => window.removeEventListener("terminal:oeffnen", on);
+  }, []);
 
   // × — nur das Fenster schließen; die Session läuft serverseitig weiter.
   const close = (tab) => {

@@ -300,11 +300,12 @@ export default function FilesPanel({ refreshKey, onOpenFile }) {
       title: t("Neue Datei"),
       label: t("Name der neuen Datei"),
       ok: t("Anlegen"),
-      // leere Datei anlegen und direkt im Editor öffnen
+      // leere Datei anlegen und direkt im Editor öffnen — neu=true: eine
+      // vorhandene Datei gleichen Namens bleibt unangetastet (Bug-Hunt 22.10.2026)
       run: (name) =>
         run(async () => {
           const target = joinDir(name);
-          await saveFile(source, target, "");
+          await saveFile(source, target, "", "utf-8", true);
           onOpenFile({ source, path: target });
         }),
     });

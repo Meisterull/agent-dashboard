@@ -103,10 +103,19 @@ class TestWorkspace(unittest.TestCase):
             asyncio.run(upload.schreibe_lokal("ziel", "gross.bin", leser))
         self.assertEqual(list((_WS / "ziel").iterdir()), [])
 
+    def test_fehlender_ordner_wird_angelegt(self):
+        # Bug-Hunt 22.10.2026: uploads/chat/<Datum> legte niemand an → Chat-Anhänge
+        # scheiterten immer. Fehlende Zielordner werden jetzt angelegt …
+        asyncio.run(upload.schreibe_lokal(
+            "gibtsnicht/tief", "a.txt", upload.KoerperLeser(_strom([b"x"]))))
+        self.assertEqual((_WS / "gibtsnicht" / "tief" / "a.txt").read_bytes(), b"x")
+
     def test_kein_verzeichnis(self):
+        # … eine Datei an der Stelle bleibt aber „kein Verzeichnis".
+        (_WS / "datei.txt").write_bytes(b"d")
         with self.assertRaises(FilesError):
             asyncio.run(upload.schreibe_lokal(
-                "gibtsnicht", "a.txt", upload.KoerperLeser(_strom([b"x"]))))
+                "datei.txt", "a.txt", upload.KoerperLeser(_strom([b"x"]))))
 
 
 class TestRemoteAbbruch(unittest.TestCase):

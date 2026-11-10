@@ -66,6 +66,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # <ordner>/von-<absender>/. Gepflegt über /api/austausch (Datei-Panel 📥),
     # nicht das Settings-Formular — wie die Automatik-Schalter.
     "austausch": {},
+    # Container-Fenster (Issue #49, app/container.py): {name: {docker, proxmox}}.
+    # Gepflegt über /api/container/{name}/schalter (Verbindungen-Dialog).
+    "container": {},
 }
 
 # Editierbare Felder (Whitelist) — verhindert, dass das UI beliebige Keys setzt.

@@ -1,4 +1,5 @@
 import { t } from "../sprache";
+import FensterMenue from "./FensterAuswahl";
 
 export default function TopBar({
   sessionId,
@@ -8,6 +9,9 @@ export default function TopBar({
   viewMode,
   onToggleViewMode,
   onLogout,
+  fenster = [],
+  versteckt,
+  onFensterUmschalten,
 }) {
   // Mobil ist die Leiste eng: Session-Kennung ausblenden, Einstellungen/
   // Abmelden als Icon — sonst schiebt sich die Knopfreihe aus dem Bild.
@@ -47,6 +51,9 @@ export default function TopBar({
               {t("Ansichten")}
             </button>
           </>
+        )}
+        {fenster.length > 1 && (
+          <FensterMenue fenster={fenster} versteckt={versteckt} onUmschalten={onFensterUmschalten} />
         )}
         <button
           onClick={onToggleTheme}

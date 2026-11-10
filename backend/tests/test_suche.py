@@ -104,10 +104,12 @@ class _SuchConn(_FakeConn):
             def __init__(self, daten: bytes) -> None:
                 self.daten = daten
 
-            async def read(self) -> bytes:
+            async def read(self, n: int = -1) -> bytes:
+                # wie ein echter Strom: Daten einmal, danach EOF (b"")
                 if conn.verzoegerung:
                     await asyncio.sleep(conn.verzoegerung)
-                return self.daten
+                daten, self.daten = self.daten, b""
+                return daten
 
         class _Proc:
             stdout = _Strom(out)

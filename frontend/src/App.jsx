@@ -8,14 +8,23 @@ import FilesPanel from "./components/FilesPanel";
 import AgentsPanel from "./components/AgentsPanel";
 import TerminalPanel, { TerminalVorrat, useTerminalFenster } from "./components/TerminalPanel";
 import { panelId } from "./terminalFenster";
+import {
+  LS_VERSTECKT,
+  ersatzTab,
+  sichtbareIds,
+  umschalten,
+  versteckteLesen,
+  versteckteText,
+} from "./fensterSichtbar";
 import Workspace from "./components/Workspace";
 import ExternalFrame from "./components/ExternalFrame";
+import ContainerPanel from "./components/ContainerPanel";
 import Settings from "./components/Settings";
 import Login from "./components/Login";
 import { DialogHost } from "./components/Dialog";
 import Fehlergrenze from "./components/Fehlergrenze";
 import { starteLiveEvents } from "./live";
-import { authCheck, getSettings, logout } from "./api";
+import { authCheck, getContainerSchalter, getSettings, logout } from "./api";
 import { t, sprachAngleichen } from "./sprache";
 
 // CodeMirror (+ language-data) ist der mit Abstand größte Brocken und wird
@@ -87,6 +96,26 @@ export default function App() {
     return () => window.removeEventListener("settings:changed", load);
   }, [authed]);
 
+  // Container-Fenster (Issue #49): gibt es nur, wenn bei mindestens einem
+  // Rechner Docker oder Proxmox angehakt ist (Verbindungen-Dialog).
+  const [containerAn, setContainerAn] = useState(false);
+  useEffect(() => {
+    if (!authed) return;
+    const load = () =>
+      getContainerSchalter()
+        .then((d) =>
+          setContainerAn(Object.values(d.schalter || {}).some((x) => x.docker || x.proxmox)),
+        )
+        .catch(() => setContainerAn(false));
+    load();
+    window.addEventListener("container:changed", load);
+    window.addEventListener("connections:changed", load);
+    return () => {
+      window.removeEventListener("container:changed", load);
+      window.removeEventListener("connections:changed", load);
+    };
+  }, [authed]);
+
   // Login-Gate: initiale Prüfung + globales 401-Event aus api.js
   useEffect(() => {
     authCheck()
@@ -138,6 +167,29 @@ export default function App() {
   }, [termFenster]);
   const termTabs = termFenster.slice(1).map((n) => [panelId(n), t("Terminal {0}", n)]);
 
+  // Fenster ein-/ausblenden (Issue #50): pro Gerät im localStorage. Die
+  // Panels bleiben gemountet; Workspace und Tab-Leiste übergehen sie nur.
+  const [versteckt, setVersteckt] = useState(() => versteckteLesen(lsGet(LS_VERSTECKT)));
+  useEffect(() => {
+    lsSet(LS_VERSTECKT, versteckteText(versteckt));
+  }, [versteckt]);
+  const alleTabs = [
+    ...TABS,
+    ...termTabs,
+    ...(containerAn ? [["container", t("Container")]] : []),
+    ...extWindows.map((w) => [`ext:${w.name}`, w.name]),
+  ];
+  const alleIds = alleTabs.map(([id]) => id);
+  const sichtbar = sichtbareIds(alleIds, versteckt);
+  const sichtbarKey = sichtbar.join("|");
+  const fensterUmschalten = (id) => setVersteckt((v) => umschalten(v, id, alleIds));
+  // Der offene Tab wurde ausgeblendet → auf einen sichtbaren wechseln.
+  // Ext-Tabs aus ?tab= sind vor dem Settings-Load noch unbekannt: abwarten.
+  useEffect(() => {
+    setTab((t) => (t.startsWith("ext:") && !alleIds.includes(t) ? t : ersatzTab(t, sichtbar)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sichtbarKey]);
+
   const bump = () => setRefreshKey((k) => k + 1);
 
   // Abmelden: Cookie serverseitig löschen und zurück zum Login. Scheitert der
@@ -169,7 +221,7 @@ export default function App() {
   // Das Agenten-Panel pollt am teuersten (getTasks je Agent) — verdeckt darf
   // es seltener laden (AgentsPanel streckt dann seinen Takt).
   const agentenSichtbar =
-    (isDesktop && viewMode === "windows") || tab === "agenten";
+    !versteckt.has("agenten") && ((isDesktop && viewMode === "windows") || tab === "agenten");
 
   const [attention, setAttention] = useState({});
   const flag = useCallback((id) => {
@@ -205,12 +257,23 @@ export default function App() {
   }, []);
 
   const switchTab = (t) => {
+    // Sprung von außen (Push) auf ein ausgeblendetes Fenster: wieder zeigen,
+    // sonst landete der Tipp auf der Benachrichtigung im Leeren.
+    if (versteckt.has(t)) setVersteckt((v) => umschalten(v, t, alleIds));
     setTab(t);
     clearAttention(t);
     setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   };
   const switchTabRef = useRef(switchTab);
   switchTabRef.current = switchTab;
+
+  // Container-Shell geöffnet (ContainerPanel → "terminal:oeffnen"): in der
+  // Tab-Ansicht zum Terminal wechseln, sonst sähe man den neuen Tab nicht.
+  useEffect(() => {
+    const on = () => switchTabRef.current("terminal");
+    window.addEventListener("terminal:oeffnen", on);
+    return () => window.removeEventListener("terminal:oeffnen", on);
+  }, []);
 
   if (authed === false) return <Login onSuccess={() => setAuthed(true)} />;
   if (authed === null)
@@ -232,6 +295,9 @@ export default function App() {
           setViewMode((m) => (m === "windows" ? "tabs" : "windows"))
         }
         onLogout={abmelden}
+        fenster={alleTabs.map(([id, title]) => ({ id, title }))}
+        versteckt={versteckt}
+        onFensterUmschalten={fensterUmschalten}
       />
       <NeueFassung />
       <QuestionsBanner
@@ -246,6 +312,8 @@ export default function App() {
         viewMode={viewMode}
         attention={attention}
         onFocusPanel={clearAttention}
+        versteckt={versteckt}
+        onVerstecktSetzen={setVersteckt}
         panels={[
           {
             id: "dateien",
@@ -282,6 +350,9 @@ export default function App() {
               />
             ),
           },
+          ...(containerAn
+            ? [{ id: "container", title: t("Container"), body: <ContainerPanel /> }]
+            : []),
           ...extWindows.map((w) => ({
             id: `ext:${w.name}`,
             title: w.name,
@@ -304,7 +375,7 @@ export default function App() {
           viewMode === "windows" ? "md:hidden" : ""
         }`}
       >
-        {[...TABS, ...termTabs, ...extWindows.map((w) => [`ext:${w.name}`, w.name])].map(([id, label]) => (
+        {alleTabs.filter(([id]) => sichtbar.includes(id)).map(([id, label]) => (
           <button
             key={id}
             onClick={() => switchTab(id)}
@@ -319,7 +390,14 @@ export default function App() {
         ))}
       </nav>
 
-      {showSettings && <Settings onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <Settings
+          onClose={() => setShowSettings(false)}
+          fenster={alleTabs.map(([id, title]) => ({ id, title }))}
+          versteckt={versteckt}
+          onFensterUmschalten={fensterUmschalten}
+        />
+      )}
       {openFile && (
         <Suspense
           fallback={

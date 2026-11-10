@@ -10,6 +10,7 @@ import {
   pushTest,
 } from "../api";
 import { t, sprachMerken } from "../sprache";
+import { FensterListe } from "./FensterAuswahl";
 
 // Das Orchestrator-Modell (`orch_model`) wird bewusst HIER umgeschaltet und
 // nicht im Chat-Kopf: der ist mobil schon voll (Titel + Verlauf-Auswahl +
@@ -17,7 +18,7 @@ import { t, sprachMerken } from "../sprache";
 // zu den Einstellungen, nicht zum einzelnen Verlauf. Der Provider bleibt
 // env-bestimmt (app/llm.py liest ihn NICHT aus den Settings), deshalb steht er
 // hier nur noch als Information.
-export default function Settings({ onClose }) {
+export default function Settings({ onClose, fenster = [], versteckt, onFensterUmschalten }) {
   const [settings, setSettings] = useState(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(null);
@@ -312,6 +313,20 @@ export default function Settings({ onClose }) {
               </div>
             )}
           </div>
+
+          {fenster.length > 1 && (
+            <div data-einstellung-fenster>
+              <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+                {t("Fenster")}
+              </span>
+              <p className="mb-2 text-xs text-slate-400">
+                {t(
+                  "Welche Fenster dieses Gerät zeigt. Wirkt sofort und nur hier — ausgeblendete laufen weiter (Terminal-Sitzungen bleiben offen).",
+                )}
+              </p>
+              <FensterListe fenster={fenster} versteckt={versteckt} onUmschalten={onFensterUmschalten} />
+            </div>
+          )}
 
           <div>
             <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
