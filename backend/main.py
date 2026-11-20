@@ -120,7 +120,7 @@ from app.files import (
 )
 from app.remote_files import RemoteFilesError
 from app import austausch, erinnerungen, freigaben, geheimnisse, liegezeit, zwischenspeicher
-from app import vorgaenge
+from app import pakete, vorgaenge
 from app import container
 from app import upload
 from app.austausch import AustauschError
@@ -1987,6 +1987,32 @@ async def freigabe_einstellung(agent: str, body: FreigabeEinstellungIn) -> dict:
             **({"warnung": "Diese Muster enthalten etwas, das wie Zugangsdaten aussieht — "
                            "besser ein Geheimnis anlegen und im Befehl $NAME schreiben: "
                            + "; ".join(warnung)} if warnung else {})}
+
+
+# --- Deploy-Pakete (Issue #61) -----------------------------------------------
+
+class PaketPhaseIn(BaseModel):
+    phase: str
+    notiz: str | None = None
+
+
+@app.get("/api/pakete")
+async def pakete_liste(offen: bool = False) -> dict:
+    """Gemeldete Deploy-/Freigabe-Pakete: offene zuerst, dann der Verlauf."""
+    return {"pakete": await asyncio.to_thread(pakete.liste, offen), "phasen": pakete.PHASEN}
+
+
+@app.post("/api/pakete/{token}/phase")
+async def paket_phase(token: str, body: PaketPhaseIn) -> dict:
+    """Der Mensch setzt eine Phase von Hand (z. B. „live" nach eigener
+    Prüfung oder „zurueckgezogen" für ein liegengebliebenes Paket)."""
+    if token not in {p["token"] for p in await asyncio.to_thread(pakete.liste, False, 10000)}:
+        raise HTTPException(404, f"kein Paket '{token}'")
+    try:
+        return await asyncio.to_thread(
+            lambda: pakete.melde(token, body.phase, "dashboard", note=body.notiz))
+    except pakete.PaketFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # --- Vorgangs-Ansicht (Issue #58) -------------------------------------------

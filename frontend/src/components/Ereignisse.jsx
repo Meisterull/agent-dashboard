@@ -24,6 +24,7 @@ const ICON = {
   freigabe: "🔐",
   erinnerung: "⏰",
   liegt: "⏳",
+  paket: "📦",
   send_file: "📤",
   integration: "🔌",
   // Pflege (#47): Vorwarnung je Runde bzw. als Fehlschlag abgeschlossen

@@ -18,6 +18,8 @@
        Automatik an = kein Hinweis, Einmal-Lauf-Ende
   #60  Pflege archiviert ins Monatsarchiv statt zu löschen; laufende Tasks
        behalten ihre Antwort; read_responses(archiv=True) findet Altes
+  #61  Deploy-Pakete: Ausstellungen zählen, Phasen, Inhalt bleibt bei reiner
+       Phasenmeldung, Ausgang geht an den Menschen
   #62  Modell je Task nur aus der Allowlist des Empfängers; Rolle friert ihr
        Modell ein; claim reicht beides an den Watcher; Kosten je Modell
   #64  Geheimnisse: verschlüsselt abgelegt, nur Namen lesbar, Schwärzen,
@@ -504,7 +506,38 @@ def test_58_vorgaenge(ws: Path) -> None:
     assert dev["thread_status"](thread="3d-ansicht")["tasks"] == 2
 
 
-TESTS = [test_58_vorgaenge,
+def test_61_deploy_pakete(ws: Path) -> None:
+    ms = _mcp_server_laden(ws)
+    from app import ereignisse, pakete
+    _boxen(ws, "deverp", "erp", "orchestrator")
+    dev, erp = _tools(ms, identity="deverp"), _tools(ms, identity="erp")
+    assert dev["deploy_status"]() == []
+    assert "error" in dev["deploy_status"](token="DV", phase="irgendwas")
+    assert "error" in dev["deploy_status"](token="DV", phase="ausgestellt",
+                                           repos=[{"name": "x", "sha": "kein sha!"}])
+    for _ in range(2):
+        r = dev["deploy_status"](
+            token="DV", phase="ausgestellt", title="Abend-Deploy", target="prod",
+            repos=[{"name": "backend_stack", "sha": "9f6a1c2", "vorhanden": True}, "zeichnungen@abc1234"],
+            flags=["migrate", "Image-Neubau"], tasks=["task-1", "task-2"], threads="3d-ansicht")
+    assert r["ausstellungen"] == 2 and "2 Repos" in r["kurz"] and "MIGRATE + IMAGE-NEUBAU" in r["kurz"], r
+    offen = erp["deploy_status"]()
+    assert len(offen) == 1 and offen[0]["ausgestellt_von"] == "deverp", offen
+    erp["deploy_status"](token="DV", phase="uebernommen")
+    erp["deploy_status"](token="DV", phase="gelaufen", note="deploy-prod.sh ok")
+    p = pakete.liste()[0]
+    assert p["phase"] == "gelaufen" and len(p["repos"]) == 2 and p["vorgaenge"] == ["3d-ansicht"], p
+    assert [v["phase"] for v in p["verlauf"]] == ["ausgestellt", "ausgestellt", "uebernommen", "gelaufen"]
+    post = [e for e in _inbox(ws, "orchestrator") if e["kind"] == "message"]
+    assert len(post) == 1 and "eingespielt" in post[0]["text"] and post[0]["weckt"] is False, post
+    erp["deploy_status"](token="DV", phase="fehler", note="verify schlug fehl")
+    assert pakete.liste(nur_offene=True) == []
+    log = ereignisse.lies(ws / "mailboxes", "erp", art="paket")["eintraege"]
+    assert log[0]["schwere"] == "fehler", log
+
+
+TESTS = [test_61_deploy_pakete,
+         test_58_vorgaenge,
          test_59_liegende_tasks,
          test_52_erinnerungen,
          test_64_geheimnisse,

@@ -58,6 +58,8 @@ ARTEN = frozenset({
     "erinnerung",
     # Tasks liegen unberührt bzw. beansprucht ohne Lebenszeichen (Issue #59)
     "liegt",
+    # Deploy-Pakete (Issue #61): Phasenwechsel eines gemeldeten Pakets
+    "paket",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).

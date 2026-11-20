@@ -43,6 +43,7 @@ KNOWN_TOOLS = frozenset({
     "freigabe",
     "remind", "reminders", "cancel_reminder", "snooze_reminder",
     "thread_status", "thread_note",
+    "deploy_status",
     "list_integrations", "call_integration",
     "list_rollen",
     "agent_events",

@@ -19,6 +19,7 @@ import FreigabenDialog from "./FreigabenDialog";
 import GeheimnisseAbschnitt from "./GeheimnisseAbschnitt";
 import Erinnerungen from "./Erinnerungen";
 import VorgaengeDialog from "./VorgaengeDialog";
+import PaketeDialog from "./PaketeDialog";
 import RollenDialog from "./RollenDialog";
 import ZeitplaeneDialog from "./ZeitplaeneDialog";
 import { t } from "../sprache";
@@ -203,6 +204,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const [archiv, setArchiv] = useState(null);
   const [freigabenOffen, setFreigabenOffen] = useState(false); // Dialog (Issue #56)
   const [vorgaengeOffen, setVorgaengeOffen] = useState(null); // null | {start} (Issue #58)
+  const [paketeOffen, setPaketeOffen] = useState(false); // Deploy-Panel (Issue #61)
   // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
   // nicht erreichbar — auf dem Handy gibt es auch keine Tooltips.
@@ -507,6 +509,13 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
           className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
         >
           ⏰
+        </button>
+        <button
+          onClick={() => setPaketeOffen(true)}
+          title={t("Deploy-Pakete — was steht an, was ist live")}
+          className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
+        >
+          📦
         </button>
         <button
           onClick={() => setVorgaengeOffen({ start: null })}
@@ -1086,6 +1095,15 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         )}
       </div>
       {rollenOffen && <RollenDialog onClose={() => setRollenOffen(false)} />}
+      {paketeOffen && (
+        <PaketeDialog
+          onClose={() => setPaketeOffen(false)}
+          onVorgang={(v) => {
+            setPaketeOffen(false);
+            setVorgaengeOffen({ start: v });
+          }}
+        />
+      )}
       {vorgaengeOffen && (
         <VorgaengeDialog start={vorgaengeOffen.start} onClose={() => setVorgaengeOffen(null)} />
       )}

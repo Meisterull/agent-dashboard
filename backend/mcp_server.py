@@ -47,7 +47,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import austausch, erinnerungen, freigaben, geheimnisse, integrations, kosten, vorgaenge, mcp_scope, rollen, weckruf, zwischenspeicher
+from app import austausch, erinnerungen, freigaben, geheimnisse, integrations, kosten, vorgaenge, pakete, mcp_scope, rollen, weckruf, zwischenspeicher
 from app.config import load_agents_full, load_settings
 from app.files import decode_text
 from datetime import datetime
@@ -1032,6 +1032,72 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 )
             except austausch.AustauschError as exc:
                 return {"error": str(exc)}
+
+    # --- Deploy-Pakete (Issue #61) -------------------------------------------
+
+    if on("deploy_status"):
+        @werkzeug
+        def deploy_status(
+            token: str | None = None,
+            phase: str | None = None,
+            title: str | None = None,
+            target: str | None = None,
+            repos: list | None = None,
+            flags: list[str] | str | None = None,
+            tasks: list[str] | str | None = None,
+            threads: list[str] | str | None = None,
+            note: str | None = None,
+            sender: str | None = None,
+        ) -> dict | list:
+            """Stand eines Deploy-/Freigabe-Pakets melden — das Dashboard zeigt
+            ihn im Deploy-Panel (es deployt NICHT selbst).
+
+            Ohne `token`: die offenen Pakete auflisten (was steht an, was
+            blockiert). Mit `token` + `phase` melden:
+            "ausgestellt" (Paket/Intent erstellt bzw. erneut ausgestellt),
+            "uebernommen" (der Einspielende hat es angenommen), "gelaufen"
+            (eingespielt), "live" (geprüft), "fehler", "zurueckgezogen".
+            Beim Ausstellen mitgeben: `repos` = [{"name", "sha", "message"?,
+            "vorhanden"?}] (erwarteter Stand je Repo), `flags` (z.B.
+            ["MIGRATE", "IMAGE-NEUBAU"]), `tasks` (Task-IDs) und `threads`
+            (Vorgänge), die in dem Paket stecken, `title`, `target` (wohin),
+            `note`. Spätere Phasenmeldungen brauchen nur token + phase (+ note).
+            `sender` auf einem gebundenen Kanal weglassen.
+            """
+            if not token:
+                _log(kanal, "deploy_status", liste=True)
+                return pakete.liste(nur_offene=True)
+            try:
+                absender = ident(sender, "sender") if identity else (sender or "orchestrator")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "deploy_status", token=token, phase=phase, sender=absender)
+            try:
+                p = pakete.melde(token, phase or "", absender, title, target, repos, flags,
+                                 tasks, threads, note)
+            except pakete.PaketFehler as exc:
+                return {"error": str(exc)}
+            schwere = "fehler" if p["phase"] == "fehler" else "info"
+            try:
+                ereignisse.schreibe(MAILBOX_ROOT, absender, "paket",
+                                    f"Paket {pakete.kurztext(p)} — {p['phase']}"
+                                    + (f" · {note}" if note else ""),
+                                    schwere=schwere, token=p["token"], phase=p["phase"])
+            except ValueError:
+                pass
+            # Der Mensch erfährt Ausgang und Fehler aktiv (Panel „Nachrichten" + Push).
+            if p["phase"] in ("gelaufen", "live", "fehler") and absender != "orchestrator":
+                wort = {"gelaufen": "eingespielt", "live": "live, geprüft",
+                        "fehler": "FEHLGESCHLAGEN"}[p["phase"]]
+                try:
+                    Mailbox(MAILBOX_ROOT, "orchestrator").post({
+                        "kind": "message", "sender": absender, "weckt": False,
+                        "text": f"📦 Paket {pakete.kurztext(p)} — {wort}"
+                                + (f"\n{note}" if note else "")})
+                except (ValueError, OSError):
+                    pass
+            return {"token": p["token"], "phase": p["phase"],
+                    "ausstellungen": p["ausstellungen"], "kurz": pakete.kurztext(p)}
 
     # --- Vorgänge (Issue #58) ------------------------------------------------
 
