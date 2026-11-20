@@ -54,3 +54,16 @@ agents:
 #      auth: key
 #      key_file: /run/secrets/beispiel_ed25519
 #      mcp_port: 9100   # optional, falls 9000 auf dem Zielrechner belegt ist
+
+# --- Optionen je Agent aus den Issues #52–#65 (alle optional) ----------------
+#   model: sonnet                 # Modell der Automatik-Läufe (#62)
+#   fallback_model: haiku         # Ausweichmodell bei Überlast
+#   model_nachlauf: sonnet        # für Fortsetzungen nach Rückfrage und Weckrufe
+#   modelle_erlaubt: [sonnet, haiku]   # was ein Auftraggeber per send_task(model=…) bestellen darf
+#   resume_kalt_minuten: 60       # ab dieser Pause gilt der Prompt-Cache als kalt (#55)
+#   resume_kompakt_ab: 200000     # kalt UND größer → neue Sitzung mit Übergabe; 0 = aus
+#   max_kosten_tag: 50            # $ je Tag: darüber Rückfrage „weiter/stopp", Automatik wartet
+#   max_kosten_lauf: 10           # $ je Lauf: darüber eine Warnung im Ereignis-Log
+#   project_fallback: basis       # fehlendes project-Verzeichnis: im workdir laufen statt Rückfrage (#54)
+#   ablage_erlaubt: [/srv/daten]  # absolute Zielordner für deliver_upload (#53)
+#   freigabe_tool: mcp__dashboard__freigabe   # nur nötig, wenn der MCP-Server dort anders heißt (#56)

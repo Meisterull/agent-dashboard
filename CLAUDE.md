@@ -230,6 +230,7 @@ cd backend && python -m tests.run_alle             # alle Module (je eigener Pro
 cd backend && python -m tests.test_mcp_tools       # einzelnes Modul
 cd backend && python -m tests.test_projekte        # Projekt-Terminals: YAML, tmux-Zeile, Brücke
 cd backend && python -m tests.test_container       # Container-Fenster: Parser, Prüfungen, sudo-Rückfall, Shell-sid
+cd backend && python -m tests.test_issues_52_65    # Issues #52–#65 (Freigaben, Geheimnisse, Vorgänge, Kosten …)
 
 # Ganzer Stack
 docker compose up --build                      # nginx+api+mcp(+tunnel) via supervisord
@@ -594,6 +595,67 @@ gibt es echte Tests — `cd backend && python -m tests.run_alle` läuft ohne pip
 Container. Beim LLM-Pfad ehrlich kennzeichnen, was verifiziert ist und was nicht:
 der Anthropic-Pfad ist weiterhin nur unit-getestet (Prompt-Caching, Thinking-Blöcke,
 `stop_reason` — nie gegen die echte API gelaufen, hier läuft Ollama).
+
+## Issues #52–#65 (20.11.2026) — gebaut, Tests `tests/test_issues_52_65.py`
+
+Je Issue ein Commit. Kurzfassung, was wo wohnt (Details stehen in den Modul-Docstrings):
+
+- **#65 Post, die nicht weckt** (`weckruf.py`): `absender_hinweis` → `hinweis` im Ergebnis von
+  `send_message`/`ask`; `melde_ungeweckt` → Ereignis `ungeweckt` (einmal je Eintrag); settings
+  `automatik_weckt` gewinnt gegen agents.yaml; `/api/automatik/{n}/weckt` + `/wecken`; Einschalt-Dialog
+  mit Haken (`bestaetigen({haken})` in Dialog.jsx).
+- **#54 project-Verzeichnis** (Watcher `projekt_aufloesen`): eindeutiger Namens-Treffer → dort laufen;
+  sonst Rückfrage an den Auftraggeber (Task wird geparkt, #17), nach der Antwort bzw. mit
+  `project_fallback: basis` Lauf im Basisverzeichnis. `lauf.fehlstart` → Ereignis `fehlstart`;
+  Handbetrieb wird am `claim_von` erkannt (`lauf_ereignisse(claim_von=…)`).
+- **#60 Monatsarchiv** (`Mailbox.aufraeumen`): nichts wird gelöscht, Abgelaufenes geht zeilenweise nach
+  `<mailbox>/.archiv/<JJJJ-MM>.jsonl.gz` (gzip-Mitglieder angehängt); `.failed` eigene Frist; Antworten zu
+  offenen Tasks bleiben. `archiv_lesen`, `read_responses(archiv=True)`, `/api/agents/{n}/archiv`.
+- **#62 Modell** (Watcher `wirksames_modell`): Task (nur aus `modelle_erlaubt`) > Rolle (Frontmatter
+  `model`) > `model_nachlauf` > Agent-`model`. Task-Modell = eigener Sitzungsschlüssel.
+- **#55 Kosten**: `sitzung_waehlen(kalt_s, kompakt_ab)` — kalt UND groß → neue Sitzung mit
+  `uebergabe_text` (letzte Ergebnisse im Sitzungsbuch). `lauf.pause/cache_kalt` (gemessen an der ersten
+  Anfrage). `app/kosten.py`: `max_kosten_tag` sperrt Watcher-Claims (`kosten_gesperrt`) und fragt den
+  Menschen (weiter/stopp), `max_kosten_lauf` warnt.
+- **#57 Token-Maschinen** (`app/zwischenspeicher.py`): `send_file` → Zwischenspeicher, `fetch_file`
+  liefert die URL, `upload_url` eine PUT-URL; Routen `/mcp/<agent>/datei/<id>?schluessel=…` (kein
+  Cookie, kein Bearer — der Schlüssel je Datei ist die Berechtigung; stehen VOR den Auffang-Routen;
+  eigene nginx-Location mit Upload-Grenze). `austausch-speicher/` ist fürs Datei-Panel gesperrt.
+- **#53 Uploads**: Terminal 📎/Drag&Drop/Einfügen → `POST /api/remote/{n}/eingang` →
+  `~/.agent-dashboard/eingang/<Datum>/`, Pfad in die Eingabe (nicht in Container-Shells `c:…`).
+  Chat: `ChatIn.files`, MCP `deliver_upload` (nur freier Kanal) → `austausch.stelle_zu`
+  (relativ zum workdir, absolut nur `ablage_erlaubt`).
+- **#56 Freigaben** (`app/freigaben.py`): `--permission-prompt-tool mcp__dashboard__freigabe`
+  (Vertrag am 20.11.2026 mit Claude Code 2.1.326 nachgemessen: Argumente `tool_name`, `input`,
+  `tool_use_id`; Antwort JSON-Text `{"behavior": "allow", "updatedInput": …}` / `{"behavior":
+  "deny", "message": …}`). Tool `freigabe` gibt es auf JEDEM gebundenen Kanal (auch mit Allowlist),
+  ohne Schalter ist es taub. Eigener Threadpool (`MCP_FREIGABE_PARALLEL`), weil der Aufruf bis zur
+  Frist wartet; der Watcher hebt dafür den Leerlauf-Wächter an (`LAUF_EINST`). Einschalten wirkt
+  erst beim nächsten Start der Automatik. Push je Anfrage mit Knöpfen (nie gebündelt).
+- **#64 Geheimnisse** (`app/geheimnisse.py`): Fernet in `keys/geheimnisse.json`; an den Watcher über
+  stdin (`env <base64>`, `--erwartet-env`), als `env` an claude; `schwaerze` im Watcher (alles, was
+  er druckt/abliefert) und im Server (complete_task, `/api/ssh/…/buffer`).
+- **#52 Erinnerungen** (`app/erinnerungen.py`): MCP `remind`/`reminders`/`cancel_reminder`/
+  `snooze_reminder` (auch Token-Grundmenge); Zustell-Schleife `_erinnerungen_schleife` (30 s) in main.py.
+- **#59 Liegezeit** (`app/liegezeit.py`): geprüft im Manager-Takt für ALLE Agenten; Ereignis `liegt`
+  → eigener Push mit Aktionen; Einmal-Lauf über settings `automatik_einmal` (von Hand schalten löscht
+  den Merker). Default an, Mo–Fr 07–18.
+- **#58 Vorgänge** (`app/vorgaenge.py`): liest nur auf Anforderung alle Mailboxen. Task-Felder
+  `vorgang`/`parent_task_id`; `send_task` auf einem gebundenen Kanal mit GENAU EINEM laufenden Task
+  vererbt thread und Vorgang; die Outbox-Antwort trägt `vorgang: {…}`. MCP `thread_status`/`thread_note`.
+- **#61 Deploy-Pakete** (`app/pakete.py`): MCP `deploy_status`, `<workspace>/pakete.json` unter
+  Datei-Lock. Bewusst generisch — nichts vom konkreten Deploy-Ablauf im Code.
+- **#63 Tagesbericht** (`app/tagesbericht.py`): feste Auswertung, Seite immer, Push Default AUS;
+  läuft im Takt der Erinnerungs-Schleife. Push-Tipp öffnet den Dialog über `?zeige=bericht` bzw. das
+  Ereignis `dashboard:zeige`.
+
+Offen nach dem Deploy (nicht live geprüft): Freigabe-Tool gegen den echten MCP-Kanal einer
+Maschine, Geheimnis-Übergabe an einen echten Watcher, Abhol-/Upload-URL von einer echten
+Token-Maschine, Terminal-Upload gegen echtes SFTP, Push-Knöpfe am Handy. Nicht gebaut:
+Aufwandsstufe je Rolle (#62, Claude Code bietet headless keinen sicheren Schalter),
+harter Kostenabbruch mitten im Lauf (#55 — Kosten stehen erst im result-Event),
+„Sitzung anstupsen" (#59), Prüfung auf Klartext-Geheimnisse in ~/.claude/settings*.json (#64,
+optional), Meldung der Pakete direkt aus Shell-Skripten (#61 — heute über den Agenten).
 
 ## Bug-Hunt 22.10.2026 (Stand 268e28e)
 
