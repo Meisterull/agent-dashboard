@@ -263,6 +263,28 @@ function ladeEineDatei(url, datei, { onProgress, signal }, maxMb) {
  * gesamt})` meldet den Stand über ALLE Dateien (Bytes), `signal` bricht ab.
  * Antwort wie früher: {saved: [...]}.
  */
+// Upload aus dem Terminal (Issue #53): in den Eingangsordner der Maschine,
+// Antwort trägt die absoluten Pfade dort.
+export async function uploadEingang(maschine, fileList, { onProgress, signal } = {}) {
+  const dateien = Array.from(fileList);
+  const { max_mb: maxMb } = await getUploadGrenze();
+  const gesamt = dateien.reduce((summe, d) => summe + d.size, 0);
+  const saved = [];
+  let davor = 0;
+  for (let index = 0; index < dateien.length; index++) {
+    const datei = dateien[index];
+    // eingefügte Bilder heißen alle „image.png" — der Server nummeriert durch
+    const url = `/api/remote/${encodeURIComponent(maschine)}/eingang?datei=${encodeURIComponent(datei.name || "bild.png")}`;
+    const melde = (geladen) =>
+      onProgress?.({ datei: datei.name, index, anzahl: dateien.length, geladen: davor + geladen, gesamt });
+    melde(0);
+    const antwort = await ladeEineDatei(url, datei, { onProgress: melde, signal }, maxMb);
+    saved.push(...(antwort.saved || []));
+    davor += datei.size;
+  }
+  return { saved };
+}
+
 export async function uploadFiles(source, path, fileList, { onProgress, signal } = {}) {
   const dateien = Array.from(fileList);
   const { max_mb: maxMb } = await getUploadGrenze();
@@ -436,7 +458,7 @@ export const cancelChatStream = (streamId) =>
 // den Knopf (cancelChatStream).
 const ANTWORT_FRIST_S = 30;
 
-export async function streamChat(message, sessionId, { onStart, onTool } = {}) {
+export async function streamChat(message, sessionId, { onStart, onTool, files } = {}) {
   const abbruch = new AbortController();
   const frist = setTimeout(() => abbruch.abort(), ANTWORT_FRIST_S * 1000);
   let res;
@@ -444,7 +466,7 @@ export async function streamChat(message, sessionId, { onStart, onTool } = {}) {
     res = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message, session_id: sessionId }),
+      body: JSON.stringify({ message, session_id: sessionId, files: files || [] }),
       signal: abbruch.signal,
     });
   } catch (e) {

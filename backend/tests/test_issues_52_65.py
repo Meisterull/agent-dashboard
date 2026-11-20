@@ -6,6 +6,8 @@
        Handbetrieb; claim_task liefert sender + Zahl der Nachträge
   #55  Tageskosten-Grenze: Rückfrage an den Menschen, Watcher-Claim gesperrt,
        „weiter" gibt frei; teurer Lauf wird einmal gemeldet; Ereignis-Texte
+  #57  fetch_file nur für den Empfänger, upload_url prüft das Ziel vorab
+  #53  deliver_upload nur auf dem freien Kanal und nur aus uploads/
   #60  Pflege archiviert ins Monatsarchiv statt zu löschen; laufende Tasks
        behalten ihre Antwort; read_responses(archiv=True) findet Altes
   #62  Modell je Task nur aus der Allowlist des Empfängers; Rolle friert ihr
@@ -210,7 +212,50 @@ def test_55_kostendeckel_und_sichtbarkeit(ws: Path) -> None:
     assert not [e for e in _inbox(ws, "dev") if e["kind"] == "answer"], "Antwort archiviert"
 
 
-TESTS = [test_55_kostendeckel_und_sichtbarkeit,
+def test_57_53_datei_tools(ws: Path) -> None:
+    (ws / "config").mkdir(parents=True, exist_ok=True)
+    (ws / "config" / "agents.yaml").write_text(
+        "agents:\n  - name: notebook\n    connection: {type: token}\n"
+        "  - name: tablet\n    connection: {type: token}\n"
+        "  - name: erp\n    connection: {type: ssh, host: 192.168.1.10, user: u, key_file: /nix}\n",
+        encoding="utf-8")
+    ms = _mcp_server_laden(ws)
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("    (ohne PyYAML übersprungen)")
+        return
+    from app import zwischenspeicher
+    _boxen(ws, "notebook", "tablet", "erp")
+    frei, nb, tab = _tools(ms), _tools(ms, identity="notebook"), _tools(ms, identity="tablet")
+    assert "deliver_upload" in frei and "deliver_upload" not in nb
+    # Chat-Anhang → Token-Maschine: landet im Zwischenspeicher, sie holt ab
+    anhang = ws / "uploads" / "chat" / "2026-11-20" / "plan.pdf"
+    anhang.parent.mkdir(parents=True)
+    anhang.write_bytes(b"%PDF-1.7 inhalt")
+    assert "error" in frei["deliver_upload"](upload="../config/agents.yaml", to="notebook")
+    erg = frei["deliver_upload"](upload="uploads/chat/2026-11-20/plan.pdf", to="notebook")
+    datei_id = erg["zugestellt"][0]["abholen"]
+    assert not anhang.exists(), "Anhang wird nach dem Zustellen aufgeräumt"
+    post = [e for e in _inbox(ws, "notebook") if e["kind"] == "message"]
+    assert datei_id in post[0]["text"], post
+    assert "error" in tab["fetch_file"](file_id=datei_id), "nur der Empfänger"
+    zwischenspeicher.merke_basis("notebook", "https://dash.example:8443")
+    holen = nb["fetch_file"](file_id=datei_id)
+    assert holen["url"].startswith(f"https://dash.example:8443/mcp/notebook/datei/{datei_id}?schluessel=")
+    assert holen["name"] == "plan.pdf" and "curl" in holen["befehl"], holen
+    # Hochladen: Ziel wird vorab geprüft (erp hat keinen Austausch-Ordner)
+    nein = nb["upload_url"](to="erp", name="wolke.ply")
+    assert "keinen Austausch-Ordner" in nein.get("error", ""), nein
+    ja = nb["upload_url"](to="tablet", name="../../wolke.ply", note="Scan 3")
+    assert ja["methode"] == "PUT" and ja["name"] == "wolke.ply", ja
+    meta = zwischenspeicher.lies(ja["id"])
+    assert (meta["status"], meta["an"], meta["weiter_an"]) == ("erwartet", "notebook", "tablet")
+    assert zwischenspeicher.liste("notebook") and not zwischenspeicher.liste("tablet")
+
+
+TESTS = [test_57_53_datei_tools,
+         test_55_kostendeckel_und_sichtbarkeit,
          test_62_modell_je_task_rolle,
          test_60_monatsarchiv_statt_loeschen,
          test_54_fehlstart_ist_kein_handbetrieb,

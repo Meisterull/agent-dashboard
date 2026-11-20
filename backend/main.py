@@ -119,7 +119,7 @@ from app.files import (
     write_file,
 )
 from app.remote_files import RemoteFilesError
-from app import austausch
+from app import austausch, zwischenspeicher
 from app import container
 from app import upload
 from app.austausch import AustauschError
@@ -196,6 +196,14 @@ async def _mailbox_pflege_schleife() -> None:
         except Exception as exc:  # noqa: BLE001 — Pflege darf die API nie killen
             print(f"{_log_zeit()} [pflege] Fehler: {exc}", flush=True)
             continue
+        try:
+            # Nicht abgeholte Dateien verfallen (Issue #57)
+            verfallen = await asyncio.to_thread(zwischenspeicher.aufraeumen)
+            if verfallen:
+                print(f"{_log_zeit()} [pflege] Zwischenspeicher: {verfallen} abgelaufene "
+                      f"Datei(en) gelöscht", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{_log_zeit()} [pflege] Zwischenspeicher: {exc}", flush=True)
         try:
             rotiert = await asyncio.to_thread(ereignisse.rotiere_alle, MAILBOXES, ARCHIV_TAGE)
             if rotiert:
@@ -345,6 +353,29 @@ def _lock_for(session_id: str) -> asyncio.Lock:
 class ChatIn(BaseModel):
     message: str
     session_id: str | None = None
+    # Anhänge als Daten statt als Textzeile (Issue #53): Workspace-Pfade der
+    # Uploads (uploads/chat/…). Der Server hängt sie strukturiert an.
+    files: list[str] | None = None
+
+
+def _chat_text(body: "ChatIn") -> str:
+    """Nachricht samt Anhang-Liste (Name, Typ, Größe) für den Orchestrator."""
+    zeilen = []
+    for rel in (body.files or [])[:20]:
+        try:
+            p = ws_files._safe(str(rel))
+            if not p.is_file() or p.relative_to(ws_files.WORKSPACE).parts[0] != "uploads":
+                continue
+            groesse = p.stat().st_size
+        except Exception:  # noqa: BLE001 — ein kaputter Pfad kippt den Chat nicht
+            continue
+        mb = (f"{groesse / 1048576:.1f} MB" if groesse >= 1048576
+              else f"{max(1, groesse // 1024)} KB")
+        zeilen.append(f"- {p.relative_to(ws_files.WORKSPACE)} ({_medientyp(p.name)}, {mb})")
+    if not zeilen:
+        return body.message
+    return (body.message + ("\n\n" if body.message else "") + "Anhänge:\n"
+            + "\n".join(zeilen))
 
 
 class ChatOut(BaseModel):
@@ -549,6 +580,8 @@ def _agent_tasks_sync(name: str, base: Path) -> dict:
         # wird nur, was über die Leitung geht.
         "outbox": [_kuerze_eintrag(e) for e in outbox],
         "messages": messages,
+        # Dateien, die noch auf Abholung durch diese Maschine warten (#57)
+        "abzuholen": zwischenspeicher.liste(name),
         # Verbrauchszähler (St.3): aus der OHNEHIN gelesenen Outbox gerechnet —
         # kein zweiter Poll, kein Doppel-I/O. Schwelle aus den Settings.
         "verbrauch": verbrauch.aggregiere(
@@ -766,7 +799,7 @@ async def chat(body: ChatIn) -> ChatOut:
     async with _lock_for(session_id):
         # SQLite-I/O nicht im Event-Loop (Review P2)
         messages = await asyncio.to_thread(chat_store.load, session_id)
-        messages.append({"role": "user", "content": body.message})
+        messages.append({"role": "user", "content": _chat_text(body)})
         try:
             async with mcp_session() as (session, tools):
                 result = await run_turn(session, tools, messages, cfg)
@@ -841,7 +874,7 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
         try:
             async with _lock_for(session_id):
                 messages = await asyncio.to_thread(chat_store.load, session_id)
-                messages.append({"role": "user", "content": body.message})
+                messages.append({"role": "user", "content": _chat_text(body)})
                 try:
                     async with mcp_session() as (session, tools):
                         result = await run_turn(
@@ -1241,6 +1274,23 @@ async def remote_upload(request: Request, name: str, path: str,
     for dateiname, leser in await _upload_quellen(request, datei):
         try:
             saved.append(await remote_files.upload_file(name, path, dateiname, leser))
+        except RemoteFilesError as exc:
+            if getattr(leser, "zu_gross", False):
+                raise HTTPException(413, str(upload.UploadZuGross())) from exc
+            raise HTTPException(502, str(exc)) from exc
+    return {"saved": saved}
+
+
+@app.post("/api/remote/{name}/eingang")
+async def remote_eingang(request: Request, name: str, datei: str | None = None) -> dict:
+    """Upload aus dem Terminal (Issue #53) in den Eingangsordner der Maschine;
+    liefert die absoluten Pfade für die Terminal-Eingabe."""
+    # `name` ist hier die Maschine — der Dateiname des Roh-Uploads heißt
+    # deshalb `datei` (bei /api/files/upload: `name`).
+    saved = []
+    for dateiname, leser in await _upload_quellen(request, datei):
+        try:
+            saved.append(await remote_files.eingang_upload(name, dateiname, leser))
         except RemoteFilesError as exc:
             if getattr(leser, "zu_gross", False):
                 raise HTTPException(413, str(upload.UploadZuGross())) from exc
@@ -1881,6 +1931,16 @@ async def _mcp_weiterleiten(request: Request, agent: str, rest: str = "") -> Res
         # fehlt oder falsch ist, geht einen nicht angemeldeten Client nichts an.
         return JSONResponse({"detail": "nicht berechtigt"}, status_code=401)
 
+    # Außenadresse merken (Issue #57): damit nennt fetch_file/upload_url dem
+    # Agenten eine vollständige URL — der MCP-Prozess kennt sie sonst nicht.
+    try:
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+        host = request.headers.get("host")
+        if host:
+            zwischenspeicher.merke_basis(agent, f"{proto}://{host}")
+    except Exception:  # noqa: BLE001 — reine Bequemlichkeit
+        pass
+
     scopes = mcp_scope.read_port_map()
     port = scopes.get(agent)
     if not port:
@@ -1931,6 +1991,78 @@ async def _mcp_weiterleiten(request: Request, agent: str, rest: str = "") -> Res
     return StreamingResponse(
         strom(), status_code=antwort.status_code, headers=durchreichen
     )
+
+
+# --- Dateien abholen/hochladen ohne SSH (Issue #57) -------------------------
+# Kein Session-Cookie und kein Bearer-Token: der zufällige Schlüssel je Datei
+# IST die Berechtigung (nur der adressierte Agent bekommt ihn über sein
+# gebundenes MCP-Tool). Stehen VOR den Auffang-Routen unten.
+
+def _datei_zugriff(agent: str, datei_id: str, schluessel: str | None) -> dict:
+    try:
+        return zwischenspeicher.pruefe(agent, datei_id, schluessel)
+    except zwischenspeicher.SpeicherFehler:
+        raise HTTPException(404, "nicht gefunden") from None
+
+
+@app.get("/mcp/{agent}/datei/{datei_id}")
+async def mcp_datei_abholen(agent: str, datei_id: str,
+                            schluessel: str | None = None) -> FileResponse:
+    meta = _datei_zugriff(agent, datei_id, schluessel)
+    pfad = zwischenspeicher.inhalt(datei_id)
+    if meta.get("status") != "bereit" or not pfad.is_file():
+        raise HTTPException(404, "nicht gefunden")
+    zwischenspeicher.aktualisiere(datei_id, abgeholt=int(meta.get("abgeholt") or 0) + 1,
+                                  abgeholt_am=_log_zeit())
+    print(f"{_log_zeit()} [austausch] {agent} holt {datei_id} ab ({meta.get('name')})",
+          flush=True)
+    return FileResponse(pfad, media_type="application/octet-stream",
+                        headers=_attachment(str(meta.get("name") or datei_id)))
+
+
+@app.put("/mcp/{agent}/datei/{datei_id}")
+async def mcp_datei_hochladen(agent: str, datei_id: str, request: Request,
+                              schluessel: str | None = None) -> dict:
+    meta = _datei_zugriff(agent, datei_id, schluessel)
+    if meta.get("status") != "erwartet":
+        raise HTTPException(409, "diese Upload-URL wurde schon benutzt")
+    try:
+        upload.pruefe_laenge(request.headers.get("content-length"))
+    except upload.UploadZuGross as exc:
+        raise HTTPException(413, str(exc)) from exc
+    leser = upload.KoerperLeser(request.stream())
+    ziel = zwischenspeicher.inhalt(datei_id)
+    geschrieben = 0
+    try:
+        fh = await asyncio.to_thread(open, ziel, "wb")
+        try:
+            while True:
+                stueck = await leser.read(upload.CHUNK)
+                if not stueck:
+                    break
+                await asyncio.to_thread(fh.write, stueck)
+                geschrieben += len(stueck)
+        finally:
+            await asyncio.to_thread(fh.close)
+    except upload.UploadZuGross as exc:
+        ziel.unlink(missing_ok=True)
+        raise HTTPException(413, str(exc)) from exc
+    except BaseException:
+        ziel.unlink(missing_ok=True)  # abgebrochen: URL bleibt für einen neuen Versuch gültig
+        raise
+    an = str(meta.get("weiter_an") or "")
+    try:
+        ergebnis = await austausch.stelle_zu(
+            ziel, an, name=meta.get("name"), von=agent, nachricht=meta.get("notiz"),
+            in_austausch_ordner=True)
+    except austausch.AustauschError as exc:
+        zwischenspeicher.loesche(datei_id)
+        raise HTTPException(409, str(exc)) from exc
+    zwischenspeicher.loesche(datei_id)  # liegt jetzt am Ziel bzw. als eigener Abhol-Eintrag
+    ereignisse.schreibe(MAILBOXES, agent, "send_file", f"1 Datei(en) an {an} (hochgeladen)",
+                        an=an, dateien=1, bytes=geschrieben)
+    return {"an": an, "bytes": geschrieben, "zugestellt": ergebnis.get("zugestellt"),
+            "gemeldet": ergebnis.get("gemeldet")}
 
 
 @app.post("/mcp/{agent}")

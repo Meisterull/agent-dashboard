@@ -19,7 +19,9 @@ Regeln, die hier durchgesetzt werden:
   * Geschrieben wird in eine `.<name>.teil`-Datei (exklusiv angelegt = Anspruch
     auf den Namen), am Ende umbenannt. Der Empfänger sieht keine halbe Datei,
     ein Abbruch räumt die Teil-Datei weg.
-  * Nur SSH-Maschinen: Token-Maschinen (#32) erreicht das Dashboard nicht.
+  * Token-Maschinen (#32) erreicht das Dashboard nicht per SFTP: an sie geht
+    es über den Zwischenspeicher (app/zwischenspeicher.py, sie holt per
+    fetch_file ab), von ihnen per upload_url (Issue #57).
   * Ausschalten löscht NICHTS auf der Maschine.
 
 Aufrufer: die API (Datei-Panel, nutzt die gecachten Verbindungen aus
@@ -42,7 +44,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
 
-from app import config
+from app import config, zwischenspeicher
 from app.mailbox import AGENT_NAME_RE, ORCHESTRATOR, Mailbox
 
 MAILBOX_ROOT = Path(os.environ.get("WORKSPACE_DIR", "/workspace")) / "mailboxes"
@@ -198,6 +200,76 @@ def uebersicht() -> list[dict[str, Any]]:
     return out
 
 
+def ist_token_maschine(name: str) -> bool:
+    return (_maschinen().get(name) or {}).get("typ") == "token"
+
+
+class LokalSftp:
+    """Lokale Platte des Dashboards hinter den SFTP-Aufrufen, die `kopiere`
+    braucht (stat/open) — Quelle für Zwischenspeicher und Chat-Uploads
+    (Issues #57/#53). Dateizugriffe laufen im Thread."""
+
+    async def stat(self, pfad: str):
+        return await asyncio.to_thread(os.stat, pfad)
+
+    def open(self, pfad: str, modus: str = "rb"):
+        return _LokalDatei(pfad, modus)
+
+
+class _LokalDatei:
+    def __init__(self, pfad: str, modus: str) -> None:
+        self._pfad, self._modus, self._f = pfad, modus, None
+
+    async def __aenter__(self):
+        self._f = await asyncio.to_thread(open, self._pfad, self._modus)
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        if self._f is not None:
+            await asyncio.to_thread(self._f.close)
+
+    async def read(self, n: int) -> bytes:
+        return await asyncio.to_thread(self._f.read, n)
+
+
+async def in_speicher(sftp_von, quelle: str, an: str, von: str,
+                      max_bytes: int = MAX_BYTES, name: str | None = None) -> dict[str, Any]:
+    """EINE Datei in den Zwischenspeicher legen (Empfänger = Token-Maschine,
+    Issue #57). Rückgabe wie `kopiere`, mit `abholen` statt Zielpfad."""
+    try:
+        attrs = await sftp_von.stat(quelle)
+    except Exception as exc:  # noqa: BLE001
+        raise AustauschError(f"nicht lesbar: {quelle} ({exc})") from exc
+    perms = getattr(attrs, "permissions", None) or getattr(attrs, "st_mode", None)
+    if perms is not None and not stat.S_ISREG(perms):
+        raise AustauschError(f"{quelle} ist keine Datei — Ordner bitte vorher packen (zip/tar).")
+    meta = zwischenspeicher.lege_an(an, von, sicherer_name(name or quelle))
+    ziel = zwischenspeicher.inhalt(meta["id"])
+    geschrieben = 0
+    try:
+        fh = await asyncio.to_thread(open, ziel, "wb")
+        try:
+            async with sftp_von.open(quelle, "rb") as lese:
+                while True:
+                    block = await lese.read(BLOCK)
+                    if not block:
+                        break
+                    geschrieben += len(block)
+                    if geschrieben > max_bytes:
+                        raise AustauschError(
+                            f"{quelle} überschreitet {max_bytes // (1024 * 1024)} MB.")
+                    await asyncio.to_thread(fh.write, block)
+        finally:
+            await asyncio.to_thread(fh.close)
+    except BaseException as exc:
+        zwischenspeicher.loesche(meta["id"])
+        if isinstance(exc, AustauschError) or not isinstance(exc, Exception):
+            raise
+        raise AustauschError(f"Übertragung von {quelle} fehlgeschlagen: {exc}") from exc
+    zwischenspeicher.aktualisiere(meta["id"], bytes=geschrieben)
+    return {"name": meta["name"], "abholen": meta["id"], "bytes": geschrieben, "quelle": quelle}
+
+
 def _pruefe_ssh(name: str, rolle: str) -> None:
     if not AGENT_NAME_RE.fullmatch(name or ""):
         raise AustauschError(f"ungültiger Maschinenname ({rolle}): {name!r}")
@@ -337,8 +409,15 @@ def meldungstext(von: str, zugestellt: list[dict[str, Any]], nachricht: str | No
         if len(zugestellt) == 1
         else f"📥 {len(zugestellt)} neue Dateien von {von} in deinem Austausch-Ordner:"
     )
+    if zugestellt and all(z.get("abholen") for z in zugestellt):
+        # Token-Maschine (Issue #57): nichts liegt auf ihrer Platte — sie holt ab.
+        kopf = (f"📥 {len(zugestellt)} Datei(en) von {von} liegen für dich zum Abholen "
+                f"bereit ({zwischenspeicher.ABHOL_TAGE:.0f} Tage). Je Datei fetch_file(<id>) "
+                f"aufrufen und die genannte URL mit curl auf die Platte laden:")
     zeilen = [kopf] + [
-        f"- {anzeige_pfad(z['pfad'])} ({_groesse(z['bytes'])})" for z in zugestellt
+        (f"- {z['name']} — id {z['abholen']} ({_groesse(z['bytes'])})" if z.get("abholen")
+         else f"- {anzeige_pfad(z['pfad'])} ({_groesse(z['bytes'])})")
+        for z in zugestellt
     ]
     hinweis = " ".join(str(nachricht or "").split())
     if hinweis:
@@ -371,11 +450,31 @@ async def uebergib(
         raise AustauschError("keine Datei angegeben")
     if len(pfade) > MAX_DATEIEN:
         raise AustauschError(f"höchstens {MAX_DATEIEN} Dateien je Aufruf (waren {len(pfade)})")
+    if ist_token_maschine(von):
+        raise AustauschError(
+            f"{von} ist eine Token-Maschine — das Dashboard kann dort nicht lesen. "
+            f"Stattdessen upload_url(to, name) aufrufen und die Datei per PUT hochladen.")
     _pruefe_ssh(von, "Absender")
-    _pruefe_ssh(an, "Empfänger")
+    an_token = ist_token_maschine(an)
+    if not an_token:
+        _pruefe_ssh(an, "Empfänger")
+    elif not AGENT_NAME_RE.fullmatch(an or ""):
+        raise AustauschError(f"ungültiger Maschinenname (Empfänger): {an!r}")
     if von == an:
         raise AustauschError("Absender und Empfänger sind dieselbe Maschine.")
     offen = ziele()
+    if an_token:
+        # Issue #57: Empfänger ohne SSH — Datei in den Zwischenspeicher, er holt ab.
+        verbinde = verbinde or frische_verbindung
+        zugestellt, fehler = [], []
+        async with verbinde(von) as sftp_von:
+            for pfad in pfade:
+                try:
+                    zugestellt.append(await in_speicher(
+                        sftp_von, normalisiere_quellpfad(pfad), an, von, max_bytes))
+                except AustauschError as exc:
+                    fehler.append({"pfad": str(pfad), "fehler": str(exc)})
+        return await _melde(von, an, zugestellt, fehler, melder, nachricht, mailbox_root)
     if an not in offen:
         moeglich = ", ".join(sorted(n for n in offen if n != von)) or "(keine)"
         raise AustauschError(
@@ -403,6 +502,13 @@ async def uebergib(
             except AustauschError as exc:
                 fehler.append({"pfad": str(pfad), "fehler": str(exc)})
 
+    return await _melde(von, an, zugestellt, fehler, melder, nachricht, mailbox_root)
+
+
+async def _melde(von: str, an: str, zugestellt: list[dict[str, Any]],
+                 fehler: list[dict[str, str]], melder: str | None,
+                 nachricht: str | None, mailbox_root=None) -> dict[str, Any]:
+    """Ergebnis zusammenstellen und den Empfänger benachrichtigen."""
     ergebnis: dict[str, Any] = {
         "von": von,
         "an": an,
@@ -429,7 +535,8 @@ async def uebergib(
                 "austausch": {
                     "von": von,
                     "dateien": [
-                        {"name": z["name"], "pfad": z["pfad"], "bytes": z["bytes"]}
+                        {"name": z["name"], "pfad": z.get("pfad"), "bytes": z["bytes"],
+                         **({"abholen": z["abholen"]} if z.get("abholen") else {})}
                         for z in zugestellt
                     ],
                 },
@@ -439,6 +546,132 @@ async def uebergib(
     except Exception as exc:  # noqa: BLE001 — die Dateien liegen; das zählt
         ergebnis["melde_fehler"] = str(exc)
     return ergebnis
+
+
+# --- Zustellen aus dem Dashboard heraus (Issues #53/#57) ----------------------
+
+def _ablage_ziel(an: str, dest_dir: str | None) -> str:
+    """Zielordner auf der Maschine für `stelle_zu`: relativ = unter dem
+    `workdir` des Agenten (sonst Home); absolut nur innerhalb eines Eintrags
+    aus agents.yaml `ablage_erlaubt`. `..` ist nie erlaubt."""
+    cfg = next((a for a in config.load_agents_full() if a.get("name") == an), None) or {}
+    conn = cfg.get("connection") or {}
+    roh = str(dest_dir or "").strip().replace("\\", "/")
+    if _STEUERZEICHEN.search(roh) or len(roh) > 400:
+        raise AustauschError("ungültiger Zielordner")
+    if _WINDOWS_ABSOLUT.match(roh):
+        roh = "/" + roh
+    if roh.startswith("~/"):
+        roh = roh[2:]
+    teile = [t for t in roh.split("/") if t not in ("", ".")]
+    if ".." in teile:
+        raise AustauschError("»..« ist im Zielordner nicht erlaubt")
+    if roh.startswith("/"):
+        ziel = "/" + "/".join(teile)
+        erlaubt = cfg.get("ablage_erlaubt") or conn.get("ablage_erlaubt") or []
+        if isinstance(erlaubt, str):
+            erlaubt = [erlaubt]
+        for e in erlaubt:
+            wurzel = "/" + "/".join(t for t in str(e).replace("\\", "/").split("/") if t)
+            if ziel == wurzel or ziel.startswith(wurzel + "/"):
+                return ziel
+        raise AustauschError(
+            f"absoluter Zielordner {ziel} ist für {an} nicht freigegeben — relativ zum "
+            f"Arbeitsverzeichnis angeben oder in agents.yaml `ablage_erlaubt` eintragen.")
+    basis = str(cfg.get("workdir") or conn.get("workdir") or "").strip()
+    if basis.startswith("~/"):
+        basis = basis[2:]
+    return posixpath.join(basis, *teile) if basis else "/".join(teile) or "."
+
+
+async def stelle_zu(
+    lokale_datei: str | os.PathLike, an: str, dest_dir: str | None = None,
+    name: str | None = None, *, von: str = ORCHESTRATOR, nachricht: str | None = None,
+    in_austausch_ordner: bool = False, verbinde: Verbinder | None = None,
+    mailbox_root=None, max_bytes: int = MAX_BYTES, melden: bool = True,
+) -> dict[str, Any]:
+    """Eine Datei von der Platte des DASHBOARDS auf eine Maschine legen.
+
+    Quelle ist ein Chat-Upload (#53) oder ein hochgeladener Zwischenspeicher-
+    Eintrag (#57). SSH-Maschine: per SFTP nach `dest_dir` (bzw. mit
+    `in_austausch_ordner` nach <Austausch-Ordner>/von-<von>/), nie
+    überschreibend, über die Teil-Datei. Token-Maschine: in den
+    Zwischenspeicher, sie holt ab. → {"an", "zugestellt": [...], "fehler": [...]}"""
+    quelle = str(lokale_datei)
+    if not AGENT_NAME_RE.fullmatch(an or "") or an not in _maschinen():
+        raise AustauschError(f"unbekannte Maschine: {an!r}")
+    lokal = LokalSftp()
+    zugestellt: list[dict[str, Any]] = []
+    if ist_token_maschine(an):
+        zugestellt.append(await in_speicher(lokal, quelle, an, von, max_bytes, name=name))
+    else:
+        _pruefe_ssh(an, "Empfänger")
+        if in_austausch_ordner:
+            offen = ziele()
+            if an not in offen:
+                raise AustauschError(
+                    f"{an} hat keinen Austausch-Ordner — einschalten im Datei-Panel (📥).")
+            ordner = posixpath.join(offen[an]["ordner"], f"von-{von}")
+        else:
+            ordner = _ablage_ziel(an, dest_dir)
+        async with (verbinde or frische_verbindung)(an) as sftp_an:
+            try:
+                await sftp_an.makedirs(ordner, exist_ok=True)
+                ordner = str(await sftp_an.realpath(ordner))
+            except Exception as exc:  # noqa: BLE001
+                raise AustauschError(f"Zielordner auf {an} nicht nutzbar ({ordner}): {exc}") from exc
+            zugestellt.append(await _kopiere_als(lokal, sftp_an, quelle, ordner, max_bytes,
+                                                 name))
+    if not melden:
+        return {"von": von, "an": an, "zugestellt": zugestellt, "fehler": [], "gemeldet": False}
+    return await _melde(von, an, zugestellt, [], von, nachricht, mailbox_root)
+
+
+async def _kopiere_als(sftp_von, sftp_an, quelle: str, ordner: str, max_bytes: int,
+                       name: str | None) -> dict[str, Any]:
+    """`kopiere` mit frei wählbarem Zielnamen (der Speicher-Inhalt heißt
+    intern »inhalt«, der Chat-Upload trägt evtl. einen Zeitstempel)."""
+    if not name:
+        return await kopiere(sftp_von, sftp_an, quelle, ordner, max_bytes)
+    zielname = sicherer_name(name)
+    try:
+        attrs = await sftp_von.stat(quelle)
+    except Exception as exc:  # noqa: BLE001
+        raise AustauschError(f"nicht lesbar: {quelle} ({exc})") from exc
+    if (getattr(attrs, "size", None) or getattr(attrs, "st_size", 0) or 0) > max_bytes:
+        raise AustauschError(f"{zielname} ist zu groß (erlaubt "
+                             f"{max_bytes // (1024 * 1024)} MB je Datei).")
+    datei, teil, ziel = await _oeffne_teil(sftp_an, ordner, zielname)
+    geschrieben = 0
+    try:
+        try:
+            async with sftp_von.open(quelle, "rb") as lese:
+                while True:
+                    block = await lese.read(BLOCK)
+                    if not block:
+                        break
+                    geschrieben += len(block)
+                    if geschrieben > max_bytes:
+                        raise AustauschError(
+                            f"{zielname} überschreitet {max_bytes // (1024 * 1024)} MB.")
+                    await datei.write(block)
+        finally:
+            await datei.close()
+        await sftp_an.rename(teil, ziel)
+    except BaseException as exc:
+        try:
+            await sftp_an.remove(teil)
+        except Exception:  # noqa: BLE001
+            pass
+        if isinstance(exc, AustauschError) or not isinstance(exc, Exception):
+            raise
+        raise AustauschError(f"Übertragung von {zielname} fehlgeschlagen: {exc}") from exc
+    return {"name": posixpath.basename(ziel), "pfad": ziel, "bytes": geschrieben,
+            "quelle": quelle}
+
+
+def stelle_zu_sync(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return asyncio.run(stelle_zu(*args, **kwargs))
 
 
 def uebergib_sync(*args: Any, **kwargs: Any) -> dict[str, Any]:

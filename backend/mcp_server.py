@@ -46,7 +46,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import austausch, integrations, kosten, mcp_scope, rollen, weckruf
+from app import austausch, integrations, kosten, mcp_scope, rollen, weckruf, zwischenspeicher
 from app.config import load_agents_full, load_settings
 from app.files import decode_text
 from datetime import datetime
@@ -994,6 +994,137 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 )
             except austausch.AustauschError as exc:
                 return {"error": str(exc)}
+
+    if on("fetch_file"):
+        @werkzeug
+        def fetch_file(file_id: str, agent: str | None = None) -> dict:
+            """Eine für dich bereitliegende Datei abholen (Issue #57).
+
+            Für Maschinen, die das Dashboard nicht per SFTP erreicht: die
+            Nachricht „… liegen für dich zum Abholen bereit" nennt je Datei
+            eine id. Dieses Tool liefert dazu eine Download-URL — lade sie mit
+            `curl` (bzw. `Invoke-WebRequest`) DIREKT auf die Platte; der Inhalt
+            läuft nicht durch dich. `agent` auf einem gebundenen Kanal weglassen.
+            Ohne `url` im Ergebnis: `pfad` an Schema+Host deiner MCP-URL hängen.
+            """
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "fetch_file", agent=wer, datei=file_id)
+            try:
+                meta = zwischenspeicher.lies(file_id)
+            except zwischenspeicher.SpeicherFehler as exc:
+                return {"error": str(exc)}
+            if meta.get("an") != wer or meta.get("status") != "bereit":
+                return {"error": f"Datei {file_id} liegt nicht für {wer} bereit."}
+            wo = zwischenspeicher.url(meta)
+            ziel = wo.get("url") or "<Schema+Host deiner MCP-URL>" + wo["pfad"]
+            return {
+                "id": file_id, "name": meta["name"], "bytes": meta["bytes"],
+                "von": meta.get("von"), **wo,
+                "befehl": f'curl -fsS -o "{meta["name"]}" "{ziel}"',
+                "befehl_windows": f'Invoke-WebRequest -Uri "{ziel}" -OutFile "{meta["name"]}"',
+                "hinweis": "Bei eigener (interner) CA: curl --cacert <ca.crt> bzw. -k.",
+            }
+
+    if on("upload_url"):
+        @werkzeug
+        def upload_url(to: str, name: str, note: str | None = None,
+                       sender: str | None = None) -> dict:
+            """Eine Datei von DEINER Maschine an eine andere schicken, wenn das
+            Dashboard deine Maschine nicht per SFTP erreicht (Issue #57).
+
+            Liefert eine einmalige Upload-URL: lade die Datei per HTTP PUT hoch
+            (`curl -T datei "<url>"`) — der Inhalt läuft nicht durch dich. Das
+            Dashboard legt sie danach in den Austausch-Ordner von `to` (bzw.
+            zum Abholen bereit, wenn `to` selbst keine SSH-Maschine ist) und
+            benachrichtigt den Empfänger. `name` = Dateiname beim Empfänger,
+            `note` = optionaler Begleittext. `sender` auf einem gebundenen
+            Kanal weglassen.
+            """
+            try:
+                absender = ident(sender, "sender")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            unbekannt = _pruefe_empfaenger(to)
+            if unbekannt:
+                return unbekannt
+            if to == absender:
+                return {"error": "Absender und Empfänger sind dieselbe Maschine."}
+            try:
+                dateiname = austausch.sicherer_name(name)
+            except austausch.AustauschError as exc:
+                return {"error": str(exc)}
+            if not austausch.ist_token_maschine(to) and to not in austausch.ziele():
+                moeglich = ", ".join(sorted(austausch.ziele())) or "(keine)"
+                return {"error": f"{to} hat keinen Austausch-Ordner — einschalten im "
+                                 f"Datei-Panel (📥). Mögliche Empfänger: {moeglich}"}
+            _log(kanal, "upload_url", to=to, sender=absender, name=dateiname)
+            meta = zwischenspeicher.lege_an(absender, absender, dateiname, status="erwartet",
+                                            weiter_an=to, notiz=note)
+            wo = zwischenspeicher.url(meta)
+            ziel = wo.get("url") or "<Schema+Host deiner MCP-URL>" + wo["pfad"]
+            return {
+                "id": meta["id"], "methode": "PUT", **wo, "an": to, "name": dateiname,
+                "befehl": f'curl -fsS -T "<lokale Datei>" "{ziel}"',
+                "befehl_windows": (f'Invoke-WebRequest -Method Put -InFile "<lokale Datei>" '
+                                   f'-Uri "{ziel}"'),
+                "gueltig_stunden": zwischenspeicher.ERWARTET_STUNDEN,
+            }
+
+    # Zustellen aus dem Dashboard-Workspace (Issue #53) — nur der freie Kanal
+    # (Orchestrator): gebundene Agenten haben keinen Zugriff auf die Uploads.
+    if identity is None and on("deliver_upload"):
+        @werkzeug(pool=_AUSTAUSCH_POOL)
+        def deliver_upload(upload: str, to: str, dest_dir: str | None = None,
+                           name: str | None = None, note: str | None = None,
+                           keep: bool = False) -> dict:
+            """Einen Chat-Anhang aus dem Dashboard an seinen Platz auf einer
+            Maschine legen (Issue #53).
+
+            `upload` = Workspace-Pfad des Anhangs (steht unter „Anhänge:" in
+            der Nachricht, beginnt mit uploads/). `to` = Maschine. `dest_dir` =
+            Zielordner RELATIV zum Arbeitsverzeichnis des Agenten dort (z.B.
+            "strahler/Datenblaetter"); weglassen = Arbeitsverzeichnis selbst.
+            `name` = anderer Dateiname am Ziel. Per SFTP direkt von Platte zu
+            Platte, Vorhandenes wird nie überschrieben (-2, -3 …). Ist das Ziel
+            unklar: NACHFRAGEN statt raten. Nach dem Zustellen wird der Anhang
+            im Dashboard gelöscht (`keep=True` behält ihn, z.B. für eine zweite
+            Maschine). Rückgabe: `zugestellt` mit dem endgültigen Pfad —
+            nenne ihn dem Nutzer. Token-Maschinen bekommen die Datei zum
+            Abholen (fetch_file).
+            """
+            unbekannt = _pruefe_empfaenger(to)
+            if unbekannt:
+                return unbekannt
+            try:
+                quelle = _safe(WORKSPACE / "uploads", str(upload).removeprefix("uploads/"))
+            except Exception as exc:  # noqa: BLE001
+                return {"error": f"ungültiger Upload-Pfad: {exc}"}
+            if not quelle.is_file():
+                return {"error": f"Anhang nicht gefunden: {upload}"}
+            _log(kanal, "deliver_upload", to=to, upload=str(upload), ziel=dest_dir)
+            try:
+                ergebnis = austausch.stelle_zu_sync(
+                    quelle, to, dest_dir, name or quelle.name, nachricht=note)
+            except austausch.AustauschError as exc:
+                return {"error": str(exc)}
+            if ergebnis.get("zugestellt"):
+                z = ergebnis["zugestellt"][0]
+                try:
+                    ereignisse.schreibe(
+                        MAILBOX_ROOT, to, "send_file",
+                        f"Anhang aus dem Chat abgelegt: {z.get('pfad') or z.get('abholen')}",
+                        datei=z.get("name"), bytes=z.get("bytes"))
+                except ValueError:
+                    pass
+                if not keep:
+                    try:
+                        quelle.unlink()
+                    except OSError:
+                        pass
+            return ergebnis
 
     # --- Integrationen (config-getrieben, generisch) -------------------------
 

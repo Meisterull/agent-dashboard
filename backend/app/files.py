@@ -25,7 +25,10 @@ TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "utf-16", "cp1252")
 # privaten SSH-Keys der Agenten-PCs, die Server-Zertifikate und die Chat-DB.
 # Ohne diese Sperre zeigt ein Klick im Browser Key-Material an — und jede
 # Lücke, die Requests unter der Dashboard-Origin erlaubt, kann es abziehen.
-GESPERRT = {"keys", "ssl", "chat.db", "chat.db-wal", "chat.db-shm"}
+GESPERRT = {"keys", "ssl", "chat.db", "chat.db-wal", "chat.db-shm",
+            # Zwischenspeicher des Dateiaustauschs (#57): meta.json trägt die
+            # Zugriffsschlüssel der Abhol-URLs
+            "austausch-speicher"}
 
 
 class FilesError(Exception):

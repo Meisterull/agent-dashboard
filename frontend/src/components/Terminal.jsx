@@ -15,7 +15,7 @@ import { imeEingabe } from "../termEingabe";
 import { kopierSauber, zeilenEnden } from "../termKopie";
 import { Herzschlag, Warteschlange, istSichtbar, plausibleGroesse } from "../termVerbindung";
 import { encodeKey, encodeChar } from "../keys";
-import { getSshBuffer } from "../api";
+import { getSshBuffer, uploadEingang } from "../api";
 import { t } from "../sprache";
 
 // Ein SSH-Terminal. Spricht /ws/ssh/<name>?sid=… — die sid identifiziert
@@ -194,6 +194,48 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
     term.options.fontSize = neue;
     lsSet("term.fontSize", String(neue));
     fitRef.current?.(); // fittet und meldet die neue Größe an die Gegenseite
+  };
+
+  // --- Dateien ins Terminal geben (Issue #53) ------------------------------
+  // Büroklammer, Drag & Drop, Bild einfügen: die Datei wird auf die MASCHINE
+  // dieses Terminals geladen (~/.agent-dashboard/eingang/<Datum>/), ihr Pfad
+  // in die Eingabe eingefügt — Claude Code dort sieht sie sofort. In einer
+  // Container-Shell (sid "c:…") gäbe es den Pfad nicht: dort kein Upload.
+  const anhangMoeglich = !String(sid).startsWith("c:");
+  const anhangRef = useRef(null);
+  const [anhang, setAnhang] = useState(null); // {text} während des Uploads | {fehler}
+  const [zieht, setZieht] = useState(false);
+  const dateienHochladen = async (liste) => {
+    const dateien = Array.from(liste || []);
+    if (!dateien.length || !anhangMoeglich) return;
+    setAnhang({ text: t("lädt {0} Datei(en) auf {1} …", dateien.length, name) });
+    try {
+      const { saved } = await uploadEingang(name, dateien, {
+        onProgress: (p) =>
+          setAnhang({
+            text: t("lädt {0} ({1}/{2}) — {3} %", p.datei, p.index + 1, p.anzahl,
+              p.gesamt ? Math.round((p.geladen / p.gesamt) * 100) : 0),
+          }),
+      });
+      // Pfade wie bei Drag & Drop in ein lokales Terminal: in Anführungs-
+      // zeichen bei Leerzeichen, durch Leerzeichen getrennt, OHNE Enter —
+      // der Mensch schreibt noch dazu, was damit geschehen soll.
+      const text = saved
+        .map((s) => (/[\s'"]/.test(s.path) ? `'${s.path.replace(/'/g, "'\\''")}'` : s.path))
+        .join(" ");
+      if (textZeile && zeileRef.current) {
+        const el = zeileRef.current;
+        el.value = (el.value ? el.value.replace(/\s*$/, " ") : "") + text + " ";
+        el.focus();
+      } else if (text) {
+        sendRaw(text + " ");
+        termRef.current?.focus();
+      }
+      setAnhang(null);
+    } catch (e) {
+      setAnhang({ fehler: t("Upload fehlgeschlagen: {0}", e.message || e) });
+      setTimeout(() => setAnhang((a) => (a?.fehler ? null : a)), 6000);
+    }
   };
 
   const zeileSenden = (mitEnter) => {
@@ -760,8 +802,47 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
 
   return (
     <div className="flex h-full w-full flex-col">
-      <div ref={huelleRef} className="relative min-h-0 w-full flex-1">
+      <div
+        ref={huelleRef}
+        className="relative min-h-0 w-full flex-1"
+        // Datei aufs Terminal ziehen / Bild einfügen (Issue #53)
+        onDragOver={(e) => {
+          if (!anhangMoeglich || !Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+          e.preventDefault();
+          setZieht(true);
+        }}
+        onDragLeave={() => setZieht(false)}
+        onDrop={(e) => {
+          setZieht(false);
+          if (!anhangMoeglich || !e.dataTransfer?.files?.length) return;
+          e.preventDefault();
+          dateienHochladen(e.dataTransfer.files);
+        }}
+        onPasteCapture={(e) => {
+          const dateien = e.clipboardData?.files;
+          if (!anhangMoeglich || !dateien?.length) return; // Text: xterm fügt wie immer ein
+          e.preventDefault();
+          e.stopPropagation();
+          dateienHochladen(dateien);
+        }}
+      >
         <div ref={ref} className="h-full w-full" />
+        {zieht && (
+          <div className="pointer-events-none absolute inset-1 z-30 flex items-center justify-center rounded border-2 border-dashed border-sky-400 bg-slate-900/80 text-sm text-sky-200">
+            {t("Loslassen: Datei auf {0} laden, Pfad in die Eingabe", name)}
+          </div>
+        )}
+        {anhang && (
+          <div
+            className={`pointer-events-none absolute bottom-2 left-1/2 z-30 max-w-[92%] -translate-x-1/2 rounded border px-2 py-1 text-center text-[11px] ${
+              anhang.fehler
+                ? "border-red-500 bg-slate-900/95 text-red-300"
+                : "border-sky-500 bg-slate-900/95 text-sky-200"
+            }`}
+          >
+            {anhang.fehler || anhang.text}
+          </div>
+        )}
         {kopiertHinweis && (
           <div className="pointer-events-none absolute left-1/2 top-2 z-30 -translate-x-1/2 rounded border border-emerald-600 bg-slate-900/90 px-2 py-1 text-[11px] text-emerald-300">
             {t("✓ kopiert")}
@@ -884,6 +965,16 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
           </div>
         )}
       </div>
+      <input
+        ref={anhangRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          dateienHochladen(e.target.files);
+          e.target.value = ""; // dieselbe Datei erneut wählbar
+        }}
+      />
       {textZeile && (
         <div className="flex shrink-0 items-center gap-1 border-t border-slate-700 bg-slate-900 px-1 py-1">
           <input
@@ -923,6 +1014,8 @@ export default function Terminal({ name, sid = DEFAULT_SID, visible = true, onEn
         onToggleMod={toggleMod}
         onKey={handleKey}
         onSchrift={schriftAendern}
+        onAnhang={anhangMoeglich ? () => anhangRef.current?.click() : undefined}
+        anhangLaeuft={!!anhang && !anhang.fehler}
         onTastatur={() =>
           tastaturOffen() ? tastaturSchliessen() : termRef.current?.focus()
         }

@@ -39,7 +39,7 @@ KNOWN_TOOLS = frozenset({
     "claim_task", "complete_task",
     "send_message", "ask", "answer", "inbox", "mark_read",
     "write_project_file", "read_project_file",
-    "send_file",
+    "send_file", "fetch_file", "upload_url", "deliver_upload",
     "list_integrations", "call_integration",
     "list_rollen",
     "agent_events",
@@ -61,6 +61,8 @@ KANAL_TYPEN = frozenset({"ssh", "token"})
 TOKEN_GRUNDTOOLS = [
     "inbox", "mark_read", "claim_task", "complete_task",
     "send_message", "ask", "answer", "list_agents",
+    # Dateiaustausch ohne SSH (Issue #57): abholen bzw. hochladen per URL
+    "fetch_file", "upload_url",
 ]
 
 

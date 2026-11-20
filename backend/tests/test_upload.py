@@ -150,7 +150,9 @@ class TestNginxVorlage(unittest.TestCase):
 
     def test_upload_routen_haben_eigene_grenze_ohne_puffer(self):
         for kopf in ("location = /api/files/upload {",
-                     "location ~ ^/api/remote/[^/]+/upload$ {"):
+                     "location ~ ^/api/remote/[^/]+/(upload|eingang)$ {",
+                     # Abholen/Hochladen ohne SSH (Issue #57)
+                     "location ~ ^/mcp/[^/]+/datei/ {"):
             block = self._block(kopf)
             self.assertIn("client_max_body_size ${UPLOAD_MAX_BODY};", block)
             self.assertIn("proxy_request_buffering off;", block)

@@ -263,7 +263,10 @@ export default function Chat({ sessionId, setSessionId, onActivity, onDone }) {
     try {
       // Streaming (F3): Tool-Calls kommen live als Events — sichtbar, was der
       // Orchestrator gerade tut, plus Abbrechen-Knopf statt Blackbox-POST.
-      const data = await streamChat(volltext, sessionId, {
+      // Anhänge als Daten (Issue #53): der Server hängt sie strukturiert an
+      // (Typ, Größe) — der Orchestrator kann sie mit deliver_upload zustellen.
+      const data = await streamChat(text, sessionId, {
+        files: pfade,
         onStart: (d) => {
           if (viewRef.current === view)
             setProgress({ streamId: d.stream_id, tools: [] });

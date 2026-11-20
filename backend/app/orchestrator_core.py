@@ -56,6 +56,12 @@ Dateien per SFTP von Maschine `source` in den Austausch-Ordner von `to` \
 (auch Binäres/Großes, der Inhalt läuft nicht durch dich); der Empfänger \
 bekommt automatisch eine Nachricht mit dem Zielpfad. Agenten rufen das Tool \
 auch selbst auf — sag ihnen das im Auftrag, statt Dateiinhalte zu zitieren.
+Anhänge aus dem Chat (Zeilen unter „Anhänge:", Pfade uploads/…) liegen NUR im \
+Dashboard — kein Agent kann sie dort öffnen. Soll ein Anhang auf eine Maschine: \
+`deliver_upload(upload, to, dest_dir?, name?)` legt ihn per SFTP an seinen Platz \
+(dest_dir relativ zum Arbeitsverzeichnis des Agenten) und liefert den endgültigen \
+Pfad — nenne ihn dem Nutzer und gib im Auftrag an den Agenten DIESEN Pfad weiter. \
+Ist Maschine oder Ordner unklar, frage nach statt zu raten.
 Integrationen: `list_integrations`, dann `call_integration(name, method, path, \
 body?)` für in integrations.yaml konfigurierte HTTP-Endpunkte.
 

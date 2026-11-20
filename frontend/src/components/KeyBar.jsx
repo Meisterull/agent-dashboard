@@ -48,6 +48,8 @@ export default function KeyBar({
   textActive = false,
   onSchrift,
   onTastatur,
+  onAnhang,
+  anhangLaeuft = false,
 }) {
   const noFocusSteal = (e) => e.preventDefault();
 
@@ -88,6 +90,26 @@ export default function KeyBar({
             }`}
           >
             Aa
+          </button>
+          <span className="mx-1 h-5 w-px shrink-0 bg-slate-700" />
+        </>
+      )}
+      {/* 📎 Datei auf die Maschine dieses Terminals laden; ihr Pfad landet in
+          der Eingabe (Issue #53). Am Handy: Kamera, Fotos, Dateien. */}
+      {onAnhang && (
+        <>
+          <button
+            onPointerDown={noFocusSteal}
+            onClick={onAnhang}
+            disabled={anhangLaeuft}
+            title={t(
+              "Datei auf diese Maschine hochladen — der Pfad wird in die Eingabe eingefügt (auch: Datei aufs Terminal ziehen, Bild einfügen)",
+            )}
+            className={`shrink-0 rounded px-2.5 py-1.5 text-xs ${
+              anhangLaeuft ? "animate-pulse bg-sky-500 text-white" : "bg-slate-700 text-sky-300"
+            }`}
+          >
+            📎
           </button>
           <span className="mx-1 h-5 w-px shrink-0 bg-slate-700" />
         </>

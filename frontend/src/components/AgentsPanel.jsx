@@ -654,6 +654,18 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
             )}
           </div>
         )}
+        {/* Issue #57: Dateien im Zwischenspeicher, die diese Maschine noch
+            nicht abgeholt hat (Token-Maschinen holen per fetch_file). */}
+        {tasks?.abzuholen?.length > 0 && (
+          <div className="rounded bg-slate-50 p-1.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            📥 {t("{0} Datei(en) warten auf Abholung", tasks.abzuholen.length)}:{" "}
+            <span className="text-slate-400">
+              {tasks.abzuholen
+                .map((d) => `${d.name}${d.abgeholt ? " ✓" : ""} (${t("von {0}", d.von)})`)
+                .join(", ")}
+            </span>
+          </div>
+        )}
         {/* Ereignis-Zeitleiste (Beobachtbarkeit): Läufe, Sitzungen,
             Verweigerungen, Fehlserien — dauerhaft, nicht nur der Roh-Log. */}
         <Ereignisse

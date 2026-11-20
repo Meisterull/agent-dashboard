@@ -333,6 +333,54 @@ async def delete(agent_name: str, path: str) -> dict[str, Any]:
         return {"deleted": path}
 
 
+EINGANG_ORDNER = ".agent-dashboard/eingang"
+
+
+async def eingang_upload(agent_name: str, filename: str, src) -> dict[str, Any]:
+    """Upload aus dem Terminal (Issue #53): Datei in den Eingangsordner der
+    Maschine (~/.agent-dashboard/eingang/<Datum>/) legen und den ABSOLUTEN
+    Pfad zurückgeben — er wird in die Terminal-Eingabe eingefügt, der Agent
+    sieht die Datei sofort und legt sie selbst an die richtige Stelle.
+    Nie überschreiben (-2, -3 …), geschrieben über eine Teil-Datei."""
+    from datetime import date
+
+    from app import austausch  # Namensregeln + Teil-Datei wie beim Austausch
+
+    try:
+        name = austausch.sicherer_name(filename)
+    except austausch.AustauschError:
+        name = "upload"
+    written = 0
+    async with sftp_client(agent_name) as sftp:
+        try:
+            ordner = posixpath.join(EINGANG_ORDNER, date.today().isoformat())
+            await sftp.makedirs(ordner, exist_ok=True)
+            ordner = str(await sftp.realpath(ordner))
+            datei, teil, ziel = await austausch._oeffne_teil(sftp, ordner, name)
+        except Exception as exc:  # noqa: BLE001
+            raise RemoteFilesError(f"Eingangsordner nicht nutzbar: {exc}") from exc
+        try:
+            try:
+                while True:
+                    chunk = await src.read(CHUNK)
+                    if not chunk:
+                        break
+                    await datei.write(chunk)
+                    written += len(chunk)
+            finally:
+                await datei.close()
+            await sftp.rename(teil, ziel)
+        except BaseException as exc:  # noqa: BLE001
+            try:
+                await sftp.remove(teil)
+            except Exception:  # noqa: BLE001
+                pass
+            if not isinstance(exc, Exception):
+                raise
+            raise RemoteFilesError(f"Upload fehlgeschlagen: {name} ({exc})") from exc
+    return {"path": austausch.anzeige_pfad(ziel), "size": written, "name": posixpath.basename(ziel)}
+
+
 async def upload_file(agent_name: str, directory: str, filename: str, src) -> dict[str, Any]:
     """Upload in ein Zielverzeichnis; `src` ist ein async Reader (UploadFile)."""
     # Nur Basename verwenden — kein Pfad-Schmuggel über den Dateinamen. Auf

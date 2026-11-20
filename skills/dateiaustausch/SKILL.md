@@ -135,3 +135,31 @@ Ordner der Maschine).
 - Schlägt schon der Verbindungsaufbau fehl: geht das Terminal/Datei-Panel
   zu beiden Maschinen? Hat sich ein Host-Key geändert
   (`/workspace/config/known_hosts`)?
+
+## Maschinen ohne SSH (Token-Maschinen)
+
+Erreicht das Dashboard eine Maschine nicht per SFTP (z. B. ein Notebook, das nur
+über HTTPS am MCP hängt), läuft der Austausch über einen Zwischenspeicher im
+Dashboard — der Inhalt geht weiterhin an keinem Modell vorbei durch den Kontext:
+
+- **Du bekommst eine Datei:** Die Nachricht „… liegen für dich zum Abholen bereit"
+  nennt je Datei eine id. `fetch_file(<id>)` liefert eine Download-URL samt
+  fertigem `curl`-Befehl (Windows: `Invoke-WebRequest`). Damit direkt auf die
+  Platte laden, nicht den Inhalt lesen. Nicht Abgeholtes verfällt nach 7 Tagen.
+- **Du schickst eine Datei:** `send_file` kann auf deiner Maschine nicht lesen.
+  Stattdessen `upload_url(to, name, note?)` aufrufen und die Datei mit dem
+  genannten Befehl per HTTP PUT hochladen (`curl -T datei "<url>"`). Das
+  Dashboard legt sie in den Austausch-Ordner des Empfängers (oder zum Abholen
+  bereit, wenn er selbst keine SSH-Maschine ist) und benachrichtigt ihn. Die
+  URL gilt einmal und 24 Stunden.
+- Fehlt im Ergebnis die volle `url`, hänge `pfad` an Schema und Host deiner
+  MCP-URL (alles vor `/mcp/…`).
+
+## Dateien vom Menschen
+
+- **Im Terminal:** Der Mensch kann Dateien per 📎, Ziehen oder Einfügen direkt
+  auf deine Maschine laden; sie landen in `~/.agent-dashboard/eingang/<Datum>/`
+  und der Pfad steht in deiner Eingabe. Lege sie an die richtige Stelle und
+  nenne den endgültigen Pfad.
+- **Im Chat:** Anhänge legt der Orchestrator mit `deliver_upload` an ihren Platz
+  auf deiner Maschine und nennt dir im Auftrag den Pfad.

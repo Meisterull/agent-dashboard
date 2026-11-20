@@ -223,11 +223,57 @@ class UebergabeTests(Basis):
         self.assertIn("werkbank", text)
 
     def test_token_maschine(self):
+        """Issue #57: VON einer Token-Maschine kann das Dashboard nicht lesen
+        (Hinweis auf upload_url); AN sie geht es über den Zwischenspeicher."""
+        from app import zwischenspeicher
         self.ordner_an("deverp")
-        for von, an in (("notebook", "deverp"), ("erp", "notebook")):
-            with self.assertRaises(AustauschError) as ctx:
-                self.sende(von, ["a.txt"], an)
-            self.assertIn("Token-Maschine", str(ctx.exception))
+        with self.assertRaises(AustauschError) as ctx:
+            self.sende("notebook", ["a.txt"], "deverp")
+        self.assertIn("upload_url", str(ctx.exception))
+        self.lege("erp", "wolke.ply", b"punkte" * 100)
+        erg = self.sende("erp", ["wolke.ply", "fehlt.bin"], "notebook")
+        self.assertEqual(len(erg["zugestellt"]), 1, erg)
+        self.assertEqual(len(erg["fehler"]), 1, erg)
+        datei_id = erg["zugestellt"][0]["abholen"]
+        self.assertEqual(zwischenspeicher.inhalt(datei_id).read_bytes(), b"punkte" * 100)
+        meta = zwischenspeicher.lies(datei_id)
+        self.assertEqual((meta["an"], meta["von"], meta["name"], meta["bytes"]),
+                         ("notebook", "erp", "wolke.ply", 600))
+        post = Mailbox(self.mailboxen, "notebook").read_inbox()
+        self.assertEqual(len(post), 1)
+        self.assertIn("fetch_file", post[0]["text"])
+        self.assertEqual(post[0]["austausch"]["dateien"][0]["abholen"], datei_id)
+        # Zugriff: nur der Empfänger mit dem richtigen Schlüssel
+        zwischenspeicher.pruefe("notebook", datei_id, meta["schluessel"])
+        for wer, schl in (("erp", meta["schluessel"]), ("notebook", "falsch")):
+            with self.assertRaises(zwischenspeicher.SpeicherFehler):
+                zwischenspeicher.pruefe(wer, datei_id, schl)
+        self.assertEqual(zwischenspeicher.aufraeumen(tage=7), 0)
+        self.assertEqual(zwischenspeicher.aufraeumen(tage=7, jetzt=meta["erstellt"] + 8 * 86400), 1)
+
+    def test_stelle_zu_aus_dem_dashboard(self):
+        """Issue #53: Chat-Upload vom Dashboard an die richtige Stelle der
+        Maschine — relativ zum workdir, nie überschreibend, kein Ausbruch."""
+        quelle = self.ws / "uploads" / "chat" / "datenblatt.pdf"
+        quelle.parent.mkdir(parents=True)
+        quelle.write_bytes(b"%PDF" * 10)
+        for _ in range(2):
+            erg = lauf(austausch.stelle_zu(quelle, "erp", "Datenblaetter", verbinde=self.verbinde,
+                                           mailbox_root=self.mailboxen))
+        self.assertEqual(erg["zugestellt"][0]["name"], "datenblatt-2.pdf")
+        self.assertTrue(erg["zugestellt"][0]["pfad"].endswith("/Datenblaetter/datenblatt-2.pdf"))
+        ziel = self.platten["erp"].wurzel / "home" / "Datenblaetter"
+        self.assertEqual(sorted(p.name for p in ziel.iterdir()),
+                         ["datenblatt-2.pdf", "datenblatt.pdf"])
+        erg = lauf(austausch.stelle_zu(quelle, "erp", "x", name="neu.pdf", verbinde=self.verbinde,
+                                       mailbox_root=self.mailboxen))
+        self.assertEqual(erg["zugestellt"][0]["name"], "neu.pdf")
+        for boese in ("../raus", "/etc"):
+            with self.assertRaises(AustauschError):
+                lauf(austausch.stelle_zu(quelle, "erp", boese, verbinde=self.verbinde))
+        # Token-Maschine: in den Zwischenspeicher
+        erg = lauf(austausch.stelle_zu(quelle, "notebook", "egal", mailbox_root=self.mailboxen))
+        self.assertTrue(erg["zugestellt"][0]["abholen"].startswith("datei-"))
 
     def test_token_maschine_laesst_sich_nicht_einschalten(self):
         with self.assertRaises(AustauschError):

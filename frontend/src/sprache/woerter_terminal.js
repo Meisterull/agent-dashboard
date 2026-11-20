@@ -1,5 +1,11 @@
 // Deutsch → Englisch. Teil des Wörterbuchs, zusammengelegt in ../sprache.js.
 export default {
+  "Datei auf diese Maschine hochladen — der Pfad wird in die Eingabe eingefügt (auch: Datei aufs Terminal ziehen, Bild einfügen)":
+    "Upload a file to this machine — its path is inserted into the input (also: drag a file onto the terminal, paste an image)",
+  "lädt {0} Datei(en) auf {1} …": "uploading {0} file(s) to {1} …",
+  "lädt {0} ({1}/{2}) — {3} %": "uploading {0} ({1}/{2}) — {3} %",
+  "Upload fehlgeschlagen: {0}": "Upload failed: {0}",
+  "Loslassen: Datei auf {0} laden, Pfad in die Eingabe": "Drop: upload file to {0}, path goes into the input",
   // KeyBar.jsx — Tasten-Labels (nur die, die sich vom Englischen unterscheiden;
   // Esc/Tab/Alt/Shift/Pfeile/⏎/^C bleiben identisch und brauchen keinen Eintrag)
   "Strg": "Ctrl",
