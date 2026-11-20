@@ -12,6 +12,8 @@
        „immer erlauben" merkt das Muster, Frist/Not-Aus = Ablehnung, Push
   #57  fetch_file nur für den Empfänger, upload_url prüft das Ziel vorab
   #53  deliver_upload nur auf dem freien Kanal und nur aus uploads/
+  #58  Vorgänge: thread/Vorgang wird an Folge-Tasks vererbt, Liste mit
+       Status und Kosten, Zeitleiste über mehrere Agenten, Notiz
   #59  Liegende Tasks: einmal melden, Arbeitszeit, Pause, „später",
        Automatik an = kein Hinweis, Einmal-Lauf-Ende
   #60  Pflege archiviert ins Monatsarchiv statt zu löschen; laufende Tasks
@@ -462,7 +464,48 @@ def test_59_liegende_tasks(ws: Path) -> None:
     assert liegezeit.einmal_fertig(root, "dev") is True
 
 
-TESTS = [test_59_liegende_tasks,
+def test_58_vorgaenge(ws: Path) -> None:
+    ms = _mcp_server_laden(ws)
+    from app import vorgaenge
+    root = ws / "mailboxes"
+    _boxen(ws, "erp", "deverp", "notebook")
+    erp, dev = _tools(ms, identity="erp"), _tools(ms, identity="deverp")
+    a = erp["send_task"](to="deverp", instruction="3D-Ansicht bauen\nDetails …", thread="3d-ansicht")
+    dev["claim_task"](task_id=a["id"])
+    # deverp delegiert AUS dem laufenden Task — ohne thread anzugeben
+    b = dev["send_task"](to="notebook", instruction="Teil 4/5: Export prüfen")
+    assert b.get("thread") == "3d-ansicht", b
+    env_b = [e for e in _inbox(ws, "notebook") if e.get("task_id") == b["id"]][0]
+    assert env_b["parent_task_id"] == a["id"] and env_b["vorgang"] == "3d-ansicht", env_b
+    dev["ask"](to="erp", question="Welcher Mandant?")
+    dev["complete_task"](task_id=a["id"], result="Zwischenstand")   # → geparkt
+    # ein Einzel-Task ohne thread fällt nicht aus der Ansicht
+    c = erp["send_task"](to="deverp", instruction="Kleinkram")
+    dev["claim_task"](task_id=c["id"])
+    dev["complete_task"](task_id=c["id"], result="erledigt",
+                         verbrauch={"total_cost_usd": 1.5, "input_tokens": 3})
+    liste = vorgaenge.liste(root)
+    nach = {v["vorgang"]: v for v in liste}
+    v3d = nach["3d-ansicht"]
+    assert v3d["status"] == "wartet auf Antwort" and v3d["tasks"] == 2, v3d
+    assert v3d["agenten"] == ["deverp", "erp", "notebook"] and v3d["benannt"], v3d
+    einzel = [v for v in liste if not v["benannt"]]
+    assert len(einzel) == 1 and einzel[0]["status"] == "fertig" and einzel[0]["kosten"] == 1.5
+    assert einzel[0]["titel"] == "Kleinkram", einzel
+    zl = vorgaenge.zeitleiste(root, "3d-ansicht")
+    arten = [(e["art"], e.get("an")) for e in zl["eintraege"]]
+    assert ("task", "deverp") in arten and ("task", "notebook") in arten, arten
+    assert any(e["art"] == "rueckfrage" and e.get("offen") for e in zl["eintraege"]), arten
+    assert [e["zeit"] for e in zl["eintraege"]] == sorted(e["zeit"] for e in zl["eintraege"])
+    # Notiz per MCP, sichtbar in der Liste
+    dev["thread_note"](thread="3d-ansicht", note="wartet auf Abend-Deploy DV")
+    assert {v["vorgang"]: v for v in vorgaenge.liste(root)}["3d-ansicht"]["notiz"].startswith("wartet")
+    assert "error" in dev["thread_status"](thread="gibt-es-nicht")
+    assert dev["thread_status"](thread="3d-ansicht")["tasks"] == 2
+
+
+TESTS = [test_58_vorgaenge,
+         test_59_liegende_tasks,
          test_52_erinnerungen,
          test_64_geheimnisse,
          test_56_freigaben,

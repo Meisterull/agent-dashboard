@@ -47,13 +47,14 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import austausch, erinnerungen, freigaben, geheimnisse, integrations, kosten, mcp_scope, rollen, weckruf, zwischenspeicher
+from app import austausch, erinnerungen, freigaben, geheimnisse, integrations, kosten, vorgaenge, mcp_scope, rollen, weckruf, zwischenspeicher
 from app.config import load_agents_full, load_settings
 from app.files import decode_text
 from datetime import datetime
 
 from app import ereignisse
 from app.mailbox import (
+    _lese_ordner,
     AGENT_NAME_RE,
     CLAIM_SITZUNG,
     CLAIM_WATCHER,
@@ -513,6 +514,25 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 return {"error": f"timeout muss eine Zahl (Sekunden) sein, nicht {timeout!r}"}
             if frist is not None and frist < 60:
                 return {"error": "timeout unter 60 s ergibt keinen sinnvollen Lauf"}
+            # Vorgang vererben (Issue #58): entsteht der Auftrag AUS einem
+            # laufenden Task heraus (gebundener Kanal, genau ein Task in
+            # Arbeit), gehört er zu dessen Vorgang — ohne das reißt die Kette,
+            # sobald ein Agent vergisst, den thread von Hand zu setzen.
+            parent_id = None
+            vorgang = faden
+            if identity is not None:
+                try:
+                    laufend = [e for _p, e in _lese_ordner(
+                        Mailbox(MAILBOX_ROOT, identity).processing)
+                        if e.get("kind", "task") == "task"
+                        and e.get("status") != "needs_confirm"]
+                except (ValueError, OSError):
+                    laufend = []
+                if len(laufend) == 1:
+                    parent_id = laufend[0].get("id") or laufend[0].get("task_id")
+                    if not faden:
+                        faden = laufend[0].get("thread") or None
+                        vorgang = vorgaenge.schluessel_fuer(laufend[0], parent_id)
             modell = str(model or "").strip() or None
             if modell:
                 erlaubt = _modelle_erlaubt(to)
@@ -533,6 +553,8 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 thread=faden,
                 timeout=frist,
                 model=modell,
+                vorgang=vorgang,
+                parent_task_id=parent_id,
                 **rollen_felder,
             )
             Mailbox(MAILBOX_ROOT, to).put_task(task)
@@ -1009,6 +1031,35 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                     quelle, liste, to, melder=identity or "orchestrator", nachricht=note
                 )
             except austausch.AustauschError as exc:
+                return {"error": str(exc)}
+
+    # --- Vorgänge (Issue #58) ------------------------------------------------
+
+    if on("thread_status"):
+        @werkzeug
+        def thread_status(thread: str | None = None, days: int = 14) -> dict | list:
+            """Stand eines Vorgangs über alle Agenten — oder ohne `thread` die
+            Liste der Vorgänge der letzten `days` Tage (Status, beteiligte
+            Agenten, Kosten, letzte Aktivität, Notiz)."""
+            _log(kanal, "thread_status", thread=thread)
+            try:
+                if thread:
+                    return vorgaenge.zeitleiste(MAILBOX_ROOT, thread)
+                return vorgaenge.liste(MAILBOX_ROOT, float(max(1, min(int(days), 90))))
+            except (vorgaenge.VorgangFehler, ValueError) as exc:
+                return {"error": str(exc)}
+
+    if on("thread_note"):
+        @werkzeug
+        def thread_note(thread: str, note: str) -> dict:
+            """Kurze Status-Notiz an einen Vorgang heften (z.B. „wartet auf
+            Abend-Deploy DV") — sichtbar in der Vorgangs-Ansicht des
+            Dashboards. Leerer Text entfernt die Notiz."""
+            _log(kanal, "thread_note", thread=thread)
+            try:
+                return {"thread": thread, **vorgaenge.setze_notiz(
+                    MAILBOX_ROOT, thread, note, identity or "orchestrator")}
+            except vorgaenge.VorgangFehler as exc:
                 return {"error": str(exc)}
 
     # --- Erinnerungs-Postfach (Issue #52) ------------------------------------

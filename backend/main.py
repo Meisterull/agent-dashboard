@@ -120,6 +120,7 @@ from app.files import (
 )
 from app.remote_files import RemoteFilesError
 from app import austausch, erinnerungen, freigaben, geheimnisse, liegezeit, zwischenspeicher
+from app import vorgaenge
 from app import container
 from app import upload
 from app.austausch import AustauschError
@@ -1986,6 +1987,37 @@ async def freigabe_einstellung(agent: str, body: FreigabeEinstellungIn) -> dict:
             **({"warnung": "Diese Muster enthalten etwas, das wie Zugangsdaten aussieht — "
                            "besser ein Geheimnis anlegen und im Befehl $NAME schreiben: "
                            + "; ".join(warnung)} if warnung else {})}
+
+
+# --- Vorgangs-Ansicht (Issue #58) -------------------------------------------
+
+class VorgangNotizIn(BaseModel):
+    notiz: str = ""
+
+
+@app.get("/api/vorgaenge")
+async def vorgaenge_liste(tage: float = 14.0, archiv: bool = False) -> dict:
+    """Vorgänge über alle Agenten (nur auf Anforderung gelesen, kein Poll)."""
+    tage = max(1.0, min(float(tage), 365.0))
+    return {"tage": tage, "vorgaenge": await asyncio.to_thread(
+        vorgaenge.liste, MAILBOXES, tage, archiv)}
+
+
+@app.get("/api/vorgaenge/{vorgang}")
+async def vorgang_zeitleiste(vorgang: str) -> dict:
+    try:
+        return await asyncio.to_thread(vorgaenge.zeitleiste, MAILBOXES, vorgang)
+    except vorgaenge.VorgangFehler as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.put("/api/vorgaenge/{vorgang}/notiz")
+async def vorgang_notiz(vorgang: str, body: VorgangNotizIn) -> dict:
+    try:
+        return await asyncio.to_thread(
+            vorgaenge.setze_notiz, MAILBOXES, vorgang, body.notiz, "dashboard")
+    except vorgaenge.VorgangFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # --- Liegende Tasks (Issue #59) --------------------------------------------

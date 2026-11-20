@@ -197,6 +197,10 @@ class Task:
     # `model` bestellt der Auftraggeber (nur aus der Allowlist des Agenten).
     rollen_model: Optional[str] = None
     model: Optional[str] = None
+    # Vorgangs-Ansicht (Issue #58): `vorgang` = thread, sonst der Vorgang des
+    # Tasks, aus dem heraus dieser entstand (`parent_task_id`), sonst eigener.
+    vorgang: Optional[str] = None
+    parent_task_id: Optional[str] = None
     # Geplanter Task (Paket St.2): vor diesem Zeitpunkt (ISO-8601, lokale
     # Serverzeit) liefert kein claim ihn aus — die Inbox ist der Wartepuffer.
     nicht_vor: Optional[str] = None
@@ -276,6 +280,7 @@ def normalize_envelope(env: dict[str, Any]) -> dict[str, Any]:
         "nicht_vor": env.get("nicht_vor"),
         # Vorgang (Issue #37) — der Datei-unabhängige Weg zum Watcher.
         "thread": env.get("thread"),
+        "vorgang": env.get("vorgang") if isinstance(env.get("vorgang"), str) else None,
         # Automatik-Weckruf (Issue #36): vom Server gebündelter Auftrag aus
         # ungelesenen Nachrichten; `weckt: False` = darf nie wecken.
         "weckruf": bool(env.get("weckruf")),
@@ -896,6 +901,17 @@ class Mailbox:
         }
         if verbrauch:
             response["verbrauch"] = dict(verbrauch)
+        # Vorgangs-Ansicht (Issue #58): was die Zeitleiste später braucht,
+        # bleibt an der Antwort — der Task-Envelope wird gleich abgeräumt.
+        if task_env is not None:
+            response["vorgang"] = {
+                "vorgang": task_env.get("vorgang") or task_env.get("thread"),
+                "thread": task_env.get("thread"), "sender": task_env.get("sender"),
+                "created_at": task_env.get("created_at"),
+                "claimed_at": task_env.get("claimed_at"),
+                "parent_task_id": task_env.get("parent_task_id"),
+                "titel": str(task_env.get("instruction") or "")[:300],
+            }
         # Lauf-Daten des Watchers (Issues #37–#39): Sitzung zum Übernehmen
         # (`claude --resume <session_id>`), Timeout-Grund, verweigerte Aufrufe.
         # Das Panel kennzeichnet damit „done mit Einschränkungen" und

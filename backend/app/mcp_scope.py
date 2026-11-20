@@ -42,6 +42,7 @@ KNOWN_TOOLS = frozenset({
     "send_file", "fetch_file", "upload_url", "deliver_upload",
     "freigabe",
     "remind", "reminders", "cancel_reminder", "snooze_reminder",
+    "thread_status", "thread_note",
     "list_integrations", "call_integration",
     "list_rollen",
     "agent_events",

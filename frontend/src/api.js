@@ -103,6 +103,11 @@ export const loescheErinnerung = (agent, id) => jsend(erinnerungUrl(agent, id), 
 // Liegende Tasks (Issue #59): automatik (Einmal-Lauf) | spaeter | pause
 export const liegezeitAktion = (agent, aktion) =>
   jsend(`/api/liegezeit/${encodeURIComponent(agent)}`, "POST", { aktion });
+// Vorgangs-Ansicht (Issue #58)
+export const getVorgaenge = (tage = 14) => jget(`/api/vorgaenge?tage=${tage}`);
+export const getVorgang = (vorgang) => jget(`/api/vorgaenge/${encodeURIComponent(vorgang)}`);
+export const setVorgangNotiz = (vorgang, notiz) =>
+  jsend(`/api/vorgaenge/${encodeURIComponent(vorgang)}/notiz`, "PUT", { notiz });
 export const getAutomatik = () => jget("/api/automatik");
 // `weckt` (Issue #65): beim Einschalten gleich festlegen, was außer Tasks weckt.
 export const setAutomatik = (name, an, weckt) =>

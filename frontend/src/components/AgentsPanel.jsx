@@ -18,6 +18,7 @@ import { bestaetigen, melden } from "./Dialog";
 import FreigabenDialog from "./FreigabenDialog";
 import GeheimnisseAbschnitt from "./GeheimnisseAbschnitt";
 import Erinnerungen from "./Erinnerungen";
+import VorgaengeDialog from "./VorgaengeDialog";
 import RollenDialog from "./RollenDialog";
 import ZeitplaeneDialog from "./ZeitplaeneDialog";
 import { t } from "../sprache";
@@ -201,6 +202,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   // Monatsarchiv (Issue #60): { agent, eintraege, speicher } — nur auf Knopfdruck
   const [archiv, setArchiv] = useState(null);
   const [freigabenOffen, setFreigabenOffen] = useState(false); // Dialog (Issue #56)
+  const [vorgaengeOffen, setVorgaengeOffen] = useState(null); // null | {start} (Issue #58)
   // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
   // nicht erreichbar — auf dem Handy gibt es auch keine Tooltips.
@@ -505,6 +507,13 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
           className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
         >
           ⏰
+        </button>
+        <button
+          onClick={() => setVorgaengeOffen({ start: null })}
+          title={t("Vorgänge — einen Auftrag über alle Agenten verfolgen")}
+          className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
+        >
+          {t("Vorgänge")}
         </button>
         {selected && (
           <button
@@ -847,6 +856,19 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                           ⏰ {kurzZeit(tk.nicht_vor)}
                         </span>
                       )}
+                      {/* Issue #58: zum Vorgang dieses Tasks springen */}
+                      {(tk.thread || tk.vorgang) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setVorgaengeOffen({ start: tk.thread || tk.vorgang });
+                          }}
+                          title={t("Vorgang {0} öffnen", tk.thread || tk.vorgang)}
+                          className="max-w-[9rem] truncate rounded bg-slate-200 px-1 py-0.5 text-[10px] text-slate-600 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-300"
+                        >
+                          ⛓ {tk.thread || tk.vorgang}
+                        </button>
+                      )}
                       {/* Issue #59: Liegezeit am wartenden Task, ab der Schwelle gelb */}
                       {tk.status === "pending" && wartetMin(tk) >= 5 &&
                         !(tk.nicht_vor && new Date(tk.nicht_vor) > new Date()) && (
@@ -1064,6 +1086,9 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         )}
       </div>
       {rollenOffen && <RollenDialog onClose={() => setRollenOffen(false)} />}
+      {vorgaengeOffen && (
+        <VorgaengeDialog start={vorgaengeOffen.start} onClose={() => setVorgaengeOffen(null)} />
+      )}
       {freigabenOffen && selected && (
         <FreigabenDialog agent={selected} onClose={() => setFreigabenOffen(false)}>
           <GeheimnisseAbschnitt agent={selected} />
