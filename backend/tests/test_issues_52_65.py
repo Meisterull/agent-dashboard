@@ -6,6 +6,8 @@
        Handbetrieb; claim_task liefert sender + Zahl der Nachträge
   #55  Tageskosten-Grenze: Rückfrage an den Menschen, Watcher-Claim gesperrt,
        „weiter" gibt frei; teurer Lauf wird einmal gemeldet; Ereignis-Texte
+  #56  Freigabe: Muster, nie/immer ohne Anfrage, Warten auf die Entscheidung,
+       „immer erlauben" merkt das Muster, Frist/Not-Aus = Ablehnung, Push
   #57  fetch_file nur für den Empfänger, upload_url prüft das Ziel vorab
   #53  deliver_upload nur auf dem freien Kanal und nur aus uploads/
   #60  Pflege archiviert ins Monatsarchiv statt zu löschen; laufende Tasks
@@ -254,7 +256,73 @@ def test_57_53_datei_tools(ws: Path) -> None:
     assert zwischenspeicher.liste("notebook") and not zwischenspeicher.liste("tablet")
 
 
-TESTS = [test_57_53_datei_tools,
+def test_56_freigaben(ws: Path) -> None:
+    import threading
+    import time
+    ms = _mcp_server_laden(ws)
+    from app import ereignisse, events, freigaben
+    root = ws / "mailboxes"
+    _boxen(ws, "dev")
+    # Muster
+    p = freigaben.passt
+    bash = {"command": "docker exec backend-1 grep -n x"}
+    assert p("Bash", "Bash", bash) and p("Bash(docker exec:*)", "Bash", bash)
+    assert p("Bash(docker exec backend-1 grep -n x)", "Bash", bash)
+    assert p("Bash(docker * grep*)", "Bash", bash)
+    assert not p("Bash(docker execute:*)", "Bash", bash) and not p("Edit", "Bash", bash)
+    assert not p("Bash(dock:*)", "Bash", bash), "Präfix endet an der Wortgrenze"
+    assert freigaben.vorschlag("Bash", bash) == "Bash(docker exec:*)"
+    assert freigaben.vorschlag("Edit", {"file_path": "/x"}) == "Edit"
+    assert freigaben.sieht_nach_geheimnis("curl -H 'Authorization: token abc123def456:0123456789abcdef'")
+    assert not freigaben.sieht_nach_geheimnis("git status")
+    # Tool: ohne Schalter taub
+    t = _tools(ms, identity="dev")
+    assert json.loads(t["freigabe"](tool_name="Bash", input=bash))["behavior"] == "deny"
+    assert freigaben.offene(root) == []
+    freigaben.setze_einstellung("dev", an=True, timeout=30, nie=["Bash(./deploy-prod.sh:*)"],
+                                immer=["Bash(git status:*)"])
+    # nie / immer: sofort, ohne Anfrage
+    nie = json.loads(t["freigabe"](tool_name="Bash", input={"command": "./deploy-prod.sh --jetzt"}))
+    assert nie["behavior"] == "deny" and "untersagt" in nie["message"], nie
+    immer = json.loads(t["freigabe"](tool_name="Bash", input={"command": "git status -s"}))
+    assert immer == {"behavior": "allow", "updatedInput": {"command": "git status -s"}}, immer
+    assert freigaben.offene(root) == []
+    # Anfrage: wartet, bis der Mensch entscheidet — „immer erlauben" merkt das Muster
+    ergebnis = {}
+    faden = threading.Thread(target=lambda: ergebnis.update(freigaben.pruefe(
+        root, "dev", "Bash", bash, "toolu_1", takt=0.05)))
+    faden.start()
+    for _ in range(100):
+        offen = freigaben.offene(root)
+        if offen:
+            break
+        time.sleep(0.02)
+    assert len(offen) == 1 and offen[0]["vorschlag"] == "Bash(docker exec:*)", offen
+    try:
+        freigaben.entscheide(root, "dev", offen[0]["id"], True, immer="Bash(rm:*)")
+        raise AssertionError("fremdes Muster hätte abgelehnt werden müssen")
+    except freigaben.FreigabeFehler:
+        pass
+    freigaben.entscheide(root, "dev", offen[0]["id"], True, immer="Bash(docker exec:*)")
+    faden.join(5)
+    assert ergebnis == {"behavior": "allow", "updatedInput": bash}, ergebnis
+    assert "Bash(docker exec:*)" in freigaben.einstellung("dev")["immer"]
+    # Frist bzw. Not-Aus = Ablehnung
+    aus = freigaben.pruefe(root, "dev", "Write", {"file_path": "/etc/x"}, takt=0.01,
+                           abbruch=lambda: True)
+    assert aus["behavior"] == "deny" and "Not-Aus" in aus["message"], aus
+    zustaende = [e["details"]["zustand"] for e in
+                 ereignisse.lies(root, "dev", art="freigabe")["eintraege"]]
+    assert zustaende.count("angefragt") == 2 and "abgelaufen" in zustaende, zustaende
+    # Push: jede Anfrage eine eigene Meldung mit Knöpfen, nie gebündelt
+    bund = events.EreignisPush()
+    meldungen = bund.verarbeite(root, {"dev"})
+    frei = [m for m in meldungen if m["art"] == "freigabe"]
+    assert len(frei) == 2 and frei[0]["optionen"] == ["erlauben", "ablehnen"] and frei[0]["fid"]
+
+
+TESTS = [test_56_freigaben,
+         test_57_53_datei_tools,
          test_55_kostendeckel_und_sichtbarkeit,
          test_62_modell_je_task_rolle,
          test_60_monatsarchiv_statt_loeschen,

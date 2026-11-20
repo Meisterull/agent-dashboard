@@ -74,6 +74,15 @@ export const getFiles = (path = "") =>
   jget(`/api/files?path=${encodeURIComponent(path)}`);
 export const getFileContent = (path) =>
   jget(`/api/files/content?path=${encodeURIComponent(path)}`);
+// Freigaben der Automatik (Issue #56)
+export const getFreigaben = () => jget("/api/freigaben");
+export const entscheideFreigabe = (agent, id, erlauben, regel) =>
+  jsend(`/api/freigaben/${encodeURIComponent(agent)}/${encodeURIComponent(id)}`, "POST", {
+    erlauben,
+    ...(regel ? (erlauben ? { immer: regel } : { nie: regel }) : {}),
+  });
+export const setFreigabeEinstellung = (agent, daten) =>
+  jsend(`/api/freigaben/${encodeURIComponent(agent)}`, "PUT", daten);
 export const getAutomatik = () => jget("/api/automatik");
 // `weckt` (Issue #65): beim Einschalten gleich festlegen, was außer Tasks weckt.
 export const setAutomatik = (name, an, weckt) =>

@@ -40,6 +40,7 @@ KNOWN_TOOLS = frozenset({
     "send_message", "ask", "answer", "inbox", "mark_read",
     "write_project_file", "read_project_file",
     "send_file", "fetch_file", "upload_url", "deliver_upload",
+    "freigabe",
     "list_integrations", "call_integration",
     "list_rollen",
     "agent_events",

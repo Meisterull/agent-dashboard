@@ -2,6 +2,7 @@ import { lsGet, lsSet } from "./speicher";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import TopBar from "./components/TopBar";
 import QuestionsBanner from "./components/QuestionsBanner";
+import FreigabenBanner from "./components/FreigabenBanner";
 import NeueFassung from "./components/NeueFassung";
 import Chat from "./components/Chat";
 import FilesPanel from "./components/FilesPanel";
@@ -305,6 +306,8 @@ export default function App() {
         onAnswered={bump}
         onNew={() => flag("agenten")}
       />
+
+      <FreigabenBanner onNew={() => flag("agenten")} />
 
       <TerminalVorrat fenster={termFenster}>
       <Workspace

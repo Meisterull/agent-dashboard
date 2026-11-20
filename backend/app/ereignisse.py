@@ -52,6 +52,8 @@ ARTEN = frozenset({
     "pflege",
     # Kostendeckel (Issue #55): Tagesgrenze erreicht / teurer Einzellauf
     "kosten",
+    # Freigabe-Anfragen der Automatik (Issue #56): angefragt/erlaubt/abgelehnt/abgelaufen
+    "freigabe",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).

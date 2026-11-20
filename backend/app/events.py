@@ -247,7 +247,21 @@ class EreignisPush:
             except ValueError:
                 continue
             self.offsets[agent] = offset
-            probleme = [e for e in neue if e.get("schwere") in ("warnung", "fehler")]
+            # Freigabe-Anfragen (Issue #56) nie bündeln: jede ist eine eigene
+            # Meldung mit Knöpfen — der Lauf WARTET auf die Antwort.
+            for e in neue:
+                d = e.get("details") or {}
+                if e.get("art") == "freigabe" and d.get("zustand") == "angefragt" \
+                        and d.get("freigabe_id"):
+                    meldungen.append({
+                        "titel": f"🔐 Freigabe für {agent}",
+                        "text": f"{d.get('werkzeug')}: {d.get('eingabe')}"[:180],
+                        "tag": d["freigabe_id"], "art": "freigabe", "agent": agent,
+                        "fid": d["freigabe_id"], "optionen": ["erlauben", "ablehnen"],
+                        "url": "/?tab=agenten",
+                    })
+            probleme = [e for e in neue if e.get("schwere") in ("warnung", "fehler")
+                        and e.get("art") != "freigabe"]
             m = self.entscheide(agent, probleme, jetzt)
             if m:
                 meldungen.append(m)
@@ -336,7 +350,7 @@ async def _watch_schleife() -> None:
                     url=m.get("url", "/"),
                     extra={
                         k: m[k]
-                        for k in ("art", "agent", "qid", "optionen", "offen")
+                        for k in ("art", "agent", "qid", "fid", "optionen", "offen")
                         if k in m
                     },
                 )

@@ -461,6 +461,14 @@ class TestReineFunktionen(unittest.TestCase):
         self.assertIn("Cache kalt", text)
         self.assertLess(len(text), 3 * aw.UEBERGABE_ZEICHEN + 1500)
 
+    # --- Freigabe-Tool (Issue #56) -----------------------------------------
+
+    def test_freigabe_tool_in_kommandozeile(self):
+        cmd = aw.baue_claude_cmd("claude", freigabe_tool="mcp__dashboard__freigabe")
+        self.assertEqual(cmd[-2:], ["--permission-prompt-tool", "mcp__dashboard__freigabe"])
+        self.assertNotIn("--permission-prompt-tool",
+                         aw.baue_claude_cmd("claude", freigabe_tool="böse; rm"))
+
     # --- fehlerserie (Issue #14) -------------------------------------------
 
     def test_fehlerserie_erst_nach_schwelle(self):

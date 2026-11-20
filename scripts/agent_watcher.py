@@ -129,6 +129,10 @@ SESSION_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{7,63}$")
 # Modellname für `claude --model` (Issue #62): Alias (sonnet, opus) oder volle
 # ID. Eng gefasst, weil er auf der Kommandozeile landet (cmd.exe, P1-3).
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+FREIGABE_TOOL_RE = re.compile(r"^mcp__[A-Za-z0-9_-]{1,64}__[A-Za-z0-9_-]{1,64}$")
+# Laufzeit-Einstellungen, die nicht durch jede Signatur gereicht werden
+# (gesetzt in main()): Freigabe-Tool und dessen Wartefrist (Issue #56).
+LAUF_EINST: dict = {}
 
 
 def modell_ok(name) -> "str | None":
@@ -607,7 +611,8 @@ def baue_claude_cmd(claude_bin: str,
                     append_system_prompt: str | None = None,
                     resume_id: str | None = None,
                     model: str | None = None,
-                    fallback_model: str | None = None) -> list[str]:
+                    fallback_model: str | None = None,
+                    freigabe_tool: str | None = None) -> list[str]:
     """Kommandozeile für einen headless-Lauf — die instruction kommt über STDIN.
 
     Review P1-3 (löst zugleich das alte Issue #20 gründlicher): Auf Windows
@@ -631,6 +636,10 @@ def baue_claude_cmd(claude_bin: str,
     # erneut (P1-3) — dort darf nichts Freies hinein.
     if resume_id and SESSION_ID_RE.match(resume_id):
         cmd += ["--resume", resume_id]
+    # Freigaben über das Dashboard (Issue #56): statt still abzulehnen, ruft
+    # Claude Code dieses MCP-Tool und wartet auf die Entscheidung des Menschen.
+    if freigabe_tool and FREIGABE_TOOL_RE.match(freigabe_tool):
+        cmd += ["--permission-prompt-tool", freigabe_tool]
     # Modell je Agent/Rolle/Task (Issue #62) — nur geprüfte Namen.
     if modell_ok(model):
         cmd += ["--model", modell_ok(model)]
@@ -747,7 +756,16 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
     cmd = baue_claude_cmd(claude_bin, permission_mode, allowed_tools,
-                          append_system_prompt, resume_id, model, fallback_model)
+                          append_system_prompt, resume_id, model, fallback_model,
+                          LAUF_EINST.get("freigabe_tool"))
+    # Während Claude Code auf eine Freigabe wartet, kommt kein Event — der
+    # Leerlauf-Wächter darf in der Zeit nicht zuschlagen (Issue #56).
+    if LAUF_EINST.get("freigabe_tool") and LAUF_EINST.get("freigabe_timeout"):
+        mindest = float(LAUF_EINST["freigabe_timeout"]) + 120
+        if leerlauf is None:
+            leerlauf = max(CLAUDE_LEERLAUF, mindest)
+        elif leerlauf > 0:
+            leerlauf = max(float(leerlauf), mindest)
     try:
         proc = subprocess.Popen(
             cmd,
@@ -2092,6 +2110,11 @@ def main() -> int:
     ap.add_argument("--resume-kompakt-ab", type=int, default=RESUME_KOMPAKT_AB,
                     help="Kontext in Tokens, ab dem eine KALTE Sitzung nicht fortgesetzt "
                          "wird, sondern neu mit Übergabe beginnt; 0 = Regel aus")
+    ap.add_argument("--freigabe-tool", default=None,
+                    help="MCP-Tool für Berechtigungs-Rückfragen, z.B. "
+                         "mcp__dashboard__freigabe (Issue #56)")
+    ap.add_argument("--freigabe-timeout", type=float, default=900.0,
+                    help="so lange wartet das Freigabe-Tool auf den Menschen (s)")
     ap.add_argument("--model", default=None,
                     help="Modell der Läufe (claude --model), z.B. sonnet (Issue #62)")
     ap.add_argument("--fallback-model", default=None,
@@ -2117,6 +2140,9 @@ def main() -> int:
               "max_kontext": args.resume_max_kontext,
               "kalt_minuten": args.resume_kalt_minuten,
               "kompakt_ab": args.resume_kompakt_ab}
+    if args.freigabe_tool and FREIGABE_TOOL_RE.match(args.freigabe_tool):
+        LAUF_EINST.update(freigabe_tool=args.freigabe_tool,
+                          freigabe_timeout=args.freigabe_timeout)
     einst = {"timeout": args.timeout, "leerlauf": args.leerlauf,
              "project_fallback": args.project_fallback,
              "model": modell_ok(args.model),

@@ -38,7 +38,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from app import ereignisse, kosten, weckruf
+from app import ereignisse, freigaben, kosten, weckruf
 from app.config import load_agents_full, load_settings, save_settings
 
 RECONCILE_INTERVAL = 15   # Sekunden, bis settings-/agents-Änderungen greifen
@@ -357,6 +357,8 @@ class AutoWatcherManager:
                               if gewuenscht.get(name) else 0),
                 # Kostendeckel (Issue #55): {heute, grenze, gesperrt} oder None
                 "kosten": self._kosten.get(name),
+                # Freigaben über das Dashboard (Issue #56)
+                "freigaben": freigaben.einstellung(name, settings)["an"],
                 **(w.als_dict() if w else {"status": "aus", "detail": "", "seit": None,
                                            "log": [], "gesperrt": False}),
             }
@@ -536,6 +538,18 @@ class AutoWatcherManager:
                             tools = ",".join(str(t).strip() for t in tools if str(t).strip())
                         cmd += f" --allowed-tools {shlex.quote(str(tools))}"
                     cmd += _resume_flags(cfg) + _zeit_flags(cfg) + _modell_flags(cfg)
+                    # Freigaben über das Dashboard (Issue #56): eingeschaltet
+                    # im Panel; der MCP-Servername auf dem Agenten-PC ist
+                    # „dashboard" (setup_agent_pc.sh), abweichend per
+                    # agents.yaml `freigabe_tool`.
+                    frei = freigaben.einstellung(name)
+                    if frei["an"]:
+                        tool = str((agent or {}).get("freigabe_tool")
+                                   or ((agent or {}).get("connection") or {}).get("freigabe_tool")
+                                   or freigaben.TOOL_NAME)
+                        if re.fullmatch(r"mcp__[A-Za-z0-9_-]{1,64}__[A-Za-z0-9_-]{1,64}", tool):
+                            cmd += (f" --freigabe-tool {tool}"
+                                    f" --freigabe-timeout {int(frei['timeout'])}")
                     if str(cfg.get("project_fallback") or "").strip().lower() == "basis":
                         cmd += " --project-fallback basis"
                     deckel = _ganzzahl(cfg.get("automatik_timeout"))

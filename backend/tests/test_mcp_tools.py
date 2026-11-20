@@ -275,7 +275,9 @@ def test_gebundener_kanal_erzwingt_identitaet(ws: Path) -> None:
     for a in ("worker", "chef"):
         (ws / "mailboxes" / a).mkdir(parents=True)
     t = _tools(mcp_server, identity="worker", allowed={"inbox", "claim_task"})
-    assert set(t) == {"inbox", "claim_task"}, set(t)
+    # `freigabe` (Issue #56) gibt es auf jedem gebundenen Kanal — unabhängig
+    # von der Allowlist, es fragt nur den Menschen und ist ohne Schalter taub.
+    assert set(t) == {"inbox", "claim_task", "freigabe"}, set(t)
 
     fremd = t["inbox"](agent="chef")
     assert fremd and "error" in fremd[0], fremd

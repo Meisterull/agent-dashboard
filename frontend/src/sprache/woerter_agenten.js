@@ -215,6 +215,37 @@ export default {
     "Nothing to wake — these entries were already queued as a wake-up once.",
   "Weckruf fehlgeschlagen: {0}": "Wake-up failed: {0}",
   "Jetzt wecken": "Wake now",
+  "Immer erlauben": "Always allow",
+  "Nie erlauben": "Never allow",
+  "Dieses Muster gilt künftig für {0} ohne Rückfrage als erlaubt. Widerrufbar unter Agenten → Freigaben.":
+    "From now on this pattern is allowed for {0} without asking. Revocable under Agents → Approvals.",
+  "Dieses Muster wird für {0} künftig sofort abgelehnt — ohne Anfrage. Widerrufbar unter Agenten → Freigaben.":
+    "From now on this pattern is denied for {0} immediately — without a request. Revocable under Agents → Approvals.",
+  "Muster": "Pattern",
+  "Zugangsdaten im Muster?": "Credentials in the pattern?",
+  "Das Muster enthält etwas, das wie ein Token aussieht. Es stünde dann im Klartext in der Freigabeliste — besser unter Agenten → Freigaben ein Geheimnis anlegen und im Befehl $NAME verwenden.":
+    "The pattern contains something that looks like a token. It would sit in the approval list in plain text — better create a secret under Agents → Approvals and use $NAME in the command.",
+  "Freigabe-Anfragen der Automatik ({0}) — der Lauf wartet": "Approval requests from automation ({0}) — the run is waiting",
+  "noch {0} min": "{0} min left",
+  "Der Befehl enthält etwas, das wie Zugangsdaten aussieht — nicht „immer erlauben“, sonst stehen sie in der Liste.":
+    "The command contains something that looks like credentials — do not “always allow”, or they end up in the list.",
+  "Erlauben": "Allow",
+  "Ablehnen": "Deny",
+  "Immer erlauben …": "Always allow …",
+  "Nie erlauben …": "Never allow …",
+  "Hinweis": "Note",
+  "Freigaben — {0}": "Approvals — {0}",
+  "lädt …": "loading …",
+  "Freigaben über das Dashboard: braucht ein Automatik-Lauf eine Berechtigung, fragt er hier nach (Banner + Push), statt still abzulehnen.":
+    "Approvals via the dashboard: when an automation run needs a permission it asks here (banner + push) instead of silently denying.",
+  "Wirkt beim nächsten Start der Automatik. Voraussetzung: der Dashboard-MCP ist auf der Maschine registriert ({0}).":
+    "Takes effect at the next automation start. Requires the dashboard MCP to be registered on the machine ({0}).",
+  "Wartezeit auf deine Antwort (Minuten)": "Wait for your answer (minutes)",
+  "Immer erlauben (ein Muster je Zeile, z. B. Bash(git status:*) oder Edit)":
+    "Always allow (one pattern per line, e.g. Bash(git status:*) or Edit)",
+  "Nie erlauben — wird sofort abgelehnt, ohne Anfrage (z. B. Bash(./deploy-prod.sh:*))":
+    "Never allow — denied immediately, without a request (e.g. Bash(./deploy-prod.sh:*))",
+  "Freigaben und Geheimnisse dieses Agenten": "Approvals and secrets of this agent",
   "{0} Datei(en) warten auf Abholung": "{0} file(s) waiting for pickup",
   "von {0}": "from {0}",
   "⛔ Tagesgrenze erreicht ({0} $ von {1} $) — Automatik wartet auf deine Antwort im Rückfragen-Banner":

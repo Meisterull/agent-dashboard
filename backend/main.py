@@ -119,7 +119,7 @@ from app.files import (
     write_file,
 )
 from app.remote_files import RemoteFilesError
-from app import austausch, zwischenspeicher
+from app import austausch, freigaben, zwischenspeicher
 from app import container
 from app import upload
 from app.austausch import AustauschError
@@ -198,6 +198,7 @@ async def _mailbox_pflege_schleife() -> None:
             continue
         try:
             # Nicht abgeholte Dateien verfallen (Issue #57)
+            await asyncio.to_thread(freigaben.aufraeumen, MAILBOXES)
             verfallen = await asyncio.to_thread(zwischenspeicher.aufraeumen)
             if verfallen:
                 print(f"{_log_zeit()} [pflege] Zwischenspeicher: {verfallen} abgelaufene "
@@ -1836,6 +1837,61 @@ async def automatik_wecken(name: str) -> dict:
     bericht = await asyncio.to_thread(auto_watcher.manager.wecke_jetzt, name)
     return {**auto_watcher.manager.status(), "geweckt": bericht["geweckt"],
             "gebremst": bericht["gebremst"]}
+
+
+# --- Freigaben der Automatik (Issue #56) -----------------------------------
+
+class FreigabeEntscheidIn(BaseModel):
+    erlauben: bool
+    immer: str | None = None   # Muster für die „Immer erlauben"-Liste
+    nie: str | None = None     # Muster für die „Nie erlauben"-Liste
+    wer: str | None = None
+
+
+class FreigabeEinstellungIn(BaseModel):
+    an: bool | None = None
+    timeout: int | None = None
+    immer: list[str] | None = None
+    nie: list[str] | None = None
+
+
+@app.get("/api/freigaben")
+async def freigaben_liste() -> dict:
+    """Offene Freigabe-Anfragen (fürs Banner) + Einstellungen je Agent."""
+    offen = await asyncio.to_thread(freigaben.offene, MAILBOXES)
+    settings = load_settings()
+    namen = {a.get("name") for a in load_agents_full() if a.get("name")}
+    namen |= set((settings.get("freigaben") or {}).keys())
+    return {"offen": offen, "tool": freigaben.TOOL_NAME,
+            "agents": {n: freigaben.einstellung(n, settings) for n in sorted(namen)}}
+
+
+@app.post("/api/freigaben/{agent}/{fid}")
+async def freigabe_entscheiden(agent: str, fid: str, body: FreigabeEntscheidIn) -> dict:
+    try:
+        anfrage = await asyncio.to_thread(
+            freigaben.entscheide, MAILBOXES, agent, fid, body.erlauben,
+            "push" if body.wer == "push" else "dashboard", body.immer, body.nie)
+    except freigaben.FreigabeFehler as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"id": fid, "status": anfrage["status"], "regel": anfrage.get("regel")}
+
+
+@app.put("/api/freigaben/{agent}")
+async def freigabe_einstellung(agent: str, body: FreigabeEinstellungIn) -> dict:
+    """Freigaben je Agent ein-/ausschalten, Frist und Muster-Listen pflegen.
+    Ein-/Ausschalten wirkt beim nächsten Start der Automatik dieses Agenten."""
+    try:
+        neu = await asyncio.to_thread(
+            lambda: freigaben.setze_einstellung(
+                agent, an=body.an, timeout=body.timeout, immer=body.immer, nie=body.nie))
+    except freigaben.FreigabeFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    warnung = [m for m in neu["immer"] if freigaben.sieht_nach_geheimnis(m)]
+    return {"agent": agent, **neu,
+            **({"warnung": "Diese Muster enthalten etwas, das wie Zugangsdaten aussieht — "
+                           "besser ein Geheimnis anlegen und im Befehl $NAME schreiben: "
+                           + "; ".join(warnung)} if warnung else {})}
 
 
 # --- SSH-Terminal ----------------------------------------------------------

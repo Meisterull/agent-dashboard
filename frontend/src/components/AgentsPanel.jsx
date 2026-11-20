@@ -14,6 +14,7 @@ import {
   getAgentArchiv,
 } from "../api";
 import { bestaetigen, melden } from "./Dialog";
+import FreigabenDialog from "./FreigabenDialog";
 import RollenDialog from "./RollenDialog";
 import ZeitplaeneDialog from "./ZeitplaeneDialog";
 import { t } from "../sprache";
@@ -189,6 +190,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const [raeumt, setRaeumt] = useState(false); // "alles gelesen" läuft gerade
   // Monatsarchiv (Issue #60): { agent, eintraege, speicher } — nur auf Knopfdruck
   const [archiv, setArchiv] = useState(null);
+  const [freigabenOffen, setFreigabenOffen] = useState(false); // Dialog (Issue #56)
   // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
   // nicht erreichbar — auf dem Handy gibt es auch keine Tooltips.
@@ -494,6 +496,15 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         >
           ⏰
         </button>
+        {selected && (
+          <button
+            onClick={() => setFreigabenOffen(true)}
+            title={t("Freigaben und Geheimnisse dieses Agenten")}
+            className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
+          >
+            🔐
+          </button>
+        )}
         <button
           onClick={() => setRollenOffen(true)}
           title={t("Rollen verwalten — Prompt und Rechte je Task-Lauf")}
@@ -994,6 +1005,9 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         )}
       </div>
       {rollenOffen && <RollenDialog onClose={() => setRollenOffen(false)} />}
+      {freigabenOffen && selected && (
+        <FreigabenDialog agent={selected} onClose={() => setFreigabenOffen(false)} />
+      )}
       {plaeneOffen && (
         <ZeitplaeneDialog agents={agents} onClose={() => setPlaeneOffen(false)} />
       )}

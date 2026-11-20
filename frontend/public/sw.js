@@ -81,6 +81,27 @@ self.addEventListener("notificationclick", (event) => {
   // damit das Session-Cookie mit. Schlägt er fehl (Sitzung abgelaufen,
   // Frage schon beantwortet), öffnen wir stattdessen die App — verschluckt
   // wird eine Rückfrage nie.
+  // Freigabe der Automatik (Issue #56): Erlauben/Ablehnen direkt aus der Meldung.
+  if (aktion.startsWith("antwort:") && d.art === "freigabe" && d.agent && d.fid) {
+    const erlauben = aktion.slice("antwort:".length) === "erlauben";
+    event.waitUntil(
+      fetch(
+        `/api/freigaben/${encodeURIComponent(d.agent)}/${encodeURIComponent(d.fid)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ erlauben, wer: "push" }),
+          credentials: "same-origin",
+        },
+      )
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+        })
+        .catch(() => fensterOeffnen(ziel)),
+    );
+    return;
+  }
+
   if (aktion.startsWith("antwort:") && d.agent && d.qid) {
     const text = aktion.slice("antwort:".length);
     event.waitUntil(

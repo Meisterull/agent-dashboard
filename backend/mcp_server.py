@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import os
 import tempfile
 import time
@@ -46,7 +47,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import austausch, integrations, kosten, mcp_scope, rollen, weckruf, zwischenspeicher
+from app import austausch, freigaben, integrations, kosten, mcp_scope, rollen, weckruf, zwischenspeicher
 from app.config import load_agents_full, load_settings
 from app.files import decode_text
 from datetime import datetime
@@ -264,6 +265,14 @@ _INTEGRATION_POOL = ThreadPoolExecutor(
 _AUSTAUSCH_POOL = ThreadPoolExecutor(
     max_workers=max(1, int(os.environ.get("MCP_AUSTAUSCH_PARALLEL", "2"))),
     thread_name_prefix="austausch",
+)
+
+
+# Freigabe-Anfragen (Issue #56) WARTEN auf den Menschen — bis zu 15 min je
+# Aufruf. Eigener Pool, damit sie keinem anderen Tool einen Thread wegnehmen.
+_FREIGABE_POOL = ThreadPoolExecutor(
+    max_workers=max(2, int(os.environ.get("MCP_FREIGABE_PARALLEL", "16"))),
+    thread_name_prefix="freigabe",
 )
 
 
@@ -994,6 +1003,34 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 )
             except austausch.AustauschError as exc:
                 return {"error": str(exc)}
+
+    # --- Freigaben der Automatik (Issue #56) ---------------------------------
+    # Nur auf GEBUNDENEN Kanälen: das Tool ruft Claude Code selbst auf
+    # (--permission-prompt-tool), die Identität kommt aus dem Kanal. Es wird
+    # immer registriert — eine Tool-Allowlist des Agenten soll die Automatik
+    # nicht an einem fehlenden Freigabe-Tool scheitern lassen.
+    if identity is not None:
+        @werkzeug(pool=_FREIGABE_POOL)
+        def freigabe(tool_name: str, input: dict | None = None,  # noqa: A002
+                     tool_use_id: str | None = None) -> str:
+            """Berechtigungs-Rückfrage eines Automatik-Laufs an den Menschen.
+
+            NICHT von Hand aufrufen: Claude Code ruft dieses Tool selbst, wenn
+            ein Werkzeug-Aufruf eine Freigabe braucht (--permission-prompt-tool).
+            Wartet auf die Entscheidung im Dashboard (Banner/Push) und liefert
+            {"behavior": "allow"|"deny", …} als JSON-Text.
+            """
+            _log(kanal, "freigabe", agent=identity, werkzeug=tool_name)
+            if not freigaben.einstellung(identity)["an"]:
+                # nicht eingeschaltet → wie bisher ablehnen, ohne den Menschen
+                # mit Anfragen zu behelligen
+                return json.dumps({"behavior": "deny", "message":
+                                   "Freigaben über das Dashboard sind für diesen Agenten "
+                                   "nicht eingeschaltet."}, ensure_ascii=False)
+            antwort = freigaben.pruefe(
+                MAILBOX_ROOT, identity, tool_name, input or {}, tool_use_id,
+                abbruch=lambda: bool(load_settings().get("automatik_notaus")))
+            return json.dumps(antwort, ensure_ascii=False)
 
     if on("fetch_file"):
         @werkzeug
