@@ -7,6 +7,7 @@ import {
   markEnvelopeRead,
   markInboxRead,
   setAutomatik,
+  liegezeitAktion,
   setAutomatikWeckt,
   weckeAutomatik,
   setNotaus,
@@ -174,6 +175,13 @@ const fmtTok = (n) =>
 // sein, bevor der 8-s-Takt wieder lädt — das Blinken kommt dann etwas später,
 // dafür ruckelt das sichtbare Panel beim Scrollen nicht von fremden Salven.
 const VERDECKT_MS = 30000;
+
+// Liegezeit eines wartenden Tasks in Minuten (Issue #59)
+const wartetMin = (tk) => {
+  const seit = Date.parse(tk.created_at || "");
+  return Number.isFinite(seit) ? Math.max(0, Math.floor((Date.now() - seit) / 60000)) : 0;
+};
+const dauerKurz = (min) => (min >= 120 ? `${Math.round(min / 60)} h` : `${min} min`);
 
 const fmtBytes = (n) =>
   n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(0, Math.round((n || 0) / 1024))} KB`;
@@ -633,6 +641,41 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                 </button>
               </div>
             )}
+            {/* Issue #59: Handbetrieb und Tasks liegen über der Schwelle —
+                gleich hier abarbeiten lassen oder die Meldung zurückstellen. */}
+            {!autoInfo.gewuenscht &&
+              tasks?.liegezeit_schwelle > 0 &&
+              (tasks.inbox || []).some(
+                (tk) => tk.status === "pending" && wartetMin(tk) >= tasks.liegezeit_schwelle,
+              ) && (
+                <div className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                  ⏳ {t("Tasks warten — die Automatik ist aus.")}{" "}
+                  {autoInfo.startbar && (
+                    <button
+                      onClick={() =>
+                        liegezeitAktion(selected, "automatik")
+                          .then(() => setLocalKey((k) => k + 1))
+                          .catch((e) => melden({ title: t("Fehler"), text: String(e.message || e) }))
+                      }
+                      title={t("Automatik einschalten, die liegenden Tasks abarbeiten lassen und danach wieder ausschalten")}
+                      className="rounded border border-amber-400 px-1.5 py-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                    >
+                      {t("Per Automatik abarbeiten")}
+                    </button>
+                  )}{" "}
+                  <button
+                    onClick={() => liegezeitAktion(selected, "spaeter").catch(() => {})}
+                    className="rounded border border-amber-400 px-1.5 py-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                  >
+                    {t("Später erinnern")}
+                  </button>
+                </div>
+              )}
+            {autoInfo.einmal && autoInfo.gewuenscht && (
+              <div className="mt-1 text-[11px] text-slate-400">
+                {t("Einmal-Lauf: die Automatik schaltet sich ab, sobald nichts mehr zu tun ist.")}
+              </div>
+            )}
             {/* Issue #55: Kostendeckel — Tagessumme und, wenn erreicht, der Halt */}
             {autoInfo.kosten && (
               <div
@@ -802,6 +845,19 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                           className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                         >
                           ⏰ {kurzZeit(tk.nicht_vor)}
+                        </span>
+                      )}
+                      {/* Issue #59: Liegezeit am wartenden Task, ab der Schwelle gelb */}
+                      {tk.status === "pending" && wartetMin(tk) >= 5 &&
+                        !(tk.nicht_vor && new Date(tk.nicht_vor) > new Date()) && (
+                        <span
+                          className={`rounded px-1 py-0.5 text-[10px] ${
+                            tasks.liegezeit_schwelle > 0 && wartetMin(tk) >= tasks.liegezeit_schwelle
+                              ? "bg-amber-100 font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                              : "text-slate-400"
+                          }`}
+                        >
+                          {t("wartet seit {0}", dauerKurz(wartetMin(tk)))}
                         </span>
                       )}
                       <StatusBadge status={tk.status} />

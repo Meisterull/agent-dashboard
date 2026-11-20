@@ -12,6 +12,8 @@
        „immer erlauben" merkt das Muster, Frist/Not-Aus = Ablehnung, Push
   #57  fetch_file nur für den Empfänger, upload_url prüft das Ziel vorab
   #53  deliver_upload nur auf dem freien Kanal und nur aus uploads/
+  #59  Liegende Tasks: einmal melden, Arbeitszeit, Pause, „später",
+       Automatik an = kein Hinweis, Einmal-Lauf-Ende
   #60  Pflege archiviert ins Monatsarchiv statt zu löschen; laufende Tasks
        behalten ihre Antwort; read_responses(archiv=True) findet Altes
   #62  Modell je Task nur aus der Allowlist des Empfängers; Rolle friert ihr
@@ -407,7 +409,61 @@ def test_52_erinnerungen(ws: Path) -> None:
     assert zustaende.count("angelegt") == 4 and zustaende.count("zugestellt") == 3, zustaende
 
 
-TESTS = [test_52_erinnerungen,
+def test_59_liegende_tasks(ws: Path) -> None:
+    from datetime import datetime, timedelta
+    ms = _mcp_server_laden(ws)
+    from app import ereignisse, events, liegezeit
+    root = ws / "mailboxes"
+    _boxen(ws, "dev", "erp")
+    t = _tools(ms)
+    g = t["send_task"](to="dev", instruction="x", sender="erp")
+    pfad = root / "dev" / "inbox" / f"{g['id']}.json"
+    env = json.loads(pfad.read_text())
+    montag = datetime(2026, 11, 16, 10, 0).astimezone()
+    env["created_at"] = (montag - timedelta(minutes=35)).isoformat()
+    pfad.write_text(json.dumps(env))
+    s = {"liegezeit": {"schwelle_min": 20}}
+    assert liegezeit.einmal_fertig(root, "dev") is False
+    # Automatik an: sie holt den Task ab — kein Hinweis
+    assert liegezeit.pruefe(root, "dev", s, True, montag) is None
+    # nachts / am Wochenende / pausiert / abgewählt: nichts
+    assert liegezeit.pruefe(root, "dev", s, False, montag.replace(hour=22)) is None
+    assert liegezeit.pruefe(root, "dev", s, False, montag + timedelta(days=5)) is None
+    pause = {"liegezeit": {"pause_bis": {"dev": (montag + timedelta(hours=1)).isoformat()}}}
+    assert liegezeit.pruefe(root, "dev", pause, False, montag) is None
+    assert liegezeit.pruefe(root, "dev", {"liegezeit": {"ohne": ["dev"]}}, False, montag) is None
+    assert liegezeit.pruefe(root, "dev", {"liegezeit": {"an": False}}, False, montag) is None
+    # in der Arbeitszeit: genau EINE Meldung
+    e = liegezeit.pruefe(root, "dev", s, False, montag)
+    assert e and e["art"] == "liegt" and "35 min" in e["text"] and "von erp" in e["text"], e
+    assert liegezeit.pruefe(root, "dev", s, False, montag + timedelta(minutes=5)) is None
+    # „später": zurückstellen, danach erneut
+    liegezeit.spaeter(root, "dev", 60)
+    assert liegezeit.pruefe(root, "dev", s, False, montag + timedelta(minutes=5)) is None
+    spaet = datetime.now().astimezone() + timedelta(minutes=61)
+    env["created_at"] = (spaet - timedelta(minutes=40)).isoformat()
+    pfad.write_text(json.dumps(env))
+    immer = {"liegezeit": {"schwelle_min": 20, "von": "00:00", "bis": "23:59",
+                           "tage": [0, 1, 2, 3, 4, 5, 6]}}
+    assert liegezeit.pruefe(root, "dev", immer, False, spaet) is not None
+    # beansprucht (Sitzung), aber still
+    t["claim_task"](task_id=g["id"], agent="dev")
+    cp = root / "dev" / "inbox" / ".processing" / f"{g['id']}.json"
+    c = json.loads(cp.read_text())
+    c["claimed_at"] = c["zuletzt_aktiv"] = (spaet - timedelta(minutes=150)).isoformat()
+    cp.write_text(json.dumps(c))
+    still = liegezeit.pruefe(root, "dev", immer, True, spaet)
+    assert still and "ohne Lebenszeichen" in still["text"], still
+    # Push: eigene Meldung mit Aktionen, nicht im Sammel-Push
+    meldungen = events.EreignisPush().verarbeite(root, {"dev"})
+    assert meldungen and all(m["art"] == "liegt" for m in meldungen), meldungen
+    assert meldungen[0]["optionen"] == ["automatik", "pause"]
+    t["complete_task"](task_id=g["id"], agent="dev", result="ok")
+    assert liegezeit.einmal_fertig(root, "dev") is True
+
+
+TESTS = [test_59_liegende_tasks,
+         test_52_erinnerungen,
          test_64_geheimnisse,
          test_56_freigaben,
          test_57_53_datei_tools,

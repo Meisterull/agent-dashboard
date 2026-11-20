@@ -38,7 +38,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from app import ereignisse, freigaben, geheimnisse, kosten, weckruf
+from app import ereignisse, freigaben, geheimnisse, kosten, liegezeit, weckruf
 from app.config import load_agents_full, load_settings, save_settings
 
 RECONCILE_INTERVAL = 15   # Sekunden, bis settings-/agents-Änderungen greifen
@@ -328,6 +328,7 @@ class AutoWatcherManager:
         self._watcher: dict[str, _Watcher] = {}
         self._weck = asyncio.Event()
         self._kosten: dict[str, dict[str, Any]] = {}  # Kostendeckel je Agent (#55)
+        self._einmal_ende: set[str] = set()           # Einmal-Läufe, die fertig sind (#59)
         self._task: asyncio.Task | None = None
         # Hintergrund-Stopps (M7): Referenz halten, sonst kann der GC einen
         # noch laufenden Task einsammeln.
@@ -375,6 +376,8 @@ class AutoWatcherManager:
                 "kosten": self._kosten.get(name),
                 # Freigaben über das Dashboard (Issue #56)
                 "freigaben": freigaben.einstellung(name, settings)["an"],
+                # Einmal-Lauf (Issue #59): schaltet sich nach getaner Arbeit ab
+                "einmal": bool((settings.get("automatik_einmal") or {}).get(name)),
                 **(w.als_dict() if w else {"status": "aus", "detail": "", "seit": None,
                                            "log": [], "gesperrt": False}),
             }
@@ -397,6 +400,15 @@ class AutoWatcherManager:
                 w.setze("stoppt", "wartet auf laufenden Task")
             self._im_hintergrund(self._stopp_sanft(w))
         self._weck.set()
+
+    async def einmal(self, name: str, an: bool) -> None:
+        """Einmal-Lauf-Merker setzen/löschen (Issue #59)."""
+        merker = dict(load_settings().get("automatik_einmal") or {})
+        if an:
+            merker[name] = True
+        else:
+            merker.pop(name, None)
+        save_settings({"automatik_einmal": merker})
 
     def setze_weckt(self, name: str, arten: list[str]) -> None:
         """Weck-Arten eines Agenten aus dem Dashboard festlegen (Issue #65)."""
@@ -439,6 +451,18 @@ class AutoWatcherManager:
                 await asyncio.to_thread(self._weckrufe)
             except Exception as exc:  # noqa: BLE001
                 print(f"{_zeit()} [automatik] Weckruf-Fehler: {exc}", flush=True)
+            # Einmal-Läufe beenden (Issue #59) — im Loop, weil schalte async ist
+            for name in list(self._einmal_ende):
+                self._einmal_ende.discard(name)
+                try:
+                    await self.einmal(name, False)
+                    await self.schalte(name, False)
+                    ereignisse.schreibe(MAILBOX_ROOT, name, "watcher_start",
+                                        "Einmal-Lauf erledigt — Automatik wieder aus")
+                    print(f"{_zeit()} [automatik] {name}: Einmal-Lauf erledigt, Automatik aus",
+                          flush=True)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"{_zeit()} [automatik] {name}: Einmal-Ende: {exc}", flush=True)
             self._weck.clear()
             try:
                 await asyncio.wait_for(self._weck.wait(), timeout=RECONCILE_INTERVAL)
@@ -452,10 +476,21 @@ class AutoWatcherManager:
         if settings.get("automatik_notaus"):
             return
         gewuenscht = settings.get("automatik") or {}
+        einmal = settings.get("automatik_einmal") or {}
         for agent in load_agents_full():
             name = agent.get("name")
-            if not name or not gewuenscht.get(name):
+            if not name:
                 continue
+            # Liegende Tasks (Issue #59): Handbetrieb bzw. stille Ansprüche
+            try:
+                liegezeit.pruefe(MAILBOX_ROOT, name, settings, bool(gewuenscht.get(name)))
+            except Exception as exc:  # noqa: BLE001 — nur ein Hinweis
+                print(f"{_zeit()} [automatik] {name}: Liegezeit-Prüfung: {exc}", flush=True)
+            if not gewuenscht.get(name):
+                continue
+            # Einmal-Lauf (Issue #59): Arbeit erledigt → Automatik wieder aus
+            if einmal.get(name) and liegezeit.einmal_fertig(MAILBOX_ROOT, name):
+                self._einmal_ende.add(name)
             # Kostendeckel (Issue #55): Tagesgrenze + teure Einzelläufe
             deckel = _kosten_grenzen(agent)
             if deckel[0] or deckel[1]:

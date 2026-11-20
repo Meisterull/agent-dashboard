@@ -23,6 +23,7 @@ const ICON = {
   kosten: "💰",
   freigabe: "🔐",
   erinnerung: "⏰",
+  liegt: "⏳",
   send_file: "📤",
   integration: "🔌",
   // Pflege (#47): Vorwarnung je Runde bzw. als Fehlschlag abgeschlossen

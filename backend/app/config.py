@@ -64,6 +64,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # {name: {an, timeout, immer: [Muster], nie: [Muster]}}. Gepflegt über
     # /api/freigaben (Dialog im Agenten-Panel).
     "freigaben": {},
+    # Hinweis auf liegende Tasks im Handbetrieb (Issue #59, app/liegezeit.py):
+    # {an, schwelle_min, still_min, von, bis, tage, ohne, agents, pause_bis}.
+    # Fehlende Felder = Standard aus liegezeit.STANDARD.
+    "liegezeit": {},
+    # Einmal-Lauf (Issue #59): Automatik nur für die liegenden Tasks an —
+    # der Manager schaltet sie wieder aus, sobald nichts mehr zu tun ist.
+    "automatik_einmal": {},
     # Geheimnisse (Issue #64): je Agent zusätzlich als ~/.agent-dashboard/env
     # (0600) für interaktive Sitzungen ablegen? {name: true}. Die Werte selbst
     # liegen verschlüsselt in keys/geheimnisse.json, nie hier.

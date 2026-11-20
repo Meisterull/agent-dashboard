@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { t, sprachMerken } from "../sprache";
 import { FensterListe } from "./FensterAuswahl";
+import MeldungenEinstellungen from "./MeldungenEinstellungen";
 
 // Das Orchestrator-Modell (`orch_model`) wird bewusst HIER umgeschaltet und
 // nicht im Chat-Kopf: der ist mobil schon voll (Titel + Verlauf-Auswahl +
@@ -238,6 +239,8 @@ export default function Settings({ onClose, fenster = [], versteckt, onFensterUm
               )}
             </p>
           </label>
+
+          <MeldungenEinstellungen settings={settings} update={update} />
 
           <div>
             <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">

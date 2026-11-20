@@ -1,6 +1,15 @@
 // Deutsch → Englisch. Teil des Wörterbuchs, zusammengelegt in ../sprache.js.
 // Kern: App.jsx, Settings.jsx, Gemeinsames.
 export default {
+  "Mo": "Mon", "Di": "Tue", "Mi": "Wed", "Do": "Thu", "Fr": "Fri", "Sa": "Sat", "So": "Sun",
+  "Hinweis, wenn Tasks liegen bleiben": "Notify when tasks stay untouched",
+  "Automatik aus und ein Task wartet zu lange — oder er ist beansprucht, aber still: ein gebündelter Push je Agent, mit „Per Automatik abarbeiten“ und „24 h Ruhe“.":
+    "Automation off and a task waits too long — or it is claimed but silent: one bundled push per agent, with “work through with automation” and “24 h quiet”.",
+  "unberührt seit (min)": "untouched for (min)",
+  "beansprucht, aber still seit (min)": "claimed but silent for (min)",
+  "nur zwischen": "only between",
+  "und": "and",
+  "nie für diese Agenten (durch Komma getrennt)": "never for these agents (comma separated)",
   // Panels / Tabs (App.jsx)
   "Chat": "Chat",
   "Terminal": "Terminal",

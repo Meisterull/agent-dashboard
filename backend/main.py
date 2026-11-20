@@ -119,7 +119,7 @@ from app.files import (
     write_file,
 )
 from app.remote_files import RemoteFilesError
-from app import austausch, erinnerungen, freigaben, geheimnisse, zwischenspeicher
+from app import austausch, erinnerungen, freigaben, geheimnisse, liegezeit, zwischenspeicher
 from app import container
 from app import upload
 from app.austausch import AustauschError
@@ -425,6 +425,8 @@ class SettingsIn(BaseModel):
     orch_model: str | None = None
     external_windows: list[ExternalWindowIn] | None = None
     verbrauch_schwelle_5h: int | None = None
+    # Hinweis auf liegende Tasks (Issue #59) — Felder siehe liegezeit.STANDARD
+    liegezeit: dict | None = None
 
 
 # --- Health / Agenten / Tasks ---------------------------------------------
@@ -611,6 +613,11 @@ def _agent_tasks_sync(name: str, base: Path) -> dict:
         "messages": messages,
         # Dateien, die noch auf Abholung durch diese Maschine warten (#57)
         "abzuholen": zwischenspeicher.liste(name),
+        # Schwelle fürs Panel (Issue #59): ab so vielen Minuten ist „wartet
+        # seit …" gelb. 0 = Hinweis aus.
+        "liegezeit_schwelle": (
+            liegezeit.schwelle_min(liegezeit.einstellung(load_settings()), name)
+            if liegezeit.einstellung(load_settings()).get("an") else 0),
         # Verbrauchszähler (St.3): aus der OHNEHIN gelesenen Outbox gerechnet —
         # kein zweiter Poll, kein Doppel-I/O. Schwelle aus den Settings.
         "verbrauch": verbrauch.aggregiere(
@@ -1899,6 +1906,9 @@ async def automatik_schalten(name: str, body: AutomatikIn) -> dict:
         raise HTTPException(409, f"'{name}' hat keine nutzbare SSH-Verbindung (key_file?)")
     if body.an and body.weckt is not None:
         auto_watcher.manager.setze_weckt(name, body.weckt)
+    # Von Hand geschaltet = kein Einmal-Lauf mehr (Issue #59), sonst schaltete
+    # sich eine bewusst eingeschaltete Automatik nach dem ersten Task ab.
+    await auto_watcher.manager.einmal(name, False)
     await auto_watcher.manager.schalte(name, body.an)
     return auto_watcher.manager.status()
 
@@ -1976,6 +1986,41 @@ async def freigabe_einstellung(agent: str, body: FreigabeEinstellungIn) -> dict:
             **({"warnung": "Diese Muster enthalten etwas, das wie Zugangsdaten aussieht — "
                            "besser ein Geheimnis anlegen und im Befehl $NAME schreiben: "
                            + "; ".join(warnung)} if warnung else {})}
+
+
+# --- Liegende Tasks (Issue #59) --------------------------------------------
+
+class LiegezeitAktionIn(BaseModel):
+    aktion: str   # automatik | spaeter | pause
+
+
+@app.post("/api/liegezeit/{agent}")
+async def liegezeit_aktion(agent: str, body: LiegezeitAktionIn) -> dict:
+    """Aktion aus Push bzw. Panel: `automatik` = Einmal-Lauf (Automatik an,
+    nach getaner Arbeit von selbst wieder aus), `spaeter` = in einer Stunde
+    erneut melden, `pause` = 24 h keine Liegezeit-Meldungen für den Agenten."""
+    _agent_base(agent)
+    if body.aktion == "automatik":
+        status = auto_watcher.manager.status()["agents"].get(agent)
+        if status is None or not status["startbar"]:
+            raise HTTPException(409, f"'{agent}' hat keine nutzbare SSH-Verbindung für die Automatik")
+        if not status["gewuenscht"]:
+            await auto_watcher.manager.einmal(agent, True)
+            await auto_watcher.manager.schalte(agent, True)
+        return {"agent": agent, "aktion": "automatik", "einmal": not status["gewuenscht"]}
+    if body.aktion == "spaeter":
+        bis = await asyncio.to_thread(liegezeit.spaeter, MAILBOXES, agent)
+        return {"agent": agent, "aktion": "spaeter", "bis": bis}
+    if body.aktion == "pause":
+        from datetime import datetime as _dt, timedelta as _td
+        einst = dict(load_settings().get("liegezeit") or {})
+        pausen = dict(einst.get("pause_bis") or {})
+        pausen[agent] = (_dt.now().astimezone() + _td(hours=liegezeit.PAUSE_STUNDEN)
+                         ).isoformat(timespec="minutes")
+        einst["pause_bis"] = pausen
+        save_settings({"liegezeit": einst})
+        return {"agent": agent, "aktion": "pause", "bis": pausen[agent]}
+    raise HTTPException(400, "aktion: automatik | spaeter | pause")
 
 
 # --- Geheimnis-Speicher (Issue #64) ----------------------------------------

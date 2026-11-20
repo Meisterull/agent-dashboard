@@ -215,6 +215,14 @@ export default {
     "Nothing to wake — these entries were already queued as a wake-up once.",
   "Weckruf fehlgeschlagen: {0}": "Wake-up failed: {0}",
   "Jetzt wecken": "Wake now",
+  "wartet seit {0}": "waiting for {0}",
+  "Tasks warten — die Automatik ist aus.": "Tasks are waiting — automation is off.",
+  "Automatik einschalten, die liegenden Tasks abarbeiten lassen und danach wieder ausschalten":
+    "Switch automation on, let it work through the waiting tasks, then switch it off again",
+  "Per Automatik abarbeiten": "Work through with automation",
+  "Später erinnern": "Remind me later",
+  "Einmal-Lauf: die Automatik schaltet sich ab, sobald nichts mehr zu tun ist.":
+    "One-off run: automation switches itself off once nothing is left to do.",
   "Erinnerung verschieben": "Reschedule reminder",
   "Neuer Termin (JJJJ-MM-TT oder JJJJ-MM-TTThh:mm)": "New date (YYYY-MM-DD or YYYY-MM-DDThh:mm)",
   "Erinnerung löschen": "Delete reminder",

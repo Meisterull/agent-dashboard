@@ -260,8 +260,16 @@ class EreignisPush:
                         "fid": d["freigabe_id"], "optionen": ["erlauben", "ablehnen"],
                         "url": "/?tab=agenten",
                     })
+                # Liegende Tasks (Issue #59): EIN Push je Meldung, mit den
+                # Aktionen „per Automatik abarbeiten" / „24 h Ruhe".
+                if e.get("art") == "liegt":
+                    meldungen.append({
+                        "titel": f"⏳ {agent}", "text": str(e.get("text") or "")[:180],
+                        "tag": f"liegt-{agent}", "art": "liegt", "agent": agent,
+                        "optionen": ["automatik", "pause"], "url": "/?tab=agenten",
+                    })
             probleme = [e for e in neue if e.get("schwere") in ("warnung", "fehler")
-                        and e.get("art") != "freigabe"]
+                        and e.get("art") not in ("freigabe", "liegt")]
             m = self.entscheide(agent, probleme, jetzt)
             if m:
                 meldungen.append(m)

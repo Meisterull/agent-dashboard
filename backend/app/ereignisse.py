@@ -56,6 +56,8 @@ ARTEN = frozenset({
     "freigabe",
     # Erinnerungs-Postfach (Issue #52): angelegt/zugestellt/gelöscht
     "erinnerung",
+    # Tasks liegen unberührt bzw. beansprucht ohne Lebenszeichen (Issue #59)
+    "liegt",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).

@@ -23,9 +23,11 @@ self.addEventListener("push", (event) => {
     ? "Öffnen"
     : "Open";
   const optionen = Array.isArray(d.optionen) ? d.optionen.slice(0, platz) : [];
+  // Liegende Tasks (Issue #59): sprechende Knopftexte statt der Kürzel
+  const TITEL = { automatik: "Per Automatik", pause: "24 h Ruhe" };
   const actions = optionen.map((o) => ({
     action: `antwort:${o}`,
-    title: o.charAt(0).toUpperCase() + o.slice(1),
+    title: TITEL[o] || o.charAt(0).toUpperCase() + o.slice(1),
   }));
   if (actions.length && actions.length < platz)
     actions.push({ action: "oeffnen", title: oeffnenTitel });
@@ -94,6 +96,23 @@ self.addEventListener("notificationclick", (event) => {
           credentials: "same-origin",
         },
       )
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+        })
+        .catch(() => fensterOeffnen(ziel)),
+    );
+    return;
+  }
+
+  // Liegende Tasks (Issue #59): per Automatik abarbeiten bzw. 24 h Ruhe
+  if (aktion.startsWith("antwort:") && d.art === "liegt" && d.agent) {
+    event.waitUntil(
+      fetch(`/api/liegezeit/${encodeURIComponent(d.agent)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aktion: aktion.slice("antwort:".length) }),
+        credentials: "same-origin",
+      })
         .then((r) => {
           if (!r.ok) throw new Error(String(r.status));
         })

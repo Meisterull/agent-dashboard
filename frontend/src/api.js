@@ -100,6 +100,9 @@ export const legeErinnerungAn = (agent, when, text) =>
 export const verschiebeErinnerung = (agent, id, when) =>
   jsend(erinnerungUrl(agent, id), "PUT", { when });
 export const loescheErinnerung = (agent, id) => jsend(erinnerungUrl(agent, id), "DELETE");
+// Liegende Tasks (Issue #59): automatik (Einmal-Lauf) | spaeter | pause
+export const liegezeitAktion = (agent, aktion) =>
+  jsend(`/api/liegezeit/${encodeURIComponent(agent)}`, "POST", { aktion });
 export const getAutomatik = () => jget("/api/automatik");
 // `weckt` (Issue #65): beim Einschalten gleich festlegen, was außer Tasks weckt.
 export const setAutomatik = (name, an, weckt) =>
