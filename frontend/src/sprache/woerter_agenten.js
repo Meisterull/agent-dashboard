@@ -215,6 +215,9 @@ export default {
     "Nothing to wake — these entries were already queued as a wake-up once.",
   "Weckruf fehlgeschlagen: {0}": "Wake-up failed: {0}",
   "Jetzt wecken": "Wake now",
+  "⛔ Tagesgrenze erreicht ({0} $ von {1} $) — Automatik wartet auf deine Antwort im Rückfragen-Banner":
+    "⛔ Daily limit reached ({0} $ of {1} $) — automation waits for your answer in the questions banner",
+  "Kosten heute {0} $ von {1} $": "Cost today {0} $ of {1} $",
   "Archiv nicht lesbar: {0}": "Archive not readable: {0}",
   "Archiv ausblenden": "Hide archive",
   "auch Archiv": "include archive",

@@ -109,12 +109,22 @@ RESUME_SITZUNG_VERFALL = 30 * 86400.0  # claude räumt Transkripte nach ~30 Tage
 # nach drei Tagen „Punkt d fehlt noch" schickt, meint denselben Faden.
 RESUME_THREAD_MAX_PAUSE = 7 * 86400.0
 THREAD_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+# Kosten beim Fortsetzen (Issue #55): nach langer Pause ist der Prompt-Cache
+# verfallen — der GANZE Verlauf wird neu eingelesen und zum Schreibpreis
+# gecacht (gemessen: 55 s Nachtrag = 7,10 $ bei 225k). Ist die Sitzung kalt
+# UND groß, beginnt deshalb eine neue mit kompakter Übergabe (die Ergebnisse
+# der letzten Läufe aus dem Sitzungsbuch). 0 schaltet die Regel jeweils ab.
+RESUME_KALT_MINUTEN = 60.0
+RESUME_KOMPAKT_AB = 200_000
+UEBERGABE_LAEUFE = 3          # so viele Ergebnisse je Sitzungsschlüssel merken
+UEBERGABE_ZEICHEN = 2500      # je Ergebnis
 
 # Lebenszeichen an den Server, solange ein Lauf arbeitet (Issue #42): die
 # Pflege reiht Tasks zurück, die zu lange OHNE Lebenszeichen in Arbeit liegen.
 HERZSCHLAG = 600.0
 # Leerlauf-Backoff des Pollens (Issue #41): 5 s → 30 s, nach Arbeit wieder kurz.
 POLL_MAX = 30.0
+KOSTEN_RUHE = 120.0   # s Pause, wenn der Server die Tagesgrenze meldet (#55)
 SESSION_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{7,63}$")
 # Modellname für `claude --model` (Issue #62): Alias (sonnet, opus) oder volle
 # ID. Eng gefasst, weil er auf der Kommandozeile landet (cmd.exe, P1-3).
@@ -1021,9 +1031,15 @@ def lauf_mitschreiben(lauf: dict, ev: dict) -> None:
     elif typ == "assistant":
         if ev.get("parent_tool_use_id"):
             return
+        erste = not lauf.get("arbeit")
         lauf["arbeit"] = True
         nachricht = ev.get("message")
         usage = nachricht.get("usage") if isinstance(nachricht, dict) else None
+        if isinstance(usage, dict) and erste:
+            # Issue #55: die ERSTE Anfrage zeigt, ob der Cache noch warm war —
+            # gelesen (billig) gegen neu geschrieben (teurer als normale Eingabe).
+            lauf["cache_gelesen"] = int(_zahl(usage.get("cache_read_input_tokens")))
+            lauf["cache_neu"] = int(_zahl(usage.get("cache_creation_input_tokens")))
         if isinstance(usage, dict):
             kontext = int(sum(_zahl(usage.get(f)) for f in _KONTEXT_FELDER))
             if kontext > 0:
@@ -1046,7 +1062,7 @@ def lade_sitzungen(agent: str) -> dict:
         buch = {}
     if not isinstance(buch, dict):
         buch = {}
-    for feld in ("sitzungen", "tasks"):
+    for feld in ("sitzungen", "tasks", "uebergaben"):
         if not isinstance(buch.get(feld), dict):
             buch[feld] = {}
     return buch
@@ -1121,23 +1137,51 @@ def kontext_grenze(max_kontext: "int | float | None", modell: "str | None") -> "
 def sitzung_waehlen(buch: dict, schluessel: str, task_id: str, jetzt: float,
                     max_pause: float = RESUME_MAX_PAUSE,
                     max_kontext: int = RESUME_MAX_KONTEXT,
-                    max_tasks: int = RESUME_MAX_TASKS) -> "tuple[str | None, str]":
+                    max_tasks: int = RESUME_MAX_TASKS,
+                    kalt_s: float = 0.0, kompakt_ab: int = 0,
+                    info: "dict | None" = None) -> "tuple[str | None, str]":
     """→ (session_id oder None, Begründung fürs Log). Reine Funktion.
 
     Vorrang hat der TASK: läuft dieselbe task_id erneut, wurde sie nach einer
     Rückfrage geparkt (Issue #17) — dann zählt das Gedächtnis mehr als jede
     Grenze, sonst fiele genau dort die ganze Vorarbeit doppelt an."""
+    info = info if info is not None else {}
+    s = buch.get("sitzungen", {}).get(schluessel)
+    s = s if isinstance(s, dict) and s.get("session_id") else None
+
+    def kalt_und_gross(pause: float, kontext: int) -> "str | None":
+        # Issue #55: kalter Cache UND großer Verlauf → das Fortsetzen kostet
+        # mehr als ein Neustart mit kompakter Übergabe.
+        if kalt_s > 0 and kompakt_ab > 0 and pause > kalt_s and kontext > kompakt_ab:
+            return (f"Cache kalt (Pause {pause / 60:.0f} min) und Kontext "
+                    f"{kontext // 1000}k über {kompakt_ab // 1000}k — neue Sitzung "
+                    f"mit Übergabe")
+        return None
+
     eintrag = buch.get("tasks", {}).get(task_id)
     if (isinstance(eintrag, dict) and eintrag.get("session_id")
             and jetzt - _zahl(eintrag.get("zeit")) <= RESUME_TASK_MERKDAUER):
+        pause = jetzt - _zahl(eintrag.get("zeit"))
+        kontext = (int(_zahl(s.get("kontext")))
+                   if s and s.get("session_id") == eintrag["session_id"] else 0)
+        info.update(pause=pause, kontext=kontext)
+        teuer = kalt_und_gross(pause, kontext)
+        if teuer:
+            info["uebergabe"] = True
+            return None, teuer
         return str(eintrag["session_id"]), "derselbe Task geht nach der Rückfrage weiter"
-    s = buch.get("sitzungen", {}).get(schluessel)
-    if not isinstance(s, dict) or not s.get("session_id"):
+    if s is None:
         return None, "noch keine Sitzung für dieses Verzeichnis"
+    info["uebergabe"] = True  # es gab eine Sitzung — wird sie nicht fortgesetzt, Übergabe
     pause = jetzt - _zahl(s.get("zuletzt"))
+    info["pause"] = pause
     if pause > max_pause:
         return None, f"letzter Lauf vor {pause / 3600:.1f} h, Grenze {max_pause / 3600:.1f} h"
     kontext = int(_zahl(s.get("kontext")))
+    info["kontext"] = kontext
+    teuer = kalt_und_gross(pause, kontext)
+    if teuer:
+        return None, teuer
     grenze = kontext_grenze(max_kontext, s.get("modell"))
     if grenze is not None and kontext > grenze:
         return None, (f"Kontext {kontext // 1000}k über Grenze {grenze // 1000}k"
@@ -1147,7 +1191,41 @@ def sitzung_waehlen(buch: dict, schluessel: str, task_id: str, jetzt: float,
     anzahl = int(_zahl(s.get("tasks")))
     if anzahl >= max_tasks:
         return None, f"schon {anzahl} Tasks in der Sitzung"
+    info["uebergabe"] = False
     return str(s["session_id"]), f"Task {anzahl + 1} der Sitzung, Kontext ~{kontext // 1000}k"
+
+
+def uebergabe_merken(buch: dict, schluessel: str, task_id: str, ergebnis: str,
+                     jetzt: float) -> None:
+    """Ergebnis eines Laufs fürs Sitzungsbuch (Issue #55): beginnt später
+    eine NEUE Sitzung, bekommt sie die letzten Ergebnisse als Übergabe."""
+    text = str(ergebnis or "").strip()
+    if not text:
+        return
+    liste = [u for u in buch.setdefault("uebergaben", {}).get(schluessel, [])
+             if isinstance(u, dict) and u.get("task_id") != task_id]
+    liste.append({"task_id": task_id, "zeit": jetzt, "text": kurz(text, UEBERGABE_ZEICHEN)})
+    buch["uebergaben"][schluessel] = liste[-UEBERGABE_LAEUFE:]
+    buch["uebergaben"] = {
+        k: v for k, v in buch["uebergaben"].items()
+        if isinstance(v, list) and v
+        and jetzt - _zahl(v[-1].get("zeit")) <= RESUME_SITZUNG_VERFALL}
+
+
+def uebergabe_text(buch: dict, schluessel: str, grund: str) -> str:
+    """Kompakte Übergabe an eine neue Sitzung — leer, wenn nichts gemerkt ist."""
+    liste = [u for u in (buch.get("uebergaben") or {}).get(schluessel, [])
+             if isinstance(u, dict) and u.get("text")]
+    if not liste:
+        return ""
+    teile = [f"[Übergabe des Watchers: Die vorige Claude-Sitzung zu diesem Verzeichnis/"
+             f"Vorgang wird nicht fortgesetzt ({grund}). Du beginnst frisch — hier die "
+             f"Ergebnisse der letzten {len(liste)} Läufe, damit du den Stand kennst:]"]
+    for u in liste:
+        wann = time.strftime("%d.%m. %H:%M", time.localtime(_zahl(u.get("zeit"))))
+        teile.append(f"— {u.get('task_id')} ({wann}):\n{u['text']}")
+    teile.append("[Ende der Übergabe. Es folgt der aktuelle Auftrag.]")
+    return "\n\n".join(teile) + "\n\n"
 
 
 def sitzung_merken(buch: dict, schluessel: str, task_id: str, session_id: str,
@@ -1248,9 +1326,15 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
         max_pause = _zahl(resume.get("max_pause")) or RESUME_MAX_PAUSE
         if thread_name(thread):
             max_pause = max(max_pause, RESUME_THREAD_MAX_PAUSE)
+        wahl_info: dict = {}
+        kalt_min = resume.get("kalt_minuten")
+        kompakt = resume.get("kompakt_ab")
         sid, grund = sitzung_waehlen(
             buch, schluessel, task_id, time.time(), max_pause,
-            int(_zahl(resume.get("max_kontext"))) or RESUME_MAX_KONTEXT)
+            int(_zahl(resume.get("max_kontext"))) or RESUME_MAX_KONTEXT,
+            kalt_s=(RESUME_KALT_MINUTEN if kalt_min is None else _zahl(kalt_min)) * 60,
+            kompakt_ab=int(RESUME_KOMPAKT_AB if kompakt is None else _zahl(kompakt)),
+            info=wahl_info)
         if sid:
             melde(f"setzt Sitzung fort ({grund})")
             kurzfassung = ((mcp_hint_kurz(agent, task_id) if with_mcp_hint else "")
@@ -1267,7 +1351,12 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
                 verbrauch.clear()
         if not sid:
             melde(f"neue Sitzung ({grund})")
-            result, err, rc = starte(voll, None)
+            uebergabe = (uebergabe_text(buch, schluessel, grund)
+                         if wahl_info.get("uebergabe") else "")
+            if uebergabe:
+                lauf_meta["uebergabe"] = True
+            hinweis_teil = (mcp_hint(agent, task_id) if with_mcp_hint else "") + frist
+            result, err, rc = starte(hinweis_teil + uebergabe + instruction, None)
         # Behalten: Erfolg — und der TIMEOUT (Issue #37/#38): der Lauf hat
         # gearbeitet, sein Stand steht im Transkript, und wer den Task erneut
         # anstößt (oder den nächsten schickt), soll genau dort weitermachen.
@@ -1281,8 +1370,18 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
                            lauf.get("modell"))
         else:
             sitzung_vergessen(buch, schluessel, task_id)
+        if rc == 0:
+            uebergabe_merken(buch, schluessel, task_id, result, time.time())
         speichere_sitzungen(agent, buch)
         lauf_meta["sitzung"] = "fortgesetzt" if sid else "neu"
+        # Issue #55: Pause seit dem letzten Lauf und der GEMESSENE Cache-Zustand
+        # der ersten Anfrage — „kalt" heißt: mehr neu geschrieben als gelesen.
+        if wahl_info.get("pause") is not None:
+            lauf_meta["pause"] = int(wahl_info["pause"])
+        if sid and (lauf.get("cache_gelesen") or lauf.get("cache_neu")):
+            lauf_meta["cache_gelesen"] = int(lauf.get("cache_gelesen") or 0)
+            lauf_meta["cache_neu"] = int(lauf.get("cache_neu") or 0)
+            lauf_meta["cache_kalt"] = lauf_meta["cache_neu"] > lauf_meta["cache_gelesen"]
         # Issue #44: WARUM neu bzw. fortgesetzt — bisher stand das nur im
         # Watcher-stdout; im Panel merkte niemand, dass das Gedächtnis nie griff.
         lauf_meta["sitzung_grund"] = grund
@@ -1555,8 +1654,12 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
     letzter_fehler: str | None = None
     einst = einst or {}
     pause = interval  # wächst im Leerlauf bis POLL_MAX (Issue #41)
+    kosten_ruhe = 0.0  # bis dahin keine Claims (Tagesgrenze, Issue #55)
     while not STOP.is_set():
         bearbeitet = 0
+        if time.monotonic() < kosten_ruhe:
+            STOP.wait(min(POLL_MAX, max(1.0, kosten_ruhe - time.monotonic())))
+            continue
         try:
             if client is None:
                 client = McpClient(url)
@@ -1593,6 +1696,14 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 # zählen beim Server für die Aufgabe-Grenze der Pflege. Ein
                 # älterer Server ignoriert das unbekannte Argument.
                 claimed = client.call("claim_task", {"task_id": task_id, "watcher": True})
+                if isinstance(claimed, dict) and claimed.get("kosten_gesperrt"):
+                    # Tagesgrenze erreicht (Issue #55): nicht jeden Takt neu
+                    # anfragen — der Mensch entscheidet, das dauert.
+                    if time.monotonic() >= kosten_ruhe:
+                        sicher_print(f"[{now()}] {agent}: Tageskosten-Grenze erreicht — "
+                                     f"wartet auf Freigabe im Dashboard")
+                    kosten_ruhe = time.monotonic() + KOSTEN_RUHE
+                    break
                 if not isinstance(claimed, dict) or claimed.get("error"):
                     continue  # schon von jemand anderem beansprucht
                 instruction = claimed.get("instruction") or env.get("text") or ""
@@ -1975,6 +2086,12 @@ def main() -> int:
     ap.add_argument("--leerlauf", type=float, default=CLAUDE_LEERLAUF,
                     help="Abbruch nach so vielen Sekunden ohne stream-json-Event "
                          f"(Default {CLAUDE_LEERLAUF:.0f}; 0 = aus)")
+    ap.add_argument("--resume-kalt-minuten", type=float, default=RESUME_KALT_MINUTEN,
+                    help="Pause in Minuten, ab der der Prompt-Cache als kalt gilt "
+                         "(Issue #55); 0 = Regel aus")
+    ap.add_argument("--resume-kompakt-ab", type=int, default=RESUME_KOMPAKT_AB,
+                    help="Kontext in Tokens, ab dem eine KALTE Sitzung nicht fortgesetzt "
+                         "wird, sondern neu mit Übergabe beginnt; 0 = Regel aus")
     ap.add_argument("--model", default=None,
                     help="Modell der Läufe (claude --model), z.B. sonnet (Issue #62)")
     ap.add_argument("--fallback-model", default=None,
@@ -1997,7 +2114,9 @@ def main() -> int:
         ap.error("genau eines von --root und --mcp-url angeben")
     workdir = Path(args.workdir).resolve()
     resume = {"an": not args.no_resume, "max_pause": args.resume_max_pause,
-              "max_kontext": args.resume_max_kontext}
+              "max_kontext": args.resume_max_kontext,
+              "kalt_minuten": args.resume_kalt_minuten,
+              "kompakt_ab": args.resume_kompakt_ab}
     einst = {"timeout": args.timeout, "leerlauf": args.leerlauf,
              "project_fallback": args.project_fallback,
              "model": modell_ok(args.model),

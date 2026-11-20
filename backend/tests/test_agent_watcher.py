@@ -418,6 +418,49 @@ class TestReineFunktionen(unittest.TestCase):
         self.assertEqual(aw.sitzungs_schluessel(self.tmp, None, "faden", "sonnet"),
                          ohne + "|@sonnet")
 
+    # --- Kosten beim Fortsetzen (Issue #55) --------------------------------
+
+    def test_kalte_grosse_sitzung_beginnt_neu_mit_uebergabe(self):
+        jetzt = 1_000_000.0
+        buch = {"sitzungen": {"k": {"session_id": "sitz-0001-aaaa", "zuletzt": jetzt - 5400,
+                                    "kontext": 225_000, "tasks": 2,
+                                    "modell": "claude-opus-5-5"}},
+                "tasks": {}, "uebergaben": {}}
+        info = {}
+        sid, grund = aw.sitzung_waehlen(buch, "k", "task-neu", jetzt, kalt_s=3600,
+                                        kompakt_ab=200_000, info=info)
+        self.assertIsNone(sid)
+        self.assertIn("Cache kalt", grund)
+        self.assertTrue(info["uebergabe"])
+        # warm (10 min) oder klein → wie bisher fortsetzen
+        buch["sitzungen"]["k"]["zuletzt"] = jetzt - 600
+        self.assertEqual(aw.sitzung_waehlen(buch, "k", "t", jetzt, kalt_s=3600,
+                                            kompakt_ab=200_000)[0], "sitz-0001-aaaa")
+        buch["sitzungen"]["k"].update(zuletzt=jetzt - 5400, kontext=120_000)
+        self.assertEqual(aw.sitzung_waehlen(buch, "k", "t", jetzt, kalt_s=3600,
+                                            kompakt_ab=200_000)[0], "sitz-0001-aaaa")
+        # Regel aus (0) → fortsetzen, auch kalt und groß
+        buch["sitzungen"]["k"]["kontext"] = 225_000
+        self.assertEqual(aw.sitzung_waehlen(buch, "k", "t", jetzt)[0], "sitz-0001-aaaa")
+        # derselbe Task nach Rückfrage: kalt + groß → ebenfalls neu
+        buch["tasks"]["task-park"] = {"session_id": "sitz-0001-aaaa", "zeit": jetzt - 5400}
+        sid, grund = aw.sitzung_waehlen(buch, "k", "task-park", jetzt, kalt_s=3600,
+                                        kompakt_ab=200_000)
+        self.assertIsNone(sid)
+        self.assertIn("Übergabe", grund)
+
+    def test_uebergabe_merkt_die_letzten_ergebnisse(self):
+        buch = {"sitzungen": {}, "tasks": {}, "uebergaben": {}}
+        self.assertEqual(aw.uebergabe_text(buch, "k", "x"), "")
+        for nr in range(5):
+            aw.uebergabe_merken(buch, "k", f"task-{nr}", f"Ergebnis {nr} " + "y" * 5000, 1000.0 + nr)
+        self.assertEqual(len(buch["uebergaben"]["k"]), aw.UEBERGABE_LAEUFE)
+        text = aw.uebergabe_text(buch, "k", "Cache kalt")
+        self.assertIn("task-4", text)
+        self.assertNotIn("task-1 ", text)
+        self.assertIn("Cache kalt", text)
+        self.assertLess(len(text), 3 * aw.UEBERGABE_ZEICHEN + 1500)
+
     # --- fehlerserie (Issue #14) -------------------------------------------
 
     def test_fehlerserie_erst_nach_schwelle(self):
@@ -622,7 +665,8 @@ class TestSitzungsbuch(unittest.TestCase):
         aw.lauf_mitschreiben(lauf, {"type": "assistant", "message": {
             "usage": {"input_tokens": 5, "cache_read_input_tokens": 100,
                       "output_tokens": 7}}})
-        self.assertEqual(lauf, {"arbeit": True, "kontext": 112})
+        self.assertEqual(lauf, {"arbeit": True, "kontext": 112,
+                                "cache_gelesen": 100, "cache_neu": 0})
 
     def test_resume_id_nur_geprueft_auf_die_kommandozeile(self):
         cmd = aw.baue_claude_cmd("claude", resume_id="9a2d20b8-b893-43c0-8867-a80963446b17")

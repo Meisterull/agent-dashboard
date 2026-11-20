@@ -4,6 +4,8 @@
 
   #54  Fehlstart des Watchers steht als `fehlstart` im Ereignis-Log, nicht als
        Handbetrieb; claim_task liefert sender + Zahl der Nachträge
+  #55  Tageskosten-Grenze: Rückfrage an den Menschen, Watcher-Claim gesperrt,
+       „weiter" gibt frei; teurer Lauf wird einmal gemeldet; Ereignis-Texte
   #60  Pflege archiviert ins Monatsarchiv statt zu löschen; laufende Tasks
        behalten ihre Antwort; read_responses(archiv=True) findet Altes
   #62  Modell je Task nur aus der Allowlist des Empfängers; Rolle friert ihr
@@ -162,7 +164,54 @@ def test_62_modell_je_task_rolle(ws: Path) -> None:
                                "kosten": 0.5}], agg["modelle"]
 
 
-TESTS = [test_62_modell_je_task_rolle,
+def test_55_kostendeckel_und_sichtbarkeit(ws: Path) -> None:
+    ms = _mcp_server_laden(ws)
+    from app import ereignisse, kosten
+    from app.mailbox import Mailbox
+    root = ws / "mailboxes"
+    _boxen(ws, "dev", "erp", "orchestrator")
+    t = _tools(ms)
+
+    def lauf(kosten_usd: float, **lauf_felder) -> str:
+        g = t["send_task"](to="dev", instruction="x", sender="erp")
+        claim = t["claim_task"](task_id=g["id"], agent="dev", watcher=True)
+        assert "error" not in claim, claim
+        t["complete_task"](task_id=g["id"], result="ok", agent="dev",
+                           verbrauch={"input_tokens": 5, "total_cost_usd": kosten_usd},
+                           lauf={"session_id": "sitz-0001-aaaa", **lauf_felder})
+        return g["id"]
+
+    lauf(4.0, sitzung="fortgesetzt", pause=5400, kontext=225000, cache_kalt=True)
+    texte = [e["text"] for e in ereignisse.lies(root, "dev")["eintraege"]]
+    assert any("Pause 90 min" in x and "Cache kalt" in x for x in texte), texte
+    assert any("auffällig teuer" in x for x in texte), texte
+    stand = kosten.pruefe(root, "dev", max_tag=10, max_lauf=3)
+    assert stand == {"heute": 4.0, "grenze": 10.0, "gesperrt": False}, stand
+    teuer = [e for e in ereignisse.lies(root, "dev", art="kosten")["eintraege"]]
+    assert len(teuer) == 1 and "Grenze je Lauf" in teuer[0]["text"], teuer
+    kosten.pruefe(root, "dev", max_tag=10, max_lauf=3)
+    assert len(ereignisse.lies(root, "dev", art="kosten")["eintraege"]) == 1, "nur einmal melden"
+    lauf(7.0)
+    stand = kosten.pruefe(root, "dev", max_tag=10)
+    assert stand["gesperrt"] is True, stand
+    fragen = [e for e in _inbox(ws, "orchestrator") if e["kind"] == "question"]
+    assert len(fragen) == 1 and fragen[0]["options"] == ["weiter", "stopp"], fragen
+    kosten.pruefe(root, "dev", max_tag=10)
+    assert len([e for e in _inbox(ws, "orchestrator") if e["kind"] == "question"]) == 1
+    # Automatik bekommt nichts Neues, der Handbetrieb schon
+    g = t["send_task"](to="dev", instruction="noch einer", sender="erp")
+    nein = t["claim_task"](task_id=g["id"], agent="dev", watcher=True)
+    assert nein.get("kosten_gesperrt") is True, nein
+    # Mensch antwortet „weiter" → weiteres Tagesbudget
+    Mailbox(root, "orchestrator").beantworte_frage(fragen[0]["id"], "weiter")
+    stand = kosten.pruefe(root, "dev", max_tag=10)
+    assert stand == {"heute": 11.0, "grenze": 21.0, "gesperrt": False}, stand
+    assert "error" not in t["claim_task"](task_id=g["id"], agent="dev", watcher=True)
+    assert not [e for e in _inbox(ws, "dev") if e["kind"] == "answer"], "Antwort archiviert"
+
+
+TESTS = [test_55_kostendeckel_und_sichtbarkeit,
+         test_62_modell_je_task_rolle,
          test_60_monatsarchiv_statt_loeschen,
          test_54_fehlstart_ist_kein_handbetrieb,
          test_65_absender_erfaehrt_dass_seine_post_nicht_weckt]

@@ -50,6 +50,8 @@ ARTEN = frozenset({
     "fehlstart",
     # Mailbox-Pflege hat archiviert (Issue #60)
     "pflege",
+    # Kostendeckel (Issue #55): Tagesgrenze erreicht / teurer Einzellauf
+    "kosten",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).
@@ -57,6 +59,9 @@ STETS_PUSHEN = frozenset({"fehlserie", "watcher_abriss", "aufgegeben", "fehlstar
 MAX_ZEILEN = 5000          # Deckel neben der Zeit-Rotation (gesprächige Agenten)
 MAX_ZEILE_BYTES = 3500     # unter PIPE_BUF (4096): das Anhängen bleibt atomar
 STANDARD_LIMIT = 50
+# Issue #55: ab hier gilt ein Lauf als auffällig teuer für seine Dauer
+TEUER_AB_USD = float(os.environ.get("EREIGNIS_TEUER_AB_USD", "3"))
+TEUER_USD_JE_MIN = float(os.environ.get("EREIGNIS_TEUER_USD_JE_MIN", "1.5"))
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
@@ -313,21 +318,42 @@ def lauf_ereignisse(root: str | os.PathLike, agent: str, task_id: str, status: s
             teile.append(f"{kosten:.2f} $")
         if lauf.get("kontext"):
             teile.append(f"Kontext {int(lauf['kontext']) // 1000}k")
+        # Issue #55: auffälliges Verhältnis Kosten zu Dauer (kalter Cache,
+        # riesiger Kontext) — gelb statt unauffällig.
+        teuer = bool(kosten is not None and kosten >= TEUER_AB_USD and dauer is not None
+                     and kosten / (max(dauer, 1.0) / 60.0) >= TEUER_USD_JE_MIN)
+        if teuer:
+            teile.append("auffällig teuer für die Dauer")
         text = ("Lauf-Daten nachgetragen: " if nachgetragen else "Lauf ") + " · ".join(teile)
         geschrieben.append(schreibe(
             root, agent, "lauf", text,
-            schwere="fehler" if status == "error" else "info", task_id=task_id,
+            schwere="fehler" if status == "error" else ("warnung" if teuer else "info"),
+            task_id=task_id, teuer=teuer or None,
             status=status, dauer=dauer, tokens=tokens or None, kosten=kosten,
             kontext=lauf.get("kontext"), modell=lauf.get("modell"),
             session_id=lauf.get("session_id"), nachgetragen=nachgetragen or None))
     if lauf.get("sitzung"):
         grund = str(lauf.get("sitzung_grund") or "")
         kontext_neustart = lauf["sitzung"] == "neu" and "Grenze" in grund
+        zusatz = []
+        if isinstance(lauf.get("pause"), (int, float)):
+            zusatz.append(f"Pause {_dauer_text(float(lauf['pause']))}")
+        if lauf.get("kontext"):
+            zusatz.append(f"Kontext {int(lauf['kontext']) // 1000}k")
+        if lauf.get("cache_kalt") is True:
+            zusatz.append("Cache kalt (gemessen)")
+        elif lauf.get("cache_kalt") is False:
+            zusatz.append("Cache warm")
+        if lauf.get("uebergabe"):
+            zusatz.append("mit Übergabe")
         geschrieben.append(schreibe(
             root, agent, "sitzung",
             ("neue Sitzung" if lauf["sitzung"] == "neu" else "Sitzung fortgesetzt")
-            + (f": {grund}" if grund else ""),
+            + (f": {grund}" if grund else "")
+            + (" · " + " · ".join(zusatz) if zusatz else ""),
             schwere="warnung" if kontext_neustart else "info", task_id=task_id,
+            pause=lauf.get("pause"), cache_kalt=lauf.get("cache_kalt"),
+            cache_gelesen=lauf.get("cache_gelesen"), cache_neu=lauf.get("cache_neu"),
             sitzung=lauf["sitzung"], grund=grund or None,
             kontext_neustart=kontext_neustart or None, thread=lauf.get("thread")))
     verweigert = lauf.get("verweigert")

@@ -620,6 +620,30 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                 </button>
               </div>
             )}
+            {/* Issue #55: Kostendeckel — Tagessumme und, wenn erreicht, der Halt */}
+            {autoInfo.kosten && (
+              <div
+                className={`mt-1 text-[11px] ${
+                  autoInfo.kosten.gesperrt
+                    ? "font-medium text-red-600 dark:text-red-400"
+                    : "text-slate-400"
+                }`}
+              >
+                {autoInfo.kosten.gesperrt
+                  ? t(
+                      "⛔ Tagesgrenze erreicht ({0} $ von {1} $) — Automatik wartet auf deine Antwort im Rückfragen-Banner",
+                      autoInfo.kosten.heute.toFixed(2),
+                      autoInfo.kosten.grenze.toFixed(2),
+                    )
+                  : autoInfo.kosten.grenze > 0
+                    ? t(
+                        "Kosten heute {0} $ von {1} $",
+                        autoInfo.kosten.heute.toFixed(2),
+                        autoInfo.kosten.grenze.toFixed(2),
+                      )
+                    : null}
+              </div>
+            )}
             {logOffen && logText && (
               <pre
                 ref={logRef}

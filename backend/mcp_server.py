@@ -46,7 +46,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import austausch, integrations, mcp_scope, rollen, weckruf
+from app import austausch, integrations, kosten, mcp_scope, rollen, weckruf
 from app.config import load_agents_full, load_settings
 from app.files import decode_text
 from datetime import datetime
@@ -614,6 +614,15 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             except ScopeError as exc:
                 return {"error": str(exc)}
             _log(kanal, "claim_task", agent=wer, task=task_id)
+            # Kostendeckel (Issue #55): bei erreichter Tagesgrenze nimmt die
+            # AUTOMATIK nichts Neues an (Fortsetzen eines schon laufenden
+            # Tasks und der Handbetrieb bleiben frei).
+            if watcher and not erneut:
+                sperre = kosten.gesperrt(MAILBOX_ROOT, wer)
+                if sperre:
+                    return {"error": "Tageskosten-Grenze erreicht — die Automatik wartet "
+                                     "auf die Freigabe des Menschen.",
+                            "kosten_gesperrt": True}
             try:
                 # Issue #46: nur gekennzeichnete Watcher-Ansprüche zählen für
                 # die Aufgabe-Grenze der Pflege; alles andere ist eine Sitzung.

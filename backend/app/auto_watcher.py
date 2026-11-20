@@ -38,7 +38,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from app import ereignisse, weckruf
+from app import ereignisse, kosten, weckruf
 from app.config import load_agents_full, load_settings, save_settings
 
 RECONCILE_INTERVAL = 15   # Sekunden, bis settings-/agents-Änderungen greifen
@@ -166,6 +166,17 @@ def _ssh_cfg(agent: dict[str, Any]) -> dict[str, Any] | None:
                                               conn.get("resume_max_pause")),
         "resume_max_kontext": _erstes_gesetztes(agent.get("resume_max_kontext"),
                                                 conn.get("resume_max_kontext")),
+        # Kosten beim Fortsetzen (Issue #55): kalt ab … Minuten, kompakt ab … Tokens
+        "resume_kalt_minuten": _erstes_gesetztes(agent.get("resume_kalt_minuten"),
+                                                 conn.get("resume_kalt_minuten")),
+        "resume_kompakt_ab": _erstes_gesetztes(agent.get("resume_kompakt_ab"),
+                                               conn.get("resume_kompakt_ab")),
+        # Kostendeckel (Issue #55): Tagesgrenze parkt die Automatik bis zur
+        # Freigabe, Laufgrenze meldet teure Läufe.
+        "max_kosten_tag": _erstes_gesetztes(agent.get("max_kosten_tag"),
+                                            conn.get("max_kosten_tag")),
+        "max_kosten_lauf": _erstes_gesetztes(agent.get("max_kosten_lauf"),
+                                             conn.get("max_kosten_lauf")),
     }
 
 
@@ -219,6 +230,15 @@ def _modell_flags(cfg: dict[str, Any]) -> str:
     return teile
 
 
+def _kosten_grenzen(agent: dict[str, Any]) -> tuple[float, float]:
+    """(max_kosten_tag, max_kosten_lauf) eines Agenten aus agents.yaml."""
+    conn = agent.get("connection") or {}
+    return (kosten.zahl(_erstes_gesetztes(agent.get("max_kosten_tag"),
+                                          conn.get("max_kosten_tag"))),
+            kosten.zahl(_erstes_gesetztes(agent.get("max_kosten_lauf"),
+                                          conn.get("max_kosten_lauf"))))
+
+
 def _resume_flags(cfg: dict[str, Any]) -> str:
     """Kommandozeilen-Anteil für das Fortsetzen der Sitzung.
 
@@ -235,6 +255,15 @@ def _resume_flags(cfg: dict[str, Any]) -> str:
         except (TypeError, ValueError, OverflowError):
             continue
         if zahl > 0:
+            teile += f" {flag} {zahl}"
+    # Issue #55: hier ist 0 ein gültiger Wert (= Regel aus)
+    for feld, flag in (("resume_kalt_minuten", "--resume-kalt-minuten"),
+                       ("resume_kompakt_ab", "--resume-kompakt-ab")):
+        try:
+            zahl = int(float(cfg.get(feld)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if zahl >= 0:
             teile += f" {flag} {zahl}"
     return teile
 
@@ -282,6 +311,7 @@ class AutoWatcherManager:
     def __init__(self) -> None:
         self._watcher: dict[str, _Watcher] = {}
         self._weck = asyncio.Event()
+        self._kosten: dict[str, dict[str, Any]] = {}  # Kostendeckel je Agent (#55)
         self._task: asyncio.Task | None = None
         # Hintergrund-Stopps (M7): Referenz halten, sonst kann der GC einen
         # noch laufenden Task einsammeln.
@@ -325,6 +355,8 @@ class AutoWatcherManager:
                 "weckt": ["task", *arten],
                 "ungeweckt": (weckruf.ungeweckt(MAILBOX_ROOT, name, arten)
                               if gewuenscht.get(name) else 0),
+                # Kostendeckel (Issue #55): {heute, grenze, gesperrt} oder None
+                "kosten": self._kosten.get(name),
                 **(w.als_dict() if w else {"status": "aus", "detail": "", "seit": None,
                                            "log": [], "gesperrt": False}),
             }
@@ -406,6 +438,12 @@ class AutoWatcherManager:
             name = agent.get("name")
             if not name or not gewuenscht.get(name):
                 continue
+            # Kostendeckel (Issue #55): Tagesgrenze + teure Einzelläufe
+            deckel = _kosten_grenzen(agent)
+            if deckel[0] or deckel[1]:
+                self._kosten[name] = kosten.pruefe(MAILBOX_ROOT, name, *deckel)
+            else:
+                self._kosten.pop(name, None)
             arten = weckruf.weck_arten(agent, settings)
             # Issue #65: Post, auf die die Automatik NICHT reagiert, bleibt
             # sonst unbemerkt liegen — einmal je Eintrag ins Ereignis-Log
