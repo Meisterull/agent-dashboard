@@ -11,6 +11,7 @@ import {
   weckeAutomatik,
   setNotaus,
   getOutboxEintrag,
+  getAgentArchiv,
 } from "../api";
 import { bestaetigen, melden } from "./Dialog";
 import RollenDialog from "./RollenDialog";
@@ -171,6 +172,9 @@ const fmtTok = (n) =>
 // dafür ruckelt das sichtbare Panel beim Scrollen nicht von fremden Salven.
 const VERDECKT_MS = 30000;
 
+const fmtBytes = (n) =>
+  n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(0, Math.round((n || 0) / 1024))} KB`;
+
 export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }) {
   const [agents, setAgents] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -183,6 +187,8 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const [plaeneOffen, setPlaeneOffen] = useState(false); // Zeitpläne-Dialog (St.2)
   const [verbrauchOffen, setVerbrauchOffen] = useState(false); // Tages-Aufriss (St.3)
   const [raeumt, setRaeumt] = useState(false); // "alles gelesen" läuft gerade
+  // Monatsarchiv (Issue #60): { agent, eintraege, speicher } — nur auf Knopfdruck
+  const [archiv, setArchiv] = useState(null);
   // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
   // nicht erreichbar — auf dem Handy gibt es auch keine Tooltips.
@@ -873,6 +879,74 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                   );
                 })
               )}
+              {/* Issue #60: Älteres als die Aufbewahrungsfrist liegt im
+                  Monatsarchiv — nur auf Wunsch laden, nie im 8-s-Poll. */}
+              <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-400">
+                <button
+                  onClick={() =>
+                    archiv?.agent === selected
+                      ? setArchiv(null)
+                      : getAgentArchiv(selected)
+                          .then(setArchiv)
+                          .catch((e) =>
+                            melden({ title: t("Fehler"), text: t("Archiv nicht lesbar: {0}", e.message) }),
+                          )
+                  }
+                  className="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100 dark:border-slate-600 dark:hover:bg-slate-800"
+                >
+                  {archiv?.agent === selected ? t("Archiv ausblenden") : t("auch Archiv")}
+                </button>
+                {archiv?.agent === selected && (
+                  <span>
+                    {t(
+                      "Mailbox {0} · Archiv {1}",
+                      fmtBytes(archiv.speicher.aktiv),
+                      fmtBytes(archiv.speicher.archiv),
+                    )}
+                  </span>
+                )}
+              </div>
+              {archiv?.agent === selected &&
+                (archiv.eintraege.length === 0 ? (
+                  <p className="text-slate-400">{t("Archiv ist leer")}</p>
+                ) : (
+                  archiv.eintraege.map((tk, i) => {
+                    const schluessel = `archiv/${tk.task_id || i}`;
+                    const istOffen = offen.has(schluessel);
+                    const ganz = voll[`${selected}/${tk.task_id}`];
+                    const zeige = istOffen && ganz ? ganz : tk;
+                    return (
+                      <div
+                        key={schluessel}
+                        onClick={() => {
+                          toggleOffen(schluessel);
+                          if (!istOffen && tk.gekuerzt && !ganz && tk.task_id)
+                            getOutboxEintrag(selected, tk.task_id)
+                              .then((r) =>
+                                setVoll((v) => ({ ...v, [`${selected}/${tk.task_id}`]: r })),
+                              )
+                              .catch(() => {});
+                        }}
+                        className="mb-1 cursor-pointer rounded border border-dashed border-slate-300 p-1.5 dark:border-slate-700"
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="min-w-0 flex-1 truncate font-mono">{tk.task_id}</span>
+                          <span className="text-slate-400">
+                            {(tk.responded_at || "").slice(0, 10)}
+                          </span>
+                          <StatusBadge status={tk.status} />
+                        </div>
+                        <div
+                          className={`${
+                            istOffen ? "whitespace-pre-wrap break-words" : "truncate"
+                          } text-slate-500 dark:text-slate-400`}
+                        >
+                          {zeige.result}
+                        </div>
+                      </div>
+                    );
+                  })
+                ))}
             </div>
           </>
         )}

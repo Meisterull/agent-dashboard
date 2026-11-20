@@ -19,6 +19,7 @@ const ICON = {
   weckruf: "✉",
   ungeweckt: "✉",
   fehlstart: "⛔",
+  pflege: "🗄",
   send_file: "📤",
   integration: "🔌",
   // Pflege (#47): Vorwarnung je Runde bzw. als Fehlschlag abgeschlossen

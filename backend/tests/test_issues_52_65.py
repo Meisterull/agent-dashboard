@@ -4,6 +4,8 @@
 
   #54  Fehlstart des Watchers steht als `fehlstart` im Ereignis-Log, nicht als
        Handbetrieb; claim_task liefert sender + Zahl der Nachträge
+  #60  Pflege archiviert ins Monatsarchiv statt zu löschen; laufende Tasks
+       behalten ihre Antwort; read_responses(archiv=True) findet Altes
   #65  Post, die einen Automatik-Agenten nicht weckt: Hinweis an den Absender,
        EIN Ereignis je Eintrag, Wahl aus dem Dashboard gewinnt gegen agents.yaml
 """
@@ -84,7 +86,51 @@ def test_54_fehlstart_ist_kein_handbetrieb(ws: Path) -> None:
     assert neu["art"] == "lauf" and not neu["details"].get("handbetrieb"), neu
 
 
-TESTS = [test_54_fehlstart_ist_kein_handbetrieb,
+def test_60_monatsarchiv_statt_loeschen(ws: Path) -> None:
+    import os
+    import time
+    ms = _mcp_server_laden(ws)
+    from app import ereignisse
+    from app.mailbox import Mailbox, pflege
+    _boxen(ws, "dev", "erp")
+    t = _tools(ms)
+    ids = []
+    for text in ("alt", "neu", "laeuft"):
+        g = t["send_task"](to="dev", instruction=text, sender="erp")
+        t["claim_task"](task_id=g["id"], agent="dev")
+        t["complete_task"](task_id=g["id"], result=f"ergebnis {text}", agent="dev")
+        ids.append(g["id"])
+    box = Mailbox(ws / "mailboxes", "dev")
+    frueher = time.time() - 40 * 86400
+    for tid in (ids[0], ids[2]):
+        os.utime(box.outbox / f"{tid}-response.json", (frueher, frueher))
+    # zu ids[2] liegt der Task (wieder) in Arbeit — Antwort bleibt aktiv
+    (box.processing / f"{ids[2]}.json").write_text(json.dumps({"id": ids[2], "kind": "task"}))
+    gescheitert = box.failed / "task-kaputt.json"
+    gescheitert.write_text(json.dumps({"id": "task-kaputt", "instruction": "wichtig"}))
+    os.utime(gescheitert, (frueher, frueher))
+    bericht = pflege(ws / "mailboxes", stale_alter=10**9, archiv_tage=30, failed_tage=90)
+    assert bericht["geloescht"] == 1, bericht
+    assert gescheitert.exists(), ".failed hat die längere Frist"
+    assert not (box.outbox / f"{ids[0]}-response.json").exists()
+    assert (box.outbox / f"{ids[2]}-response.json").exists(), "Task läuft noch"
+    archiv = box.archiv_lesen("outbox")
+    assert [e["task_id"] for e in archiv] == [ids[0]] and archiv[0]["result"] == "ergebnis alt"
+    aktiv = t["read_responses"](worker="dev")
+    assert ids[0] not in [r["task_id"] for r in aktiv], aktiv
+    mit = t["read_responses"](worker="dev", archiv=True)
+    alt = [r for r in mit if r["task_id"] == ids[0]]
+    assert alt and alt[0]["archiviert"] is True, mit
+    assert any(e["art"] == "pflege" for e in ereignisse.lies(ws / "mailboxes", "dev")["eintraege"])
+    # zweiter Pflegelauf hängt ans selbe Monatsarchiv an (gzip-Mitglieder)
+    os.utime(box.outbox / f"{ids[1]}-response.json", (frueher, frueher))
+    pflege(ws / "mailboxes", stale_alter=10**9, archiv_tage=30)
+    assert len(box.archiv_lesen("outbox")) == 2
+    assert box.speicher()["archiv"] > 0
+
+
+TESTS = [test_60_monatsarchiv_statt_loeschen,
+         test_54_fehlstart_ist_kein_handbetrieb,
          test_65_absender_erfaehrt_dass_seine_post_nicht_weckt]
 
 

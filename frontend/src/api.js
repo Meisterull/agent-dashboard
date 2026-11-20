@@ -48,6 +48,9 @@ export const getEreignisse = (name, { limit = 50, vor, probleme } = {}) =>
       (vor ? `&vor=${encodeURIComponent(vor)}` : "") +
       (probleme ? "&probleme=1" : ""),
   );
+// Monatsarchiv einer Mailbox + belegter Platz (Issue #60)
+export const getAgentArchiv = (name, limit = 50) =>
+  jget(`/api/agents/${encodeURIComponent(name)}/archiv?limit=${limit}`);
 export const getOutboxEintrag = (name, taskId) =>
   jget(
     `/api/agents/${encodeURIComponent(name)}/outbox/${encodeURIComponent(taskId)}`,

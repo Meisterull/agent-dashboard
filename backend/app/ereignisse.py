@@ -48,6 +48,8 @@ ARTEN = frozenset({
     "ungeweckt",
     # Watcher-Abbruch VOR dem claude-Start (Issue #54)
     "fehlstart",
+    # Mailbox-Pflege hat archiviert (Issue #60)
+    "pflege",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).

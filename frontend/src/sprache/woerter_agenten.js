@@ -215,6 +215,11 @@ export default {
     "Nothing to wake — these entries were already queued as a wake-up once.",
   "Weckruf fehlgeschlagen: {0}": "Wake-up failed: {0}",
   "Jetzt wecken": "Wake now",
+  "Archiv nicht lesbar: {0}": "Archive not readable: {0}",
+  "Archiv ausblenden": "Hide archive",
+  "auch Archiv": "include archive",
+  "Mailbox {0} · Archiv {1}": "Mailbox {0} · archive {1}",
+  "Archiv ist leer": "Archive is empty",
   "Künftig immer wecken": "Always wake from now on",
   "Leerer Text wird nicht gespeichert — zum Entfernen die Rolle löschen.":
     "Empty text is not saved — delete the role to remove it.",

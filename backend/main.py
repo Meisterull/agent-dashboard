@@ -164,7 +164,12 @@ STALE_TASK_ALTER = float(os.environ.get("MAILBOX_STALE_ALTER", "10800"))  # 3 h
 # und baut dann stundenlang ohne Dashboard-Kontakt, nachts arbeitet niemand) —
 # und werden nie aufgegeben. Die 3 h oben gelten für Watcher-Ansprüche.
 STALE_SITZUNG_ALTER = float(os.environ.get("MAILBOX_STALE_ALTER_SITZUNG", "86400"))  # 24 h
-ARCHIV_TAGE = float(os.environ.get("MAILBOX_ARCHIV_TAGE", "30"))
+# Aufbewahrungsfrist des aktiven Bereichs (Issue #60): Älteres wandert ins
+# Monatsarchiv <mailbox>/.archiv/<JJJJ-MM>.jsonl.gz statt gelöscht zu werden.
+# MAILBOX_ARCHIV_TAGE ist der ältere Name derselben Einstellung.
+ARCHIV_TAGE = float(os.environ.get("MAILBOX_AUFBEWAHRUNG_TAGE")
+                    or os.environ.get("MAILBOX_ARCHIV_TAGE", "30"))
+FAILED_TAGE = float(os.environ.get("MAILBOX_FAILED_TAGE", "90"))
 # Issue #21: alte response/answer wandern auch aus der INBOX ins Archiv — sonst
 # wächst sie bei einem Agenten, der nie mark_read ruft, unbegrenzt weiter (und
 # das Agenten-Panel zieht den ganzen Stapel alle 8 s mit). Tasks/Fragen bleiben
@@ -186,7 +191,7 @@ async def _mailbox_pflege_schleife() -> None:
         try:
             bericht = await asyncio.to_thread(
                 mailbox_pflege, MAILBOXES, STALE_TASK_ALTER, ARCHIV_TAGE,
-                INBOX_TAGE, STALE_SITZUNG_ALTER
+                INBOX_TAGE, STALE_SITZUNG_ALTER, FAILED_TAGE
             )
         except Exception as exc:  # noqa: BLE001 — Pflege darf die API nie killen
             print(f"{_log_zeit()} [pflege] Fehler: {exc}", flush=True)
@@ -201,7 +206,7 @@ async def _mailbox_pflege_schleife() -> None:
             print(
                 f"{_log_zeit()} [pflege] wieder eingereiht: {bericht['requeued'] or '-'}; "
                 f"aufgegeben: {bericht['aufgegeben'] or '-'}; "
-                f"alte Ablagen gelöscht: {bericht['geloescht']}",
+                f"alte Ablagen archiviert: {bericht['geloescht']}",
                 flush=True,
             )
 
@@ -501,7 +506,19 @@ async def agent_outbox_eintrag(name: str, task_id: str) -> dict:
         return await asyncio.to_thread(
             lambda: json.loads(pfad.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        raise HTTPException(404, f"Antwort zu {task_id} nicht gefunden.") from None
+        pass
+    # Issue #60: ältere Antworten liegen im Monatsarchiv
+    def im_archiv() -> dict | None:
+        if not base.is_dir():
+            return None
+        for e in Mailbox(MAILBOXES, name).archiv_lesen("outbox"):
+            if e.get("_datei") == pfad.name:
+                return e
+        return None
+    gefunden = await asyncio.to_thread(im_archiv)
+    if gefunden is None:
+        raise HTTPException(404, f"Antwort zu {task_id} nicht gefunden.")
+    return gefunden
 
 
 def _agent_tasks_sync(name: str, base: Path) -> dict:
@@ -539,6 +556,26 @@ def _agent_tasks_sync(name: str, base: Path) -> dict:
             schwelle=int(load_settings().get("verbrauch_schwelle_5h") or 0),
         ),
     }
+
+
+@app.get("/api/agents/{name}/archiv")
+async def agent_archiv(name: str, ablage: str = "outbox", limit: int = 50) -> dict:
+    """Monatsarchiv einer Mailbox (Issue #60): was die Pflege aus Outbox,
+    inbox/.archive und .failed ausgelagert hat — plus der belegte Platz."""
+    base = _agent_base(name)
+    if not base.is_dir():
+        raise HTTPException(404, f"keine Mailbox '{name}'")
+    if ablage not in ("outbox", "inbox-archiv", "failed", "alle"):
+        raise HTTPException(400, "ablage: outbox | inbox-archiv | failed | alle")
+
+    def lesen() -> dict:
+        box = Mailbox(MAILBOXES, name)
+        eintraege = box.archiv_lesen(None if ablage == "alle" else ablage,
+                                     max(1, min(int(limit), 500)))
+        return {"agent": name, "eintraege": [_kuerze_eintrag(e) for e in eintraege],
+                "speicher": box.speicher()}
+
+    return await asyncio.to_thread(lesen)
 
 
 @app.get("/api/agents/{name}/inbox")

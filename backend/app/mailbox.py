@@ -25,6 +25,7 @@ Protokoll:
 """
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import re
@@ -491,7 +492,8 @@ class Mailbox:
                 continue  # offener Task
         return weg
 
-    def read_responses(self, limit: int | None = None) -> list[dict[str, Any]]:
+    def read_responses(self, limit: int | None = None,
+                       mit_archiv: bool = False) -> list[dict[str, Any]]:
         """Antworten aus der Outbox, neueste zuerst.
 
         `limit` deckelt die Menge: die Outbox wächst unbegrenzt, und ein
@@ -506,6 +508,10 @@ class Mailbox:
                 # Halb geschriebene Datei beim nächsten Tick erneut versuchen.
                 continue
         out.sort(key=lambda r: str(r.get("responded_at") or ""), reverse=True)
+        if mit_archiv and (not limit or len(out) < limit):
+            # Monatsarchiv (Issue #60): alles dort ist älter als der aktive Bereich
+            out += [{**r, "archiviert": True} for r in self.archiv_lesen(
+                "outbox", limit - len(out) if limit else None)]
         return out[:limit] if limit else out
 
     # --- Agent-Seite (Watcher) --------------------------------------------
@@ -1245,7 +1251,74 @@ class Mailbox:
         except (ValueError, OSError):
             pass
 
-    def aufraeumen(self, max_tage: float, inbox_tage: float = 0) -> int:
+    @property
+    def monatsarchiv(self) -> Path:
+        return self.base / ".archiv"
+
+    def _ins_monatsarchiv(self, pfad: Path, ablage: str, mtime: float) -> bool:
+        """Eine Ablage-Datei als Zeile ans Monatsarchiv hängen (Issue #60).
+        gzip erlaubt aneinandergehängte Mitglieder — Anhängen kostet kein
+        Neupacken. False = nicht archiviert (Datei bleibt dann liegen)."""
+        try:
+            env = json.loads(pfad.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            env = {"_roh": pfad.read_text(encoding="utf-8", errors="replace")}
+        if not isinstance(env, dict):
+            env = {"_roh": env}
+        env["_ablage"], env["_datei"] = ablage, pfad.name
+        monat = time.strftime("%Y-%m", time.localtime(mtime))
+        self.monatsarchiv.mkdir(parents=True, exist_ok=True)
+        try:
+            with gzip.open(self.monatsarchiv / f"{monat}.jsonl.gz", "at", encoding="utf-8") as f:
+                f.write(json.dumps(env, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except OSError:
+            return False
+        return True
+
+    def archiv_lesen(self, ablage: str | None = "outbox", limit: int | None = None,
+                     monate: int | None = None) -> list[dict[str, Any]]:
+        """Einträge aus den Monatsarchiven, neueste zuerst (Issue #60).
+        `ablage` filtert auf outbox | inbox-archiv | failed (None = alles)."""
+        out: list[dict[str, Any]] = []
+        dateien = sorted(self.monatsarchiv.glob("*.jsonl.gz"), reverse=True)
+        for datei in dateien[:monate] if monate else dateien:
+            try:
+                with gzip.open(datei, "rt", encoding="utf-8") as f:
+                    zeilen = f.read().splitlines()
+            except (OSError, EOFError, UnicodeDecodeError):
+                continue
+            teil = []
+            for z in zeilen:
+                try:
+                    env = json.loads(z)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(env, dict) and (ablage is None or env.get("_ablage") == ablage):
+                    teil.append(env)
+            teil.sort(key=lambda r: str(r.get("responded_at") or r.get("created_at") or ""),
+                      reverse=True)
+            out += teil
+            if limit and len(out) >= limit:
+                break
+        return out[:limit] if limit else out
+
+    def speicher(self) -> dict[str, int]:
+        """Belegter Platz der Mailbox in Bytes: aktiv und Monatsarchiv."""
+        aktiv = archiv = 0
+        for p in self.base.rglob("*"):
+            try:
+                if not p.is_file():
+                    continue
+                if self.monatsarchiv in p.parents:
+                    archiv += p.stat().st_size
+                else:
+                    aktiv += p.stat().st_size
+            except OSError:
+                continue
+        return {"aktiv": aktiv, "archiv": archiv}
+
+    def aufraeumen(self, max_tage: float, inbox_tage: float = 0,
+                   failed_tage: float = 0) -> int:
         """Alte Ablagen rotieren: .archive/, .failed/ und Outbox-Responses.
 
         Ohne das wächst die Mailbox unbegrenzt — und `read_responses` bzw. das
@@ -1256,21 +1329,38 @@ class Mailbox:
         bei einem Agenten, der nur beauftragt und nie `mark_read` ruft. Tasks
         und Fragen bleiben ausdrücklich liegen — das ist Arbeitsvorrat, kein
         Protokoll, und niemand darf ihn im Hintergrund verschwinden lassen.
-        Gelöscht wird hier nichts: die Envelopes wandern ins Archiv und
-        verfallen erst dort nach `max_tage`. Deshalb ist `inbox_tage` sinnvoll
+        Die Envelopes wandern ins Archiv und von dort nach `max_tage` ins
+        Monatsarchiv (Issue #60). Deshalb ist `inbox_tage` sinnvoll
         kleiner als `max_tage`.
         """
-        grenze = time.time() - max_tage * 86400
+        # Issue #60: nichts wird mehr gelöscht — Abgelaufenes wandert
+        # zeilenweise in ein Monatsarchiv `<mailbox>/.archiv/<JJJJ-MM>.jsonl.gz`
+        # (Feld `_ablage` = Herkunft). `.failed` hat die längere Frist: dort
+        # liegt die einzige Kopie einer gescheiterten instruction (#15).
+        jetzt = time.time()
         weg = 0
-        for ordner in (self.archive, self.failed, self.outbox):
-            for p in ordner.glob("*.json"):
-                try:
-                    if p.stat().st_mtime >= grenze:
+        fristen = ((self.archive, "inbox-archiv", max_tage),
+                   (self.failed, "failed", failed_tage if failed_tage else max_tage),
+                   (self.outbox, "outbox", max_tage))
+        with self._lock():
+            # Nie archivieren: Antworten, deren Task noch läuft bzw. auf eine
+            # Rückfrage wartet (liegt dann noch in .processing/ oder inbox/).
+            offen = {p.stem for o in (self.processing, self.inbox) for p in o.glob("*.json")}
+            for ordner, ablage, tage in fristen:
+                grenze = jetzt - tage * 86400
+                for p in sorted(ordner.glob("*.json")):
+                    try:
+                        mtime = p.stat().st_mtime
+                        if mtime >= grenze:
+                            continue
+                        if ablage == "outbox" and p.stem.removesuffix("-response") in offen:
+                            continue
+                        if not self._ins_monatsarchiv(p, ablage, mtime):
+                            continue
+                        p.unlink()
+                        weg += 1
+                    except OSError:
                         continue
-                    p.unlink()
-                    weg += 1
-                except OSError:
-                    continue
         if inbox_tage > 0:
             grenze_inbox = time.time() - inbox_tage * 86400
             with self._lock():
@@ -1308,6 +1398,7 @@ def alle_mailboxen(root: str | os.PathLike) -> list["Mailbox"]:
 def pflege(
     root: str | os.PathLike, stale_alter: float, archiv_tage: float,
     inbox_tage: float = 0, stale_alter_sitzung: float | None = None,
+    failed_tage: float = 0,
 ) -> dict[str, Any]:
     """Periodische Mailbox-Pflege: verwaiste Tasks + alte Ablagen.
 
@@ -1326,7 +1417,13 @@ def pflege(
                 stale_alter, max_alter_sitzung=stale_alter_sitzung)
             bericht["requeued"] += [f"{box.agent}/{t}" for t in ergebnis["requeued"]]
             bericht["aufgegeben"] += [f"{box.agent}/{t}" for t in ergebnis["aufgegeben"]]
-            bericht["geloescht"] += box.aufraeumen(archiv_tage, inbox_tage)
+            archiviert = box.aufraeumen(archiv_tage, inbox_tage, failed_tage)
+            bericht["geloescht"] += archiviert
+            if archiviert:
+                # Issue #60: je Pflegelauf EIN Eintrag im Ereignis-Log
+                ereignisse.schreibe(root, box.agent, "pflege",
+                                    f"{archiviert} alte Einträge archiviert",
+                                    anzahl=archiviert)
         except OSError:
             continue
     return bericht

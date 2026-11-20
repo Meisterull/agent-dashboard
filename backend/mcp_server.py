@@ -536,7 +536,8 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
 
     if on("read_responses"):
         @werkzeug
-        def read_responses(worker: str, for_sender: str | None = None, limit: int = 20) -> list[dict]:
+        def read_responses(worker: str, for_sender: str | None = None, limit: int = 20,
+                           archiv: bool = False) -> list[dict]:
             """Rückmeldungen aus der Outbox eines BEARBEITERS lesen (Archiv erledigter Tasks).
 
             `worker` ist der Agent, der für dich gearbeitet hat — NICHT dein eigener
@@ -547,6 +548,8 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             `for_sender` filtert die Outbox auf Antworten an einen bestimmten
             Auftraggeber; auf einem gebundenen Kanal ist das immer dein Name.
             `limit` begrenzt auf die neuesten Einträge (die Outbox ist ein Archiv).
+            `archiv=True` nimmt das Monatsarchiv dazu — Antworten, die älter
+            als die Aufbewahrungsfrist sind (dann mit `archiviert: true`).
             """
             if identity is not None:
                 try:
@@ -559,7 +562,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             unbekannt = _pruefe_empfaenger(worker)
             if unbekannt:
                 return [unbekannt]
-            out = Mailbox(MAILBOX_ROOT, worker).read_responses()
+            out = Mailbox(MAILBOX_ROOT, worker).read_responses(mit_archiv=bool(archiv))
             if for_sender:
                 out = [r for r in out if r.get("to") == for_sender]
             return out[: max(1, limit)]
