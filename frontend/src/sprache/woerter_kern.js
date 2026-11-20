@@ -1,6 +1,14 @@
 // Deutsch → Englisch. Teil des Wörterbuchs, zusammengelegt in ../sprache.js.
 // Kern: App.jsx, Settings.jsx, Gemeinsames.
 export default {
+  "Tagesbericht per Push": "Daily report by push",
+  "Einmal am Tag je Agent: erledigt, Kosten, offene Rückfragen und Freigaben, liegende Tasks, anstehende Deploys. Die Seite (📋 im Agenten-Panel) gibt es auch ohne Push.":
+    "Once a day per agent: done, cost, open questions and approvals, waiting tasks, pending deploys. The page (📋 in the agents panel) exists without the push as well.",
+  "um": "at",
+  "nur wöchentlich (am letzten gewählten Wochentag)": "weekly only (on the last selected weekday)",
+  "nur senden, wenn etwas passiert ist": "send only if something happened",
+  "Pause bis (Urlaub)": "Pause until (holiday)",
+  "pausiert": "paused",
   "Mo": "Mon", "Di": "Tue", "Mi": "Wed", "Do": "Thu", "Fr": "Fri", "Sa": "Sat", "So": "Sun",
   "Hinweis, wenn Tasks liegen bleiben": "Notify when tasks stay untouched",
   "Automatik aus und ein Task wartet zu lange — oder er ist beansprucht, aber still: ein gebündelter Push je Agent, mit „Per Automatik abarbeiten“ und „24 h Ruhe“.":

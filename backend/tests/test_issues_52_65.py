@@ -22,6 +22,8 @@
        Phasenmeldung, Ausgang geht an den Menschen
   #62  Modell je Task nur aus der Allowlist des Empfängers; Rolle friert ihr
        Modell ein; claim reicht beides an den Watcher; Kosten je Modell
+  #63  Tagesbericht: feste Auswertung, Kurzzeile, Fälligkeit (Default aus,
+       Uhrzeit, Wochentag, Pause, einmal am Tag), „nur wenn etwas war"
   #64  Geheimnisse: verschlüsselt abgelegt, nur Namen lesbar, Schwärzen,
        Übergabe-Zeile für den Watcher, Systemvariablen verboten
   #65  Post, die einen Automatik-Agenten nicht weckt: Hinweis an den Absender,
@@ -536,7 +538,55 @@ def test_61_deploy_pakete(ws: Path) -> None:
     assert log[0]["schwere"] == "fehler", log
 
 
-TESTS = [test_61_deploy_pakete,
+def test_63_tagesbericht(ws: Path) -> None:
+    from datetime import datetime, timedelta
+    ms = _mcp_server_laden(ws)
+    from app import tagesbericht
+    root = ws / "mailboxes"
+    _boxen(ws, "deverp", "erp", "zabbix", "orchestrator")
+    t = _tools(ms)
+    for nr, (status, usd) in enumerate([("done", 2.0), ("done", 15.5), ("error", 0.5)]):
+        g = t["send_task"](to="deverp", instruction=f"Aufgabe {nr}\nmehr Text", sender="erp")
+        t["claim_task"](task_id=g["id"], agent="deverp", watcher=True)
+        t["complete_task"](task_id=g["id"], agent="deverp", result="r", status=status,
+                           verbrauch={"total_cost_usd": usd, "input_tokens": 1000},
+                           lauf={"session_id": "sitz-0001-aaaa"})
+    t["ask"](to="orchestrator", question="Darf ich Prod anfassen?", sender="deverp")
+    t["deploy_status"](token="DV", phase="ausgestellt", flags=["MIGRATE"], sender="deverp")
+    b = tagesbericht.erstelle(root, "deverp")
+    assert (len(b["erledigt"]), b["zahl"]["error"], b["kosten"]) == (3, 1, 18.0), b
+    assert b["groesster_lauf"]["kosten"] == 15.5 and b["groesster_lauf"]["titel"] == "Aufgabe 1"
+    assert len(b["rueckfragen"]) == 1 and len(b["fehlgeschlagen"]) == 1 and b["pakete"][0]["token"] == "DV"
+    assert b["kurz"] == "deverp: 3 erledigt (1 Fehler) · 18,00 $ · 1 Rückfrage offen · Deploy DV (MIGRATE)", b["kurz"]
+    ruhig = tagesbericht.erstelle(root, "zabbix")
+    assert not ruhig["etwas_passiert"] and ruhig["kurz"] == "zabbix: nichts passiert"
+    assert [x["agent"] for x in tagesbericht.alle(root, mit_ruhigen=False)] == ["deverp"]
+    gestern = datetime.now().astimezone().date() - timedelta(days=1)
+    assert tagesbericht.erstelle(root, "deverp", gestern)["erledigt"] == []
+    # Fälligkeit
+    mo = datetime(2026, 11, 16, 17, 45).astimezone()
+    assert tagesbericht.faellig({}, root, mo) is False, "Default aus"
+    an = {"tagesbericht": {"an": True, "zeit": "17:30"}}
+    assert tagesbericht.faellig(an, root, mo.replace(hour=17, minute=0)) is False
+    assert tagesbericht.faellig(an, root, mo + timedelta(days=5)) is False, "Samstag"
+    assert tagesbericht.faellig({"tagesbericht": {"an": True, "push": False}}, root, mo) is False
+    pause = {"tagesbericht": {"an": True, "pause_bis": (mo + timedelta(days=3)).isoformat()}}
+    assert tagesbericht.faellig(pause, root, mo) is False
+    woche = {"tagesbericht": {"an": True, "woechentlich": True}}
+    assert tagesbericht.faellig(woche, root, mo) is False and tagesbericht.faellig(
+        woche, root, mo + timedelta(days=4)) is True
+    assert tagesbericht.faellig(an, root, mo) is True
+    tagesbericht.merke_gesendet(root, mo)
+    assert tagesbericht.faellig(an, root, mo + timedelta(minutes=5)) is False, "einmal am Tag"
+    assert tagesbericht.faellig(an, root, mo + timedelta(days=1)) is True
+    text = tagesbericht.push_text(root, an)
+    assert text.startswith("deverp: 3 erledigt") and "zabbix" not in text, text
+    assert tagesbericht.push_text(root, {"tagesbericht": {"ohne": ["deverp"]}}) is None
+    assert tagesbericht.pausiere(an, 0)["an"] is False and tagesbericht.pausiere(an, 7)["pause_bis"]
+
+
+TESTS = [test_63_tagesbericht,
+         test_61_deploy_pakete,
          test_58_vorgaenge,
          test_59_liegende_tasks,
          test_52_erinnerungen,

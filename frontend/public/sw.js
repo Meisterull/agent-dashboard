@@ -24,7 +24,10 @@ self.addEventListener("push", (event) => {
     : "Open";
   const optionen = Array.isArray(d.optionen) ? d.optionen.slice(0, platz) : [];
   // Liegende Tasks (Issue #59): sprechende Knopftexte statt der Kürzel
-  const TITEL = { automatik: "Per Automatik", pause: "24 h Ruhe" };
+  const TITEL = {
+    automatik: "Per Automatik", pause: "24 h Ruhe",
+    pause7: "1 Woche Pause", abbestellen: "Abbestellen",
+  };
   const actions = optionen.map((o) => ({
     action: `antwort:${o}`,
     title: TITEL[o] || o.charAt(0).toUpperCase() + o.slice(1),
@@ -96,6 +99,23 @@ self.addEventListener("notificationclick", (event) => {
           credentials: "same-origin",
         },
       )
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+        })
+        .catch(() => fensterOeffnen(ziel)),
+    );
+    return;
+  }
+
+  // Tagesbericht (Issue #63): pausieren bzw. abbestellen direkt aus dem Push
+  if (aktion.startsWith("antwort:") && d.art === "bericht") {
+    event.waitUntil(
+      fetch("/api/tagesbericht/pause", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tage: aktion.endsWith("pause7") ? 7 : 0 }),
+        credentials: "same-origin",
+      })
         .then((r) => {
           if (!r.ok) throw new Error(String(r.status));
         })

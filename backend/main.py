@@ -120,7 +120,7 @@ from app.files import (
 )
 from app.remote_files import RemoteFilesError
 from app import austausch, erinnerungen, freigaben, geheimnisse, liegezeit, zwischenspeicher
-from app import pakete, vorgaenge
+from app import pakete, tagesbericht, vorgaenge
 from app import container
 from app import upload
 from app.austausch import AustauschError
@@ -250,6 +250,20 @@ async def _erinnerungen_schleife() -> None:
                       f"als {e['art']}", flush=True)
         except Exception as exc:  # noqa: BLE001 — die Schleife darf nie sterben
             print(f"{_log_zeit()} [erinnerung] Fehler: {exc}", flush=True)
+        # Tagesbericht (Issue #63): derselbe Takt, eine Meldung am Tag
+        try:
+            settings = load_settings()
+            if tagesbericht.faellig(settings, MAILBOXES):
+                text = await asyncio.to_thread(tagesbericht.push_text, MAILBOXES, settings)
+                tagesbericht.merke_gesendet(MAILBOXES)
+                if text:
+                    await push.sende_an_alle(
+                        "📋 Tagesbericht", text, tag="tagesbericht",
+                        url="/?tab=agenten&zeige=bericht",
+                        extra={"art": "bericht", "optionen": ["pause7", "abbestellen"]})
+                    print(f"{_log_zeit()} [bericht] Tagesbericht gesendet", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{_log_zeit()} [bericht] Fehler: {exc}", flush=True)
         await asyncio.sleep(ERINNERUNG_TAKT)
 
 
@@ -428,6 +442,8 @@ class SettingsIn(BaseModel):
     verbrauch_schwelle_5h: int | None = None
     # Hinweis auf liegende Tasks (Issue #59) — Felder siehe liegezeit.STANDARD
     liegezeit: dict | None = None
+    # Tagesbericht (Issue #63) — Felder siehe tagesbericht.STANDARD
+    tagesbericht: dict | None = None
 
 
 # --- Health / Agenten / Tasks ---------------------------------------------
@@ -1987,6 +2003,35 @@ async def freigabe_einstellung(agent: str, body: FreigabeEinstellungIn) -> dict:
             **({"warnung": "Diese Muster enthalten etwas, das wie Zugangsdaten aussieht — "
                            "besser ein Geheimnis anlegen und im Befehl $NAME schreiben: "
                            + "; ".join(warnung)} if warnung else {})}
+
+
+# --- Tagesbericht (Issue #63) -------------------------------------------------
+
+class BerichtPauseIn(BaseModel):
+    tage: int   # > 0 = so viele Tage Pause; 0 = abbestellen (aus)
+
+
+@app.get("/api/tagesbericht")
+async def tagesbericht_seite(tag: str | None = None) -> dict:
+    """Die Berichts-Seite: je Agent die feste Auswertung eines Tages — gibt
+    es immer, auch wenn kein Push eingeschaltet ist."""
+    from datetime import date as _date
+    try:
+        wann = _date.fromisoformat(tag) if tag else None
+    except ValueError:
+        raise HTTPException(400, "tag: JJJJ-MM-TT") from None
+    settings = load_settings()
+    berichte = await asyncio.to_thread(tagesbericht.alle, MAILBOXES, wann, settings)
+    return {"tag": (wann or _date.today()).isoformat(), "berichte": berichte,
+            "einstellung": tagesbericht.einstellung(settings)}
+
+
+@app.post("/api/tagesbericht/pause")
+async def tagesbericht_pause(body: BerichtPauseIn) -> dict:
+    """Aus dem Push heraus: eine Woche pausieren bzw. abbestellen."""
+    neu = tagesbericht.pausiere(load_settings(), int(body.tage))
+    save_settings({"tagesbericht": neu})
+    return neu
 
 
 # --- Deploy-Pakete (Issue #61) -----------------------------------------------

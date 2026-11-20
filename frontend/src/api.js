@@ -112,6 +112,9 @@ export const setVorgangNotiz = (vorgang, notiz) =>
 export const getPakete = () => jget("/api/pakete");
 export const setPaketPhase = (token, phase, notiz) =>
   jsend(`/api/pakete/${encodeURIComponent(token)}/phase`, "POST", { phase, notiz });
+// Tagesbericht (Issue #63)
+export const getTagesbericht = (tag) =>
+  jget(tag ? `/api/tagesbericht?tag=${encodeURIComponent(tag)}` : "/api/tagesbericht");
 export const getAutomatik = () => jget("/api/automatik");
 // `weckt` (Issue #65): beim Einschalten gleich festlegen, was außer Tasks weckt.
 export const setAutomatik = (name, an, weckt) =>

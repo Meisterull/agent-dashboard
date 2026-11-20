@@ -64,6 +64,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # {name: {an, timeout, immer: [Muster], nie: [Muster]}}. Gepflegt über
     # /api/freigaben (Dialog im Agenten-Panel).
     "freigaben": {},
+    # Tagesbericht je Agent (Issue #63, app/tagesbericht.py) — Default AUS.
+    # {an, push, zeit, tage, woechentlich, nur_wenn_etwas, ohne, pause_bis}
+    "tagesbericht": {},
     # Hinweis auf liegende Tasks im Handbetrieb (Issue #59, app/liegezeit.py):
     # {an, schwelle_min, still_min, von, bis, tage, ohne, agents, pause_bis}.
     # Fehlende Felder = Standard aus liegezeit.STANDARD.

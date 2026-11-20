@@ -79,10 +79,65 @@ export function Liegezeit({ settings, update }) {
   );
 }
 
+const BERICHT_STANDARD = {
+  an: false, push: true, zeit: "17:30", tage: [0, 1, 2, 3, 4],
+  woechentlich: false, nur_wenn_etwas: true, ohne: [], pause_bis: null,
+};
+
+export function Tagesbericht({ settings, update }) {
+  const b = { ...BERICHT_STANDARD, ...(settings.tagesbericht || {}) };
+  const setze = (feld, wert) => update("tagesbericht", { ...b, [feld]: wert });
+  const pausiert = b.pause_bis && new Date(b.pause_bis) > new Date();
+  return (
+    <div>
+      <label className="flex items-start gap-2">
+        <input type="checkbox" checked={!!b.an} onChange={(e) => setze("an", e.target.checked)} className="mt-0.5" />
+        <span>
+          <span className="font-medium text-slate-600 dark:text-slate-300">{t("Tagesbericht per Push")}</span>
+          <span className="block text-xs text-slate-400">
+            {t("Einmal am Tag je Agent: erledigt, Kosten, offene Rückfragen und Freigaben, liegende Tasks, anstehende Deploys. Die Seite (📋 im Agenten-Panel) gibt es auch ohne Push.")}
+          </span>
+        </span>
+      </label>
+      {b.an && (
+        <div className="mt-2 space-y-2 pl-6 text-xs text-slate-600 dark:text-slate-300">
+          <label className="flex flex-wrap items-center gap-2">
+            {t("um")}
+            <input type="time" value={b.zeit} onChange={(e) => setze("zeit", e.target.value)} className={zahl + " w-28"} />
+            <TageWahl tage={b.tage || []} onChange={(tage) => setze("tage", tage)} />
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={!!b.woechentlich} onChange={(e) => setze("woechentlich", e.target.checked)} />
+            {t("nur wöchentlich (am letzten gewählten Wochentag)")}
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={!!b.nur_wenn_etwas} onChange={(e) => setze("nur_wenn_etwas", e.target.checked)} />
+            {t("nur senden, wenn etwas passiert ist")}
+          </label>
+          <label className="block">
+            {t("nie für diese Agenten (durch Komma getrennt)")}
+            <input
+              defaultValue={(b.ohne || []).join(", ")}
+              onBlur={(e) => setze("ohne", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))}
+              className="mt-1 w-full rounded border border-slate-300 px-2 py-1 dark:border-slate-600 dark:bg-slate-800"
+            />
+          </label>
+          <label className="flex flex-wrap items-center gap-2">
+            {t("Pause bis (Urlaub)")}
+            <input type="date" value={(b.pause_bis || "").slice(0, 10)} onChange={(e) => setze("pause_bis", e.target.value ? e.target.value + "T23:59" : null)} className={zahl + " w-36"} />
+            {pausiert && <span className="text-amber-600 dark:text-amber-400">{t("pausiert")}</span>}
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function MeldungenEinstellungen({ settings, update, children }) {
   return (
     <div className="space-y-3 text-sm">
       <Liegezeit settings={settings} update={update} />
+      <Tagesbericht settings={settings} update={update} />
       {children}
     </div>
   );

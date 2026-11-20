@@ -20,6 +20,7 @@ import GeheimnisseAbschnitt from "./GeheimnisseAbschnitt";
 import Erinnerungen from "./Erinnerungen";
 import VorgaengeDialog from "./VorgaengeDialog";
 import PaketeDialog from "./PaketeDialog";
+import TagesberichtDialog from "./TagesberichtDialog";
 import RollenDialog from "./RollenDialog";
 import ZeitplaeneDialog from "./ZeitplaeneDialog";
 import { t } from "../sprache";
@@ -205,6 +206,16 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   const [freigabenOffen, setFreigabenOffen] = useState(false); // Dialog (Issue #56)
   const [vorgaengeOffen, setVorgaengeOffen] = useState(null); // null | {start} (Issue #58)
   const [paketeOffen, setPaketeOffen] = useState(false); // Deploy-Panel (Issue #61)
+  // Tagesbericht (Issue #63) — auch per Push-Tipp: /?zeige=bericht beim Start
+  // bzw. das Ereignis dashboard:zeige in der schon laufenden App.
+  const [berichtOffen, setBerichtOffen] = useState(
+    () => new URLSearchParams(window.location.search).get("zeige") === "bericht",
+  );
+  useEffect(() => {
+    const zeige = (e) => e.detail === "bericht" && setBerichtOffen(true);
+    window.addEventListener("dashboard:zeige", zeige);
+    return () => window.removeEventListener("dashboard:zeige", zeige);
+  }, []);
   // Antippen klappt eine Task-Karte auf (F1 light): Instruction/Ergebnis
   // sind sonst auf eine truncate-Zeile gestutzt und der Volltext war gar
   // nicht erreichbar — auf dem Handy gibt es auch keine Tooltips.
@@ -509,6 +520,13 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
           className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
         >
           ⏰
+        </button>
+        <button
+          onClick={() => setBerichtOffen(true)}
+          title={t("Tagesbericht — erledigt, Kosten, Offenes je Agent")}
+          className="rounded px-1.5 py-0.5 hover:bg-slate-200 dark:hover:bg-slate-800"
+        >
+          📋
         </button>
         <button
           onClick={() => setPaketeOffen(true)}
@@ -1095,6 +1113,15 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
         )}
       </div>
       {rollenOffen && <RollenDialog onClose={() => setRollenOffen(false)} />}
+      {berichtOffen && (
+        <TagesberichtDialog
+          onClose={() => setBerichtOffen(false)}
+          onVorgang={(v) => {
+            setBerichtOffen(false);
+            setVorgaengeOffen({ start: v });
+          }}
+        />
+      )}
       {paketeOffen && (
         <PaketeDialog
           onClose={() => setPaketeOffen(false)}

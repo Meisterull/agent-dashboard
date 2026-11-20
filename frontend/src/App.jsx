@@ -249,8 +249,12 @@ export default function App() {
     if (!("serviceWorker" in navigator)) return;
     const onNachricht = (e) => {
       if (e.data?.typ !== "navigiere" || !e.data.url) return;
-      const ziel = new URL(e.data.url, window.location.origin).searchParams.get("tab");
+      const params = new URL(e.data.url, window.location.origin).searchParams;
+      const ziel = params.get("tab");
       if (TABS.some(([id]) => id === ziel)) switchTabRef.current(ziel);
+      // „zeige" öffnet in der laufenden App einen Dialog (Tagesbericht, #63)
+      if (params.get("zeige"))
+        window.dispatchEvent(new CustomEvent("dashboard:zeige", { detail: params.get("zeige") }));
     };
     navigator.serviceWorker.addEventListener("message", onNachricht);
     return () =>
