@@ -66,6 +66,7 @@ def aggregiere(responses: list[dict[str, Any]],
     tage: dict[str, dict[str, Any]] = {}
     for zurueck in range(TAGE_ANZEIGE):
         tage[(jetzt - timedelta(days=zurueck)).date().isoformat()] = _leer()
+    modelle: dict[str, dict[str, Any]] = {}  # je Modell über die 7 Tage (Issue #62)
     for r in responses:
         if not isinstance(r, dict):
             continue
@@ -79,6 +80,10 @@ def aggregiere(responses: list[dict[str, Any]],
         tag = wann.date().isoformat()
         if tag in tage:
             _addiere(tage[tag], r.get("verbrauch"))
+            lauf = r.get("lauf") if isinstance(r.get("lauf"), dict) else {}
+            if lauf.get("modell") and isinstance(r.get("verbrauch"), dict):
+                _addiere(modelle.setdefault(str(lauf["modell"])[:64], _leer()),
+                         r.get("verbrauch"))
         if wann.date() == jetzt.date():
             _addiere(heute, r.get("verbrauch"))
         if wann >= fenster_ab:
@@ -87,6 +92,8 @@ def aggregiere(responses: list[dict[str, Any]],
         "heute": heute,
         "fenster5h": fenster,
         "tage": [{"datum": d, **tage[d]} for d in sorted(tage, reverse=True)],
+        "modelle": [{"modell": m, **modelle[m]}
+                    for m in sorted(modelle, key=lambda m: -modelle[m]["kosten"])],
         "schwelle": int(schwelle or 0),
         "ueber_schwelle": bool(schwelle) and fenster["tokens"] >= int(schwelle),
     }

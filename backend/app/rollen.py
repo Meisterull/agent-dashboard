@@ -39,6 +39,10 @@ class RollenFehler(ValueError):
     """Unbekannte Rolle oder ungültige Rollen-Datei — mit Klartext."""
 
 
+# Modellname für `claude --model` (Issue #62) — wie MODEL_RE im Watcher.
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
 def _parse(text: str) -> dict[str, Any]:
     """Frontmatter + Prompt aus dem Dateitext; tolerant, aber ehrlich.
 
@@ -77,8 +81,12 @@ def _parse(text: str) -> dict[str, Any]:
     mode = meta.get("permission_mode")
     if mode is not None and not isinstance(mode, str):
         raise RollenFehler("permission_mode muss ein Text sein")
+    model = meta.get("model")
+    if model is not None and not (isinstance(model, str) and MODEL_RE.fullmatch(model.strip())):
+        raise RollenFehler("model muss ein Modellname sein (z.B. sonnet, opus)")
     return {
         "beschreibung": str(meta.get("beschreibung") or "").strip(),
+        "model": model.strip() if model else None,
         "permission_mode": mode,
         "allowed_tools": tools,
         "prompt": prompt.strip(),
@@ -111,6 +119,7 @@ def liste_rollen() -> list[dict[str, Any]]:
             eintrag.update(
                 beschreibung=geparst["beschreibung"],
                 permission_mode=geparst["permission_mode"],
+                model=geparst["model"],
                 allowed_tools=geparst["allowed_tools"],
                 hat_prompt=bool(geparst["prompt"]),
             )
@@ -154,6 +163,7 @@ def rolle_fuer_task(name: str) -> dict[str, Any]:
         "rollen_prompt": rolle["prompt"] or None,
         "rollen_permission_mode": rolle["permission_mode"],
         "rollen_tools": rolle["allowed_tools"],
+        "rollen_model": rolle.get("model"),
     }
 
 

@@ -395,6 +395,29 @@ class TestReineFunktionen(unittest.TestCase):
         self.assertIsNone(wahl["frage"])
         self.assertIn("verlässt", wahl["fehler"])
 
+    # --- Modellwahl (Issue #62) --------------------------------------------
+
+    def test_modell_rangfolge(self):
+        w = aw.wirksames_modell
+        self.assertEqual(w(), (None, ""))
+        self.assertEqual(w("opus"), ("opus", "agent"))
+        self.assertEqual(w("opus", "sonnet"), ("sonnet", "rolle"))
+        self.assertEqual(w("opus", "sonnet", "haiku", ["haiku"]), ("haiku", "task"))
+        # nicht freigegebenes Task-Modell fällt still auf Rolle/Agent zurück
+        self.assertEqual(w("opus", None, "haiku", ["sonnet"]), ("opus", "agent"))
+        self.assertEqual(w("opus", None, None, None, "sonnet", True), ("sonnet", "nachlauf"))
+        self.assertEqual(w("opus", None, None, None, "sonnet", False), ("opus", "agent"))
+        self.assertEqual(w("böse; rm -rf"), (None, ""))
+
+    def test_modell_in_kommandozeile_und_schluessel(self):
+        cmd = aw.baue_claude_cmd("claude", model="sonnet", fallback_model="haiku")
+        self.assertEqual(cmd[-4:], ["--model", "sonnet", "--fallback-model", "haiku"])
+        self.assertNotIn("--model", aw.baue_claude_cmd("claude", model="a b"))
+        self.assertNotIn("--fallback-model", aw.baue_claude_cmd("claude", fallback_model="haiku"))
+        ohne = aw.sitzungs_schluessel(self.tmp, None, "faden")
+        self.assertEqual(aw.sitzungs_schluessel(self.tmp, None, "faden", "sonnet"),
+                         ohne + "|@sonnet")
+
     # --- fehlerserie (Issue #14) -------------------------------------------
 
     def test_fehlerserie_erst_nach_schwelle(self):

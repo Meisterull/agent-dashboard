@@ -193,6 +193,10 @@ class Task:
     rollen_prompt: Optional[str] = None
     rollen_permission_mode: Optional[str] = None
     rollen_tools: Optional[list[str]] = None
+    # Modell des Laufs (Issue #62): `rollen_model` friert die Rolle ein,
+    # `model` bestellt der Auftraggeber (nur aus der Allowlist des Agenten).
+    rollen_model: Optional[str] = None
+    model: Optional[str] = None
     # Geplanter Task (Paket St.2): vor diesem Zeitpunkt (ISO-8601, lokale
     # Serverzeit) liefert kein claim ihn aus — die Inbox ist der Wartepuffer.
     nicht_vor: Optional[str] = None

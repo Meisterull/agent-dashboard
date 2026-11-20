@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import shlex
 import time
 from collections import deque
@@ -152,6 +153,14 @@ def _ssh_cfg(agent: dict[str, Any]) -> dict[str, Any] | None:
         # laufen statt Rückfrage an den Auftraggeber.
         "project_fallback": _erstes_gesetztes(agent.get("project_fallback"),
                                               conn.get("project_fallback")),
+        # Modellwahl (Issue #62)
+        "model": _erstes_gesetztes(agent.get("model"), conn.get("model")),
+        "fallback_model": _erstes_gesetztes(agent.get("fallback_model"),
+                                            conn.get("fallback_model")),
+        "model_nachlauf": _erstes_gesetztes(agent.get("model_nachlauf"),
+                                            conn.get("model_nachlauf")),
+        "modelle_erlaubt": _erstes_gesetztes(agent.get("modelle_erlaubt"),
+                                             conn.get("modelle_erlaubt")),
         "resume": _erstes_gesetztes(agent.get("resume"), conn.get("resume")),
         "resume_max_pause": _erstes_gesetztes(agent.get("resume_max_pause"),
                                               conn.get("resume_max_pause")),
@@ -186,6 +195,27 @@ def _zeit_flags(cfg: dict[str, Any]) -> str:
     ruhe = _ganzzahl(cfg.get("automatik_leerlauf"))
     if ruhe is not None and ruhe >= 0:
         teile += f" --leerlauf {ruhe}"
+    return teile
+
+
+_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def _modell_flags(cfg: dict[str, Any]) -> str:
+    """--model & Co. aus agents.yaml (Issue #62). Nur Namen, die das enge
+    Muster erfüllen, erreichen die Remote-Shell — der Rest fällt weg."""
+    teile = ""
+    for feld, flag in (("model", "--model"), ("fallback_model", "--fallback-model"),
+                       ("model_nachlauf", "--model-nachlauf")):
+        wert = str(cfg.get(feld) or "").strip()
+        if wert and _MODEL_RE.fullmatch(wert):
+            teile += f" {flag} {wert}"
+    erlaubt = cfg.get("modelle_erlaubt")
+    if isinstance(erlaubt, str):
+        erlaubt = erlaubt.split(",")
+    namen = [str(m).strip() for m in (erlaubt or []) if _MODEL_RE.fullmatch(str(m).strip())]
+    if namen:
+        teile += f" --modelle-erlaubt {','.join(namen)}"
     return teile
 
 
@@ -467,7 +497,7 @@ class AutoWatcherManager:
                         if isinstance(tools, (list, tuple)):
                             tools = ",".join(str(t).strip() for t in tools if str(t).strip())
                         cmd += f" --allowed-tools {shlex.quote(str(tools))}"
-                    cmd += _resume_flags(cfg) + _zeit_flags(cfg)
+                    cmd += _resume_flags(cfg) + _zeit_flags(cfg) + _modell_flags(cfg)
                     if str(cfg.get("project_fallback") or "").strip().lower() == "basis":
                         cmd += " --project-fallback basis"
                     deckel = _ganzzahl(cfg.get("automatik_timeout"))

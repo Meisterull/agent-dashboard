@@ -116,6 +116,36 @@ HERZSCHLAG = 600.0
 # Leerlauf-Backoff des Pollens (Issue #41): 5 s → 30 s, nach Arbeit wieder kurz.
 POLL_MAX = 30.0
 SESSION_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{7,63}$")
+# Modellname für `claude --model` (Issue #62): Alias (sonnet, opus) oder volle
+# ID. Eng gefasst, weil er auf der Kommandozeile landet (cmd.exe, P1-3).
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def modell_ok(name) -> "str | None":
+    name = str(name or "").strip()
+    return name if MODEL_RE.match(name) else None
+
+
+def wirksames_modell(agent_model=None, rollen_model=None, task_model=None,
+                     erlaubt=None, nachlauf_model=None,
+                     ist_nachlauf: bool = False) -> "tuple[str | None, str]":
+    """Modell eines Laufs (Issue #62) → (Modell oder None, Herkunft).
+
+    Rangfolge: Task (nur aus der Allowlist des Agenten — sonst bestellte jeder
+    Auftraggeber das teuerste Modell) > Rolle > Nachlauf-Modell (Fortsetzung
+    nach Rückfrage / Weckruf, falls eingestellt) > Agent-Default > None
+    (= was Claude Code auf dem PC selbst eingestellt hat)."""
+    erlaubt = {m for m in (modell_ok(e) for e in (erlaubt or [])) if m}
+    task_model = modell_ok(task_model)
+    if task_model and task_model in erlaubt:
+        return task_model, "task"
+    if modell_ok(rollen_model):
+        return modell_ok(rollen_model), "rolle"
+    if ist_nachlauf and modell_ok(nachlauf_model):
+        return modell_ok(nachlauf_model), "nachlauf"
+    if modell_ok(agent_model):
+        return modell_ok(agent_model), "agent"
+    return None, ""
 
 # Muss zur Allowlist in app/mailbox.py passen — sender wird in Pfade gejoint.
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -565,7 +595,9 @@ def baue_claude_cmd(claude_bin: str,
                     permission_mode: str | None = None,
                     allowed_tools: str | None = None,
                     append_system_prompt: str | None = None,
-                    resume_id: str | None = None) -> list[str]:
+                    resume_id: str | None = None,
+                    model: str | None = None,
+                    fallback_model: str | None = None) -> list[str]:
     """Kommandozeile für einen headless-Lauf — die instruction kommt über STDIN.
 
     Review P1-3 (löst zugleich das alte Issue #20 gründlicher): Auf Windows
@@ -589,6 +621,11 @@ def baue_claude_cmd(claude_bin: str,
     # erneut (P1-3) — dort darf nichts Freies hinein.
     if resume_id and SESSION_ID_RE.match(resume_id):
         cmd += ["--resume", resume_id]
+    # Modell je Agent/Rolle/Task (Issue #62) — nur geprüfte Namen.
+    if modell_ok(model):
+        cmd += ["--model", modell_ok(model)]
+        if modell_ok(fallback_model) and modell_ok(fallback_model) != modell_ok(model):
+            cmd += ["--fallback-model", modell_ok(fallback_model)]
     return cmd
 
 
@@ -661,7 +698,9 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
                resume_id: str | None = None,
                lauf_out: dict | None = None,
                timeout: float | None = None,
-               leerlauf: float | None = None) -> tuple[str, str, int]:
+               leerlauf: float | None = None,
+               model: str | None = None,
+               fallback_model: str | None = None) -> tuple[str, str, int]:
     """Gibt (result, log, returncode) zurück.
 
     `timeout`/`leerlauf` (Issue #38): Wanduhr-Deckel und Leerlauf-Grenze in
@@ -698,7 +737,7 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
     if dry_run:
         return f"[dry-run] hätte ausgeführt: {instruction}", "", 0
     cmd = baue_claude_cmd(claude_bin, permission_mode, allowed_tools,
-                          append_system_prompt, resume_id)
+                          append_system_prompt, resume_id, model, fallback_model)
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1028,7 +1067,8 @@ def thread_name(wert) -> str:
 
 
 def sitzungs_schluessel(task_dir: Path, rolle: "str | None",
-                        thread: "str | None" = None) -> str:
+                        thread: "str | None" = None,
+                        model: "str | None" = None) -> str:
     """Eine Sitzung je Arbeitsverzeichnis UND Rolle: claude findet Sitzungen
     nur im Verzeichnis, in dem sie entstanden; und eine Rolle bringt einen
     eigenen System-Prompt mit — gemischt verwirrte das Modell und Cache.
@@ -1039,7 +1079,10 @@ def sitzungs_schluessel(task_dir: Path, rolle: "str | None",
     ab: Folge-Aufträge desselben Vorgangs finden genau ihr Gedächtnis wieder."""
     basis = f"{task_dir}|{rolle or ''}"
     faden = thread_name(thread)
-    return f"{basis}|#{faden}" if faden else basis
+    schluessel = f"{basis}|#{faden}" if faden else basis
+    # Ein vom TASK bestelltes Modell (Issue #62) bekommt eine eigene Sitzung:
+    # ein Modellwechsel mitten in der Sitzung macht den ganzen Cache kalt.
+    return f"{schluessel}|@{model}" if modell_ok(model) else schluessel
 
 
 def kontext_fenster(modell: "str | None") -> "int | None":
@@ -1150,7 +1193,10 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
                        thread: "str | None" = None,
                        timeout: "float | None" = None,
                        leerlauf: "float | None" = None,
-                       lauf_meta: "dict | None" = None) -> "tuple[str, str, int]":
+                       lauf_meta: "dict | None" = None,
+                       model: "str | None" = None,
+                       fallback_model: "str | None" = None,
+                       model_quelle: str = "") -> "tuple[str, str, int]":
     """run_claude mit Gedächtnis: setzt — wenn erlaubt und sinnvoll — die
     Sitzung dieses Verzeichnisses (bzw. Vorgangs, `thread`) fort, sonst
     beginnt eine neue.
@@ -1190,13 +1236,15 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
         return run_claude(claude_bin, prompt, task_dir, dry_run, fortschritt,
                           permission_mode, allowed_tools, rollen_prompt,
                           verbrauch_out=verbrauch, resume_id=resume_id,
-                          lauf_out=lauf, timeout=timeout, leerlauf=leerlauf)
+                          lauf_out=lauf, timeout=timeout, leerlauf=leerlauf,
+                          model=model, fallback_model=fallback_model)
 
     if not aktiv:
         result, err, rc = starte(voll, None)
     else:
         buch = lade_sitzungen(agent)
-        schluessel = sitzungs_schluessel(task_dir, rolle, thread)
+        schluessel = sitzungs_schluessel(
+            task_dir, rolle, thread, model if model_quelle == "task" else None)
         max_pause = _zahl(resume.get("max_pause")) or RESUME_MAX_PAUSE
         if thread_name(thread):
             max_pause = max(max_pause, RESUME_THREAD_MAX_PAUSE)
@@ -1245,6 +1293,8 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
             lauf_meta[feld] = lauf[feld]
     if thread_name(thread):
         lauf_meta["thread"] = thread_name(thread)
+    if model_quelle:
+        lauf_meta["modell_quelle"] = model_quelle
     if lauf.get("timeout") and lauf.get("session_id"):
         err = (err + f"\n[watcher] Stand liegt in der Sitzung {lauf['session_id']} — "
                      f"übernehmen mit: claude --resume {lauf['session_id']}"
@@ -1584,6 +1634,10 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                         except Exception:  # noqa: BLE001 — nur ein Lebenszeichen
                             pass
 
+                modell, modell_quelle = wirksames_modell(
+                    einst.get("model"), claimed.get("rollen_model"), claimed.get("model"),
+                    einst.get("modelle_erlaubt"), einst.get("model_nachlauf"),
+                    bool(claimed.get("nachtraege") or claimed.get("weckruf")))
                 wahl = projekt_aufloesen(workdir, projekt, einst.get("project_fallback"),
                                          bool(claimed.get("nachtraege")))
                 task_dir, wd_fehler = wahl["dir"], wahl["fehler"]
@@ -1623,7 +1677,9 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                             timeout=wirksamer_timeout(einst.get("timeout"),
                                                       claimed.get("timeout")),
                             leerlauf=einst.get("leerlauf"),
-                            lauf_meta=lauf_meta)
+                            lauf_meta=lauf_meta,
+                            model=modell, fallback_model=einst.get("fallback_model"),
+                            model_quelle=modell_quelle)
                         status = "done" if rc == 0 else "error"
                     except Exception as exc:  # noqa: BLE001 — alles zurückmelden
                         result, err, status = "", repr(exc), "error"
@@ -1781,6 +1837,10 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         try:
             task["instruction"]  # fehlende instruction soll wie bisher scheitern
             instruction = merge_instruction(task)  # MCP-Hinweis: run_claude_sitzung
+            modell, modell_quelle = wirksames_modell(
+                einst.get("model"), task.get("rollen_model"), task.get("model"),
+                einst.get("modelle_erlaubt"), einst.get("model_nachlauf"),
+                bool(task.get("nachtraege") or task.get("weckruf")))
             # Datei-Transport: keine Rückfrage möglich — Namens-Treffer und
             # `project_fallback: basis` greifen trotzdem (#54).
             wahl = projekt_aufloesen(workdir, task.get("project"),
@@ -1809,7 +1869,9 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                     thread=task.get("thread"),
                     timeout=wirksamer_timeout(einst.get("timeout"), task.get("timeout")),
                     leerlauf=einst.get("leerlauf"),
-                    lauf_meta=lauf_meta)
+                    lauf_meta=lauf_meta,
+                    model=modell, fallback_model=einst.get("fallback_model"),
+                    model_quelle=modell_quelle)
                 status = "done" if rc == 0 else "error"
                 if status == "error":
                     result = fehler_result(result, err)
@@ -1913,6 +1975,14 @@ def main() -> int:
     ap.add_argument("--leerlauf", type=float, default=CLAUDE_LEERLAUF,
                     help="Abbruch nach so vielen Sekunden ohne stream-json-Event "
                          f"(Default {CLAUDE_LEERLAUF:.0f}; 0 = aus)")
+    ap.add_argument("--model", default=None,
+                    help="Modell der Läufe (claude --model), z.B. sonnet (Issue #62)")
+    ap.add_argument("--fallback-model", default=None,
+                    help="Ausweichmodell bei Überlast (claude --fallback-model)")
+    ap.add_argument("--modelle-erlaubt", default="",
+                    help="Komma-Liste der Modelle, die ein Task per `model` bestellen darf")
+    ap.add_argument("--model-nachlauf", default=None,
+                    help="günstigeres Modell für Fortsetzungen nach Rückfrage und Weckrufe")
     ap.add_argument("--project-fallback", choices=["basis"], default=None,
                     help="fehlendes project-Verzeichnis: im Basisverzeichnis laufen "
                          "statt Rückfrage (Issue #54)")
@@ -1929,7 +1999,12 @@ def main() -> int:
     resume = {"an": not args.no_resume, "max_pause": args.resume_max_pause,
               "max_kontext": args.resume_max_kontext}
     einst = {"timeout": args.timeout, "leerlauf": args.leerlauf,
-             "project_fallback": args.project_fallback}
+             "project_fallback": args.project_fallback,
+             "model": modell_ok(args.model),
+             "fallback_model": modell_ok(args.fallback_model),
+             "modelle_erlaubt": [m.strip() for m in args.modelle_erlaubt.split(",")
+                                 if m.strip()],
+             "model_nachlauf": modell_ok(args.model_nachlauf)}
 
     # Nur EIN Watcher je Agent und PC (H2) — sonst führen zwei Instanzen
     # denselben Task doppelt aus (z.B. Netz-Flap: der Container startet einen

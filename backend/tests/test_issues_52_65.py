@@ -6,6 +6,8 @@
        Handbetrieb; claim_task liefert sender + Zahl der Nachträge
   #60  Pflege archiviert ins Monatsarchiv statt zu löschen; laufende Tasks
        behalten ihre Antwort; read_responses(archiv=True) findet Altes
+  #62  Modell je Task nur aus der Allowlist des Empfängers; Rolle friert ihr
+       Modell ein; claim reicht beides an den Watcher; Kosten je Modell
   #65  Post, die einen Automatik-Agenten nicht weckt: Hinweis an den Absender,
        EIN Ereignis je Eintrag, Wahl aus dem Dashboard gewinnt gegen agents.yaml
 """
@@ -129,7 +131,39 @@ def test_60_monatsarchiv_statt_loeschen(ws: Path) -> None:
     assert box.speicher()["archiv"] > 0
 
 
-TESTS = [test_60_monatsarchiv_statt_loeschen,
+def test_62_modell_je_task_rolle(ws: Path) -> None:
+    (ws / "config" / "rollen").mkdir(parents=True)
+    (ws / "config" / "rollen" / "doku.md").write_text(
+        "---\nbeschreibung: Doku\nmodel: sonnet\n---\nSchreibe knapp.\n", encoding="utf-8")
+    (ws / "config" / "agents.yaml").write_text(
+        "agents:\n  - name: dev\n    modelle_erlaubt: [sonnet, haiku]\n"
+        "    connection: {type: token}\n", encoding="utf-8")
+    ms = _mcp_server_laden(ws)
+    from app import verbrauch
+    _boxen(ws, "dev", "erp")
+    t = _tools(ms)
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("    (ohne PyYAML: Allowlist-/Rollen-Teil übersprungen)")
+        return
+    nein = t["send_task"](to="dev", instruction="x", sender="erp", model="opus")
+    assert "nicht freigegeben" in nein.get("error", "") and "sonnet" in nein["error"], nein
+    assert "error" in t["send_task"](to="dev", instruction="x", sender="erp", model="so nnet; rm")
+    g = t["send_task"](to="dev", instruction="x", sender="erp", model="haiku", rolle="doku")
+    claim = t["claim_task"](task_id=g["id"], agent="dev", watcher=True)
+    assert (claim["model"], claim["rollen_model"]) == ("haiku", "sonnet"), claim
+    t["complete_task"](task_id=g["id"], result="ok", agent="dev",
+                       verbrauch={"input_tokens": 10, "total_cost_usd": 0.5},
+                       lauf={"modell": "claude-haiku-4-5", "session_id": "sitz-0001-aaaa"})
+    antworten = t["read_responses"](worker="dev")
+    agg = verbrauch.aggregiere(antworten)
+    assert agg["modelle"] == [{"modell": "claude-haiku-4-5", "tasks": 1, "tokens": 10,
+                               "kosten": 0.5}], agg["modelle"]
+
+
+TESTS = [test_62_modell_je_task_rolle,
+         test_60_monatsarchiv_statt_loeschen,
          test_54_fehlstart_ist_kein_handbetrieb,
          test_65_absender_erfaehrt_dass_seine_post_nicht_weckt]
 

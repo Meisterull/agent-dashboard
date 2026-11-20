@@ -693,6 +693,12 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
                       {tag.kosten.toFixed(2)} $
                     </div>
                   ))}
+                  {/* Issue #62: was kostet welches Modell (7 Tage) */}
+                  {(tasks.verbrauch.modelle || []).map((m) => (
+                    <div key={m.modell} className="font-mono">
+                      {m.modell}: {m.tasks} · {fmtTok(m.tokens)} Tok · {m.kosten.toFixed(2)} $
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

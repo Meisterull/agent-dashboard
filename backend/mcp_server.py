@@ -132,6 +132,21 @@ def _darf_ereignisse_lesen(identity: str, ziel: str) -> bool:
     return False
 
 
+def _modelle_erlaubt(agent: str) -> list[str]:
+    """agents.yaml `modelle_erlaubt` des Empfängers (Issue #62): welche
+    Modelle ein Auftraggeber per send_task(model=…) bestellen darf."""
+    try:
+        cfg = next((a for a in load_agents_full() if a.get("name") == agent), None) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    roh = cfg.get("modelle_erlaubt")
+    if roh is None:
+        roh = (cfg.get("connection") or {}).get("modelle_erlaubt")
+    if isinstance(roh, str):
+        roh = roh.split(",")
+    return [str(m).strip() for m in (roh or []) if str(m).strip()]
+
+
 def _weck_hinweis(env: dict, to: str, kind: str) -> dict:
     """Issue #65: dem Absender sagen, wenn seine Post einen Automatik-Agenten
     nicht weckt — er kann dann selbst auf send_task umsteigen."""
@@ -406,6 +421,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             nicht_vor: str | None = None,
             thread: str | None = None,
             timeout: int | None = None,
+            model: str | None = None,
         ) -> dict:
             """Einen Arbeitsauftrag in die Inbox eines Agenten legen.
 
@@ -438,6 +454,11 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
 
             `timeout` (optional, Sekunden) begrenzt die Laufzeit dieses Auftrags
             im Automatikmodus; er kann die Grenze des Empfängers nur senken.
+
+            `model` (optional) bestellt für diesen Auftrag ein bestimmtes
+            Modell (z.B. "sonnet" für Doku/Nachträge). Geht nur mit Modellen,
+            die der Empfänger freigibt (agents.yaml `modelle_erlaubt`); meist
+            weglassen — Rolle und Agent bringen ihr Modell selbst mit.
             """
             try:
                 absender = ident(sender, "sender") if identity else (sender or "orchestrator")
@@ -483,6 +504,12 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 return {"error": f"timeout muss eine Zahl (Sekunden) sein, nicht {timeout!r}"}
             if frist is not None and frist < 60:
                 return {"error": "timeout unter 60 s ergibt keinen sinnvollen Lauf"}
+            modell = str(model or "").strip() or None
+            if modell:
+                erlaubt = _modelle_erlaubt(to)
+                if not rollen.MODEL_RE.fullmatch(modell) or modell not in erlaubt:
+                    return {"error": f"model {modell!r} ist für {to} nicht freigegeben — "
+                                     f"erlaubt: {', '.join(erlaubt) or '(keine Modellwahl je Task)'}"}
             _log(kanal, "send_task", to=to, sender=absender, rolle=rolle,
                  nicht_vor=nicht_vor, thread=faden, timeout=frist,
                  zeichen=len(instruction))
@@ -496,13 +523,15 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 nicht_vor=nicht_vor,
                 thread=faden,
                 timeout=frist,
+                model=modell,
                 **rollen_felder,
             )
             Mailbox(MAILBOX_ROOT, to).put_task(task)
             return {"id": task.task_id, "to": to, "status": "pending",
                     **({"rolle": rolle} if rolle else {}),
                     **({"nicht_vor": nicht_vor} if nicht_vor else {}),
-                    **({"thread": faden} if faden else {})}
+                    **({"thread": faden} if faden else {}),
+                    **({"model": modell} if modell else {})}
 
     if on("list_rollen"):
         @werkzeug
@@ -635,6 +664,10 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 "rollen_prompt": env.get("rollen_prompt"),
                 "rollen_permission_mode": env.get("rollen_permission_mode"),
                 "rollen_tools": env.get("rollen_tools"),
+                # Modellwahl (Issue #62) + Weckruf-Kennzeichen (Nachlauf-Modell)
+                "rollen_model": env.get("rollen_model"),
+                "model": env.get("model"),
+                "weckruf": bool(env.get("weckruf")),
             }
 
     if on("complete_task"):
