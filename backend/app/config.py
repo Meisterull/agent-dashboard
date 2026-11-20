@@ -56,6 +56,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Settings-Formular; app/auto_watcher.py stellt ihn nach Neustarts wieder her.
     "automatik": {},
     "automatik_notaus": False,
+    # Worauf die Automatik außer Tasks reagiert, je Agent ({name: ["message",
+    # "response", "question"]}) — gewinnt gegen agents.yaml `automatik_weckt`
+    # (Issue #65). Gepflegt über /api/automatik/{name}/weckt.
+    "automatik_weckt": {},
     # Verbrauchszähler (Paket St.3): Tokens je Agent im rollierenden
     # 5-h-Fenster, ab denen der Zähler sich färbt und der Planer GEPLANTE
     # Tasks des Agenten pausiert. 0 = aus. Eine selbst gewählte Bremse —

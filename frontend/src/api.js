@@ -72,8 +72,14 @@ export const getFiles = (path = "") =>
 export const getFileContent = (path) =>
   jget(`/api/files/content?path=${encodeURIComponent(path)}`);
 export const getAutomatik = () => jget("/api/automatik");
-export const setAutomatik = (name, an) =>
-  jsend(`/api/automatik/${encodeURIComponent(name)}`, "POST", { an });
+// `weckt` (Issue #65): beim Einschalten gleich festlegen, was außer Tasks weckt.
+export const setAutomatik = (name, an, weckt) =>
+  jsend(`/api/automatik/${encodeURIComponent(name)}`, "POST",
+    weckt === undefined ? { an } : { an, weckt });
+export const setAutomatikWeckt = (name, arten) =>
+  jsend(`/api/automatik/${encodeURIComponent(name)}/weckt`, "PUT", { arten });
+export const weckeAutomatik = (name) =>
+  jsend(`/api/automatik/${encodeURIComponent(name)}/wecken`, "POST");
 export const setNotaus = (an) => jsend("/api/automatik/notaus", "POST", { an });
 
 export const getConnections = () => jget("/api/connections");

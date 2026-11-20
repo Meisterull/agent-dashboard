@@ -282,7 +282,7 @@ class AutoWatcherManager:
             if not name or (agent.get("connection") or {}).get("type") != "ssh":
                 continue
             w = self._watcher.get(name)
-            arten = weckruf.weck_arten(agent)
+            arten = weckruf.weck_arten(agent, settings)
             agents[name] = {
                 "gewuenscht": bool(gewuenscht.get(name)),
                 "startbar": _ssh_cfg(agent) is not None,
@@ -313,6 +313,23 @@ class AutoWatcherManager:
                 w.setze("stoppt", "wartet auf laufenden Task")
             self._im_hintergrund(self._stopp_sanft(w))
         self._weck.set()
+
+    def setze_weckt(self, name: str, arten: list[str]) -> None:
+        """Weck-Arten eines Agenten aus dem Dashboard festlegen (Issue #65)."""
+        gewaehlt = dict(load_settings().get("automatik_weckt") or {})
+        gewaehlt[name] = sorted(set(arten) & set(weckruf.WECK_ARTEN))
+        save_settings({"automatik_weckt": gewaehlt})
+        self._weck.set()
+
+    def wecke_jetzt(self, name: str) -> dict[str, Any]:
+        """Einmalig ALLE liegende Post zu Weckruf-Tasks bündeln (Issue #65:
+        Knopf „Jetzt wecken") — unabhängig von der Dauer-Einstellung."""
+        bericht = weckruf.pruefe(MAILBOX_ROOT, name, list(weckruf.WECK_ARTEN))
+        for task_id in bericht["geweckt"]:
+            ereignisse.schreibe(MAILBOX_ROOT, name, "weckruf",
+                                "Weckruf von Hand aus liegender Post", task_id=task_id)
+        self._weck.set()
+        return bericht
 
     async def notaus(self, an: bool) -> None:
         save_settings({"automatik_notaus": an})
@@ -355,7 +372,17 @@ class AutoWatcherManager:
             name = agent.get("name")
             if not name or not gewuenscht.get(name):
                 continue
-            arten = weckruf.weck_arten(agent)
+            arten = weckruf.weck_arten(agent, settings)
+            # Issue #65: Post, auf die die Automatik NICHT reagiert, bleibt
+            # sonst unbemerkt liegen — einmal je Eintrag ins Ereignis-Log
+            # (Schwere warnung → Panel + Push über den Bündler).
+            for env in weckruf.melde_ungeweckt(MAILBOX_ROOT, name, arten):
+                ereignisse.schreibe(
+                    MAILBOX_ROOT, name, "ungeweckt",
+                    f"{weckruf._BEZEICHNUNG.get(env.get('kind'), env.get('kind'))} von "
+                    f"{env.get('sender') or '?'} weckt die Automatik nicht — bleibt liegen",
+                    schwere="warnung", envelope_id=env.get("id"),
+                    kind=env.get("kind"), absender=env.get("sender"))
             if not arten:
                 continue
             bericht = weckruf.pruefe(MAILBOX_ROOT, name, arten)

@@ -7,6 +7,8 @@ import {
   markEnvelopeRead,
   markInboxRead,
   setAutomatik,
+  setAutomatikWeckt,
+  weckeAutomatik,
   setNotaus,
   getOutboxEintrag,
 } from "../api";
@@ -378,20 +380,55 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
   // Automatikmodus: Watcher auf dem Agenten-PC per Klick an/aus (Issue #12).
   const toggleAutomatik = async () => {
     const ziel = !autoInfo.gewuenscht;
-    if (
-      ziel &&
-      !(await bestaetigen({
+    // Issue #65: was außer Tasks weckt, wird beim Einschalten SICHTBAR gewählt
+    // statt versteckt in agents.yaml — sonst bleibt Post still liegen.
+    const wecktSchon = (autoInfo.weckt || []).some((a) => a !== "task");
+    let weckt;
+    if (ziel) {
+      const wahl = await bestaetigen({
         title: t("Automatik einschalten"),
         text: t(
           "Automatik für '{0}' einschalten?\nClaude Code arbeitet dann UNBEAUFSICHTIGT Tasks aus der Inbox ab.",
           selected,
         ),
         ok: t("Einschalten"),
-      }))
-    )
-      return;
+        haken: {
+          label: t(
+            "Auch Nachrichten, Ergebnisse und Rückfragen wecken die Automatik (kostet je Weckruf einen Lauf). Ohne Haken bleibt solche Post liegen.",
+          ),
+          initial: wecktSchon,
+        },
+      });
+      if (!wahl) return;
+      if (wahl.haken !== wecktSchon)
+        weckt = wahl.haken ? ["message", "response", "question"] : [];
+    }
     try {
-      setAuto(await setAutomatik(selected, ziel));
+      setAuto(await setAutomatik(selected, ziel, weckt));
+    } catch (e) {
+      melden({ title: t("Fehler"), text: t("Umschalten fehlgeschlagen: {0}", e.message) });
+    }
+  };
+
+  // Issue #65: liegende Post, auf die die Automatik nicht reagiert.
+  const jetztWecken = async () => {
+    try {
+      const antwort = await weckeAutomatik(selected);
+      setAuto(antwort);
+      if (!antwort.geweckt?.length)
+        melden({
+          title: t("Weckruf"),
+          text: antwort.gebremst?.length
+            ? t("Schleifenschutz: von {0} kamen in der letzten Stunde schon zu viele Weckrufe.", antwort.gebremst.join(", "))
+            : t("Nichts zu wecken — die Einträge wurden schon einmal als Weckruf eingestellt."),
+        });
+    } catch (e) {
+      melden({ title: t("Fehler"), text: t("Weckruf fehlgeschlagen: {0}", e.message) });
+    }
+  };
+  const immerWecken = async () => {
+    try {
+      setAuto(await setAutomatikWeckt(selected, ["message", "response", "question"]));
     } catch (e) {
       melden({ title: t("Fehler"), text: t("Umschalten fehlgeschlagen: {0}", e.message) });
     }
@@ -561,9 +598,20 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
               <div className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
                 ✉ {t("{0} ungelesene Einträge — die Automatik reagiert darauf nicht", autoInfo.ungeweckt)}{" "}
                 <span className="text-slate-400">
-                  ({t("reagiert auf: {0}", (autoInfo.weckt || ["task"]).join(", "))} ·
-                  agents.yaml: automatik_weckt)
-                </span>
+                  ({t("reagiert auf: {0}", (autoInfo.weckt || ["task"]).join(", "))})
+                </span>{" "}
+                <button
+                  onClick={jetztWecken}
+                  className="rounded border border-amber-400 px-1.5 py-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                >
+                  {t("Jetzt wecken")}
+                </button>{" "}
+                <button
+                  onClick={immerWecken}
+                  className="rounded border border-amber-400 px-1.5 py-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                >
+                  {t("Künftig immer wecken")}
+                </button>
               </div>
             )}
             {logOffen && logText && (

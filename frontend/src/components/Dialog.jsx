@@ -19,9 +19,15 @@ import { t } from "../sprache";
 
 let zeigeDialog = null; // vom DialogHost registriert
 
-export function bestaetigen({ title, text, ok = t("OK"), danger = false }) {
-  if (!zeigeDialog) return Promise.resolve(window.confirm(text));
-  return zeigeDialog({ kind: "confirm", title, text, ok, danger });
+// `haken: { label, initial }` hängt EINE Zusatzwahl an die Bestätigung (z. B.
+// „auch Nachrichten wecken", Issue #65). Dann löst das Promise bei OK mit
+// { haken: true|false } auf (wahr-wertig), bei Abbruch weiter mit false.
+export function bestaetigen({ title, text, ok = t("OK"), danger = false, haken = null }) {
+  if (!zeigeDialog) {
+    const ja = window.confirm(text);
+    return Promise.resolve(ja && haken ? { haken: !!haken.initial } : ja);
+  }
+  return zeigeDialog({ kind: "confirm", title, text, ok, danger, haken });
 }
 
 export function nachfragen({
@@ -52,6 +58,7 @@ export function DialogHost() {
   // hinge dann für immer im await.
   const [schlange, setSchlange] = useState([]);
   const inputRef = useRef(null);
+  const hakenRef = useRef(null);
 
   useEffect(() => {
     zeigeDialog = (opts) =>
@@ -79,7 +86,13 @@ export function DialogHost() {
       if (!wert && !dlg.allowEmpty) return;
       fertig(wert);
     } else {
-      fertig(dlg.kind === "confirm" ? true : undefined);
+      fertig(
+        dlg.kind !== "confirm"
+          ? undefined
+          : dlg.haken
+            ? { haken: !!hakenRef.current?.checked }
+            : true,
+      );
     }
   };
 
@@ -104,6 +117,17 @@ export function DialogHost() {
               defaultValue={dlg.initial || ""}
               className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-800"
             />
+          </label>
+        )}
+        {dlg.kind === "confirm" && dlg.haken && (
+          <label className="flex items-start gap-2 text-slate-600 dark:text-slate-300">
+            <input
+              ref={hakenRef}
+              type="checkbox"
+              defaultChecked={!!dlg.haken.initial}
+              className="mt-0.5"
+            />
+            <span>{dlg.haken.label}</span>
           </label>
         )}
         <div className="flex justify-end gap-2">

@@ -206,6 +206,16 @@ export default {
   "{0} ungelesene Einträge — die Automatik reagiert darauf nicht":
     "{0} unread entries — automation does not react to them",
   "reagiert auf: {0}": "reacts to: {0}",
+  "Auch Nachrichten, Ergebnisse und Rückfragen wecken die Automatik (kostet je Weckruf einen Lauf). Ohne Haken bleibt solche Post liegen.":
+    "Messages, results and questions also wake the automation (each wake-up costs one run). Without the tick such mail stays untouched.",
+  "Weckruf": "Wake-up",
+  "Schleifenschutz: von {0} kamen in der letzten Stunde schon zu viele Weckrufe.":
+    "Loop guard: too many wake-ups from {0} within the last hour.",
+  "Nichts zu wecken — die Einträge wurden schon einmal als Weckruf eingestellt.":
+    "Nothing to wake — these entries were already queued as a wake-up once.",
+  "Weckruf fehlgeschlagen: {0}": "Wake-up failed: {0}",
+  "Jetzt wecken": "Wake now",
+  "Künftig immer wecken": "Always wake from now on",
   "Leerer Text wird nicht gespeichert — zum Entfernen die Rolle löschen.":
     "Empty text is not saved — delete the role to remove it.",
 };

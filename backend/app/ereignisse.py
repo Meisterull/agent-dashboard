@@ -20,7 +20,7 @@ Eintrag:
   zeit      ISO-Zeit (lokal, mit Offset)
   art       lauf | sitzung | verweigert | timeout | fehlserie | watcher_abriss |
             watcher_start | weckruf | send_file | integration |
-            rueckreihung | aufgegeben (Pflege, Issue #47)
+            rueckreihung | aufgegeben (Pflege, Issue #47) | ungeweckt (#65)
   schwere   info | warnung | fehler
   task_id   optional
   text      eine Zeile für Menschen
@@ -44,6 +44,8 @@ ARTEN = frozenset({
     # je Runde; `aufgegeben` = die Pflege hat einen Task als Fehlschlag
     # abgeschlossen (statt eines `lauf`-Eintrags — gelaufen ist da niemand).
     "rueckreihung", "aufgegeben",
+    # Post, die einen Automatik-Agenten nicht weckt (Issue #65)
+    "ungeweckt",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).

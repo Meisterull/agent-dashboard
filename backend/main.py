@@ -1693,6 +1693,12 @@ async def push_test() -> dict:
 
 class AutomatikIn(BaseModel):
     an: bool
+    # Issue #65: beim Einschalten gleich festlegen, was außer Tasks weckt.
+    weckt: list[str] | None = None
+
+
+class WecktIn(BaseModel):
+    arten: list[str]
 
 
 @app.get("/api/automatik")
@@ -1719,8 +1725,30 @@ async def automatik_schalten(name: str, body: AutomatikIn) -> dict:
         raise HTTPException(404, f"kein SSH-Agent '{name}'")
     if body.an and not agent["startbar"]:
         raise HTTPException(409, f"'{name}' hat keine nutzbare SSH-Verbindung (key_file?)")
+    if body.an and body.weckt is not None:
+        auto_watcher.manager.setze_weckt(name, body.weckt)
     await auto_watcher.manager.schalte(name, body.an)
     return auto_watcher.manager.status()
+
+
+@app.put("/api/automatik/{name}/weckt")
+async def automatik_weckt(name: str, body: WecktIn) -> dict:
+    """Worauf die Automatik außer Tasks reagiert (message/response/question) —
+    Issue #65. Gewinnt gegen `automatik_weckt` in agents.yaml."""
+    if name not in auto_watcher.manager.status()["agents"]:
+        raise HTTPException(404, f"kein SSH-Agent '{name}'")
+    auto_watcher.manager.setze_weckt(name, body.arten)
+    return auto_watcher.manager.status()
+
+
+@app.post("/api/automatik/{name}/wecken")
+async def automatik_wecken(name: str) -> dict:
+    """Liegende Post EINMAL als Weckruf-Task einstellen (Issue #65)."""
+    if name not in auto_watcher.manager.status()["agents"]:
+        raise HTTPException(404, f"kein SSH-Agent '{name}'")
+    bericht = await asyncio.to_thread(auto_watcher.manager.wecke_jetzt, name)
+    return {**auto_watcher.manager.status(), "geweckt": bericht["geweckt"],
+            "gebremst": bericht["gebremst"]}
 
 
 # --- SSH-Terminal ----------------------------------------------------------

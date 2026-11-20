@@ -47,9 +47,20 @@ _BEZEICHNUNG = {"message": "Nachricht", "response": "Ergebnis eines delegierten 
                 "question": "Rückfrage an dich"}
 
 
-def weck_arten(agent_cfg: dict[str, Any] | None) -> list[str]:
-    """`automatik_weckt` eines Agenten → gültige Nicht-Task-Arten (sortiert)."""
-    roh = (agent_cfg or {}).get("automatik_weckt")
+def weck_arten(agent_cfg: dict[str, Any] | None,
+               settings: dict[str, Any] | None = None) -> list[str]:
+    """`automatik_weckt` eines Agenten → gültige Nicht-Task-Arten (sortiert).
+
+    Die Wahl aus dem Dashboard (settings.json `automatik_weckt: {name: […]}`,
+    Issue #65) gewinnt gegen agents.yaml — sie ist die jüngere, bewusste
+    Entscheidung des Menschen im Einschalt-Dialog bzw. am Hinweis im Panel."""
+    roh = None
+    name = (agent_cfg or {}).get("name")
+    gewaehlt = (settings or {}).get("automatik_weckt")
+    if name and isinstance(gewaehlt, dict) and name in gewaehlt:
+        roh = gewaehlt[name]
+    if roh is None:
+        roh = (agent_cfg or {}).get("automatik_weckt")
     if roh is None:
         roh = ((agent_cfg or {}).get("connection") or {}).get("automatik_weckt")
     if isinstance(roh, str):
@@ -70,7 +81,7 @@ def _lade_zustand(box: Mailbox) -> dict[str, Any]:
         z = {}
     if not isinstance(z, dict):
         z = {}
-    for feld in ("gesehen", "laeufe", "gemeldet"):
+    for feld in ("gesehen", "laeufe", "gemeldet", "ungeweckt_gemeldet"):
         if not isinstance(z.get(feld), dict):
             z[feld] = {}
     return z
@@ -195,3 +206,57 @@ def ungeweckt(root: str | os.PathLike, agent: str, arten: list[str]) -> int:
         if kind in WECK_ARTEN and kind not in arten and env.get("weckt") is not False:
             zahl += 1
     return zahl
+
+
+_ART_WORT = {"message": "Nachrichten", "question": "Rückfragen", "response": "Ergebnisse"}
+
+
+def absender_hinweis(to: str, kind: str, agent_cfg: dict[str, Any] | None,
+                     settings: dict[str, Any] | None) -> str | None:
+    """Hinweis für den ABSENDER (Issue #65): `to` läuft in der Automatik, wird
+    von dieser Art Post aber nicht geweckt — die Nachricht bliebe still liegen.
+    None, wenn alles in Ordnung ist (Automatik aus = jemand liest von Hand)."""
+    settings = settings or {}
+    if kind not in WECK_ARTEN or not (settings.get("automatik") or {}).get(to):
+        return None
+    if kind in weck_arten(agent_cfg or {"name": to}, settings):
+        return None
+    return (f"{to} ist im Automatikmodus und wird von {_ART_WORT.get(kind, kind)} nicht "
+            f"geweckt — der Eintrag bleibt liegen, bis ein Mensch oder ein späterer "
+            f"Task-Lauf in die Inbox schaut. Für Arbeitsaufträge send_task verwenden.")
+
+
+def melde_ungeweckt(root: str | os.PathLike, agent: str, arten: list[str],
+                    jetzt: float | None = None) -> list[dict[str, Any]]:
+    """Neue liegende Einträge, die die Automatik NICHT wecken (Issue #65) —
+    jeder wird genau einmal zurückgegeben (Zustand in .weckruf.json), damit
+    der Manager daraus EIN Ereignis samt Push macht statt eines je Takt."""
+    inbox = Path(root) / agent / "inbox"
+    if not inbox.is_dir():
+        return []
+    jetzt = time.time() if jetzt is None else jetzt
+    box = Mailbox(root, agent)
+    neu: list[dict[str, Any]] = []
+    with box._lock():
+        z = _lade_zustand(box)
+        for _pfad, env in _lese_ordner(box.inbox):
+            env_id = env.get("id")
+            kind = env.get("kind", "task")
+            if (not env_id or kind not in WECK_ARTEN or kind in arten
+                    or env.get("weckt") is False or env_id in z["ungeweckt_gemeldet"]):
+                continue
+            if kind == "question" and env.get("status") != "needs_confirm":
+                continue
+            if str(env.get("sender") or "") == agent:
+                continue
+            z["ungeweckt_gemeldet"][str(env_id)] = jetzt
+            neu.append(env)
+        if neu:
+            alt = jetzt - GESEHEN_TAGE * 86400
+            z["ungeweckt_gemeldet"] = {k: v for k, v in z["ungeweckt_gemeldet"].items()
+                                       if isinstance(v, (int, float)) and v >= alt}
+            try:
+                atomic_write_json(_zustand_pfad(box), z)
+            except OSError:
+                pass
+    return neu

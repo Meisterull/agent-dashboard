@@ -46,8 +46,8 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import austausch, integrations, mcp_scope, rollen
-from app.config import load_agents_full
+from app import austausch, integrations, mcp_scope, rollen, weckruf
+from app.config import load_agents_full, load_settings
 from app.files import decode_text
 from datetime import datetime
 
@@ -130,6 +130,17 @@ def _darf_ereignisse_lesen(identity: str, ziel: str) -> bool:
         erlaubt = [quelle] if isinstance(quelle, str) else list(quelle)
         return "*" in erlaubt or ziel in erlaubt
     return False
+
+
+def _weck_hinweis(env: dict, to: str, kind: str) -> dict:
+    """Issue #65: dem Absender sagen, wenn seine Post einen Automatik-Agenten
+    nicht weckt — er kann dann selbst auf send_task umsteigen."""
+    try:
+        cfg = next((a for a in load_agents_full() if a.get("name") == to), None)
+        hinweis = weckruf.absender_hinweis(to, kind, cfg, load_settings())
+    except Exception:  # noqa: BLE001 — ein Hinweis darf den Versand nie kippen
+        hinweis = None
+    return {**env, "hinweis": hinweis} if hinweis else env
 
 
 def _pruefe_empfaenger(to: str) -> dict | None:
@@ -717,9 +728,9 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             if unbekannt:
                 return unbekannt
             _log(kanal, "send_message", to=to, sender=absender, zeichen=len(text))
-            return Mailbox(MAILBOX_ROOT, to).post(
+            return _weck_hinweis(Mailbox(MAILBOX_ROOT, to).post(
                 {"kind": "message", "sender": absender, "to": to, "text": text}
-            )
+            ), to, "message")
 
     if on("ask"):
         @werkzeug
@@ -770,7 +781,7 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 Mailbox(MAILBOX_ROOT, absender).link_question(env["id"], question)
             except ValueError:
                 pass  # Absender ohne gültigen Mailbox-Namen — nichts zu verknüpfen
-            return env
+            return _weck_hinweis(env, to, "question")
 
     if on("answer"):
         @werkzeug
