@@ -46,10 +46,12 @@ ARTEN = frozenset({
     "rueckreihung", "aufgegeben",
     # Post, die einen Automatik-Agenten nicht weckt (Issue #65)
     "ungeweckt",
+    # Watcher-Abbruch VOR dem claude-Start (Issue #54)
+    "fehlstart",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).
-STETS_PUSHEN = frozenset({"fehlserie", "watcher_abriss", "aufgegeben"})
+STETS_PUSHEN = frozenset({"fehlserie", "watcher_abriss", "aufgegeben", "fehlstart"})
 MAX_ZEILEN = 5000          # Deckel neben der Zeit-Rotation (gesprächige Agenten)
 MAX_ZEILE_BYTES = 3500     # unter PIPE_BUF (4096): das Anhängen bleibt atomar
 STANDARD_LIMIT = 50
@@ -255,7 +257,8 @@ def _dauer_text(s: float | None) -> str:
 def lauf_ereignisse(root: str | os.PathLike, agent: str, task_id: str, status: str,
                     claimed_at: str | None, responded_at: str | None,
                     verbrauch: dict[str, Any] | None, lauf: dict[str, Any] | None,
-                    nachgetragen: bool = False) -> list[dict[str, Any]]:
+                    nachgetragen: bool = False, claim_von: str | None = None,
+                    grund: str = "") -> list[dict[str, Any]]:
     """Alles, was ein Task-Abschluss an Ereignissen hergibt: den Lauf selbst
     (Status, Dauer, Tokens, Kosten, Kontext, Modell) und — wenn `lauf` da ist —
     Sitzung, Verweigerungen, Timeout. `nachgetragen=True` (Issue #43: der
@@ -269,8 +272,28 @@ def lauf_ereignisse(root: str | os.PathLike, agent: str, task_id: str, status: s
     # Ohne Lauf-Daten vom Watcher (interaktive Sitzung, Issue #47) ist der
     # Abstand Claim → Abschluss keine Laufzeit, sondern eine LIEGEZEIT samt
     # Nacht: „abgeschlossen · lag 765 min" statt „Lauf done · 765 min".
-    handbetrieb = (not nachgetragen and not lauf and not tokens and kosten is None)
-    if handbetrieb:
+    ohne_laufdaten = (not nachgetragen and not tokens and kosten is None
+                      and not {k for k in lauf if k != "fehlstart"})
+    # Issue #54: WER den Task hatte, sagt `claim_von` — nicht das Fehlen von
+    # Lauf-Daten. Ein Watcher, der VOR dem claude-Start abbricht (project-
+    # Verzeichnis fehlt), ist kein Handbetrieb, sondern ein Fehlstart.
+    # Den Fehlstart meldet der Watcher ausdrücklich (`lauf.fehlstart`); ein
+    # Watcher-Anspruch ohne Zahlen (Kind schloss selbst ab, #43) ist ein
+    # gewöhnlicher Lauf-Eintrag, dessen Zahlen nachgetragen werden.
+    fehlstart = ohne_laufdaten and bool(lauf.get("fehlstart"))
+    handbetrieb = ohne_laufdaten and not fehlstart and claim_von != "watcher"
+    if fehlstart:
+        ursache = str(lauf.get("fehlstart") or grund or "").strip()
+        if status == "error":
+            geschrieben.append(schreibe(
+                root, agent, "fehlstart",
+                "Automatik: Start abgebrochen" + (f" – {ursache[:300]}" if ursache else ""),
+                schwere="fehler", task_id=task_id, status=status, grund=ursache[:500] or None))
+        elif ursache:
+            geschrieben.append(schreibe(
+                root, agent, "fehlstart", f"Automatik: {ursache[:300]}",
+                schwere="warnung", task_id=task_id, status=status))
+    elif handbetrieb:
         teile = ["abgeschlossen" if status == "done" else f"abgeschlossen ({status})"]
         if dauer is not None:
             teile.append(f"lag {_dauer_text(dauer)}")

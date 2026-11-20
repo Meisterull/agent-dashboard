@@ -148,6 +148,10 @@ def _ssh_cfg(agent: dict[str, Any]) -> dict[str, Any] | None:
                                                conn.get("automatik_timeout")),
         "automatik_leerlauf": _erstes_gesetztes(agent.get("automatik_leerlauf"),
                                                 conn.get("automatik_leerlauf")),
+        # Fehlendes project-Verzeichnis (Issue #54): "basis" = im workdir
+        # laufen statt Rückfrage an den Auftraggeber.
+        "project_fallback": _erstes_gesetztes(agent.get("project_fallback"),
+                                              conn.get("project_fallback")),
         "resume": _erstes_gesetztes(agent.get("resume"), conn.get("resume")),
         "resume_max_pause": _erstes_gesetztes(agent.get("resume_max_pause"),
                                               conn.get("resume_max_pause")),
@@ -464,6 +468,8 @@ class AutoWatcherManager:
                             tools = ",".join(str(t).strip() for t in tools if str(t).strip())
                         cmd += f" --allowed-tools {shlex.quote(str(tools))}"
                     cmd += _resume_flags(cfg) + _zeit_flags(cfg)
+                    if str(cfg.get("project_fallback") or "").strip().lower() == "basis":
+                        cmd += " --project-fallback basis"
                     deckel = _ganzzahl(cfg.get("automatik_timeout"))
                     w.stop_grace = max(STOP_GRACE, (deckel if deckel and deckel >= 60
                                                     else WATCHER_TIMEOUT_DEFAULT) + 60)

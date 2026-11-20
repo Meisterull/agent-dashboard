@@ -976,7 +976,8 @@ class Mailbox:
             ereignisse.lauf_ereignisse(
                 self.root, self.agent, task_id, status,
                 task_env.get("claimed_at") or task_env.get("created_at"),
-                response["responded_at"], verbrauch, lauf)
+                response["responded_at"], verbrauch, lauf,
+                claim_von=task_env.get("claim_von"), grund=log or "")
         return target
 
     def nach_aufgabe_oeffnen(self, task_id: str) -> bool:

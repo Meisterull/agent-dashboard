@@ -361,6 +361,40 @@ class TestReineFunktionen(unittest.TestCase):
         self.assertIsNone(ziel)
         self.assertIn("fehlt auf dem Agenten-PC", fehler or "")
 
+    # --- projekt_aufloesen (Issue #54) -------------------------------------
+
+    def test_fehlendes_projekt_nennt_vorhandene(self):
+        (self.tmp / "zeichnungen").mkdir()
+        _ziel, fehler = aw.projekt_workdir(self.tmp, "gibtsnicht")
+        self.assertIn("vorhanden: zeichnungen", fehler or "")
+
+    def test_projekt_freitext_trifft_einen_namen(self):
+        (self.tmp / "mess-daten").mkdir()
+        (self.tmp / "zeichnungen").mkdir()
+        wahl = aw.projekt_aufloesen(self.tmp, "Mess Daten")
+        self.assertEqual(wahl["dir"], (self.tmp / "mess-daten").resolve())
+        self.assertIn("mess-daten", wahl["hinweis"])
+        self.assertIsNone(wahl["frage"])
+
+    def test_projekt_unklar_wird_rueckfrage_dann_basis(self):
+        (self.tmp / "zeichnungen").mkdir()
+        (self.tmp / "backend_stack").mkdir()
+        wahl = aw.projekt_aufloesen(self.tmp, "Schnittstelle")
+        self.assertIsNone(wahl["dir"])
+        self.assertIn("zeichnungen", wahl["frage"])
+        self.assertIn("thread", wahl["frage"])
+        for kw in ({"schon_gefragt": True}, {"fallback": "basis"}):
+            wahl = aw.projekt_aufloesen(self.tmp, "Schnittstelle", **kw)
+            self.assertEqual(wahl["dir"], self.tmp)
+            self.assertIn("backend_stack", wahl["hinweis"])
+            self.assertIsNone(wahl["frage"])
+
+    def test_projekt_ausbruch_bleibt_hart(self):
+        wahl = aw.projekt_aufloesen(self.tmp, "../raus", fallback="basis", schon_gefragt=True)
+        self.assertIsNone(wahl["dir"])
+        self.assertIsNone(wahl["frage"])
+        self.assertIn("verlässt", wahl["fehler"])
+
     # --- fehlerserie (Issue #14) -------------------------------------------
 
     def test_fehlerserie_erst_nach_schwelle(self):

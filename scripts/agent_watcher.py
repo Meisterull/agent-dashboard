@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import difflib
 import json
 import os
 import re
@@ -287,9 +288,80 @@ def projekt_workdir(basis: Path, projekt) -> tuple[Path | None, str | None]:
         return None, (f"project {projekt!r} verlässt das Arbeitsverzeichnis "
                       f"{basis} — abgelehnt")
     if not ziel.is_dir():
+        vorhanden = unterverzeichnisse(basis)
         return None, (f"project-Verzeichnis fehlt auf dem Agenten-PC: {ziel} "
-                      f"(project {projekt!r} unterhalb von {basis})")
+                      f"(project {projekt!r} unterhalb von {basis})"
+                      + (f" — vorhanden: {', '.join(vorhanden)}" if vorhanden else ""))
     return ziel, None
+
+
+def unterverzeichnisse(basis: Path, grenze: int = 40) -> list[str]:
+    """Sichtbare Unterverzeichnisse der Watcher-Basis (für Meldungen, #54)."""
+    try:
+        namen = sorted(p.name for p in basis.iterdir()
+                       if p.is_dir() and not p.name.startswith("."))
+    except OSError:
+        return []
+    return namen[:grenze]
+
+
+def _projekt_norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def aehnliche_projekte(basis: Path, projekt: str, anzahl: int = 5) -> list[str]:
+    """Die ähnlichsten vorhandenen Verzeichnisnamen zu einem Freitext-`project`."""
+    namen = unterverzeichnisse(basis, grenze=500)
+    ziel = _projekt_norm(projekt)
+    return sorted(
+        namen, key=lambda n: -difflib.SequenceMatcher(None, ziel, _projekt_norm(n)).ratio()
+    )[:anzahl]
+
+
+def projekt_aufloesen(basis: Path, projekt, fallback: "str | None" = None,
+                      schon_gefragt: bool = False) -> dict:
+    """Arbeitsverzeichnis wählen, ohne an einem Tippfehler zu scheitern (#54).
+
+    → {"dir", "fehler", "hinweis", "frage"}: Ausbruch bleibt ein harter Fehler
+    (#19). Fehlt das Verzeichnis, greift der Reihe nach: genau EIN Name, der
+    ohne Groß-/Kleinschreibung und Sonderzeichen passt („Mess Daten" → mess-daten);
+    `project_fallback: basis` oder eine schon beantwortete Rückfrage → Lauf im
+    Basisverzeichnis mit Hinweis im Prompt; sonst eine Rückfrage an den
+    Auftraggeber (`frage`), der Task wird solange geparkt (#17)."""
+    aus = {"dir": None, "fehler": None, "hinweis": None, "frage": None}
+    ziel, fehler = projekt_workdir(basis, projekt)
+    if not fehler:
+        aus["dir"] = ziel
+        return aus
+    if "verlässt das Arbeitsverzeichnis" in fehler:
+        aus["fehler"] = fehler
+        return aus
+    projekt = str(projekt).strip()
+    vorhanden = unterverzeichnisse(basis, grenze=500)
+    gleich = [n for n in vorhanden if _projekt_norm(n) == _projekt_norm(projekt)]
+    if len(gleich) == 1 and _projekt_norm(projekt):
+        aus["dir"] = (basis / gleich[0]).resolve()
+        aus["hinweis"] = (f"[Hinweis des Watchers: project {projekt!r} gibt es nicht — "
+                          f"gemeint ist offenbar das Verzeichnis {gleich[0]!r}, dort läufst du.]")
+        return aus
+    liste = ", ".join(vorhanden[:40]) or "(keine Unterverzeichnisse)"
+    if schon_gefragt or str(fallback or "").strip().lower() == "basis":
+        aus["dir"] = basis
+        aus["hinweis"] = (
+            f"[Hinweis des Watchers: Das angegebene project {projekt!r} existiert unter "
+            f"{basis} nicht. Du läufst im Basisverzeichnis — finde den richtigen Ort selbst "
+            f"(Antwort auf die Rückfrage beachten, falls vorhanden) und wechsle dorthin. "
+            f"Vorhandene Verzeichnisse: {liste}]")
+        return aus
+    aehnlich = aehnliche_projekte(basis, projekt)
+    aus["fehler"] = fehler
+    aus["frage"] = (
+        f"Projekt {projekt!r} gibt es unter {basis} nicht. Welches Verzeichnis ist gemeint"
+        + (f" — z. B. {', '.join(aehnlich)}" if aehnlich else "")
+        + "? Oder soll der Task im Basisverzeichnis laufen? (Hinweis: `project` ist ein "
+          "Verzeichnisname unter dem Arbeitsverzeichnis des Agenten, kein Thema — ein "
+          "Thema gehört in `thread`.)")
+    return aus
 
 
 def fehlerserie(status: str, dauer: float) -> bool:
@@ -1512,12 +1584,34 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                         except Exception:  # noqa: BLE001 — nur ein Lebenszeichen
                             pass
 
-                task_dir, wd_fehler = projekt_workdir(workdir, projekt)
+                wahl = projekt_aufloesen(workdir, projekt, einst.get("project_fallback"),
+                                         bool(claimed.get("nachtraege")))
+                task_dir, wd_fehler = wahl["dir"], wahl["fehler"]
+                if wahl["hinweis"]:
+                    instruction = wahl["hinweis"] + "\n\n" + instruction
+                    sicher_print(f"[{now()}] {agent}: {task_id} · {wahl['hinweis']}")
                 start = time.monotonic()
                 verbrauch: dict = {}  # usage/total_cost_usd aus dem result-Event (St.3)
                 lauf_meta: dict = {}  # Sitzung/Timeout/Verweigerungen → Antwort
-                if wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
+                gefragt = False
+                if wahl["frage"]:
+                    # Issue #54: Tippfehler/Freitext im project-Feld → Rückfrage
+                    # an den Auftraggeber; der Server parkt den Task (#17) und
+                    # reiht ihn nach der Antwort wieder ein.
+                    wem = claimed.get("sender") or env.get("sender") or "orchestrator"
+                    try:
+                        frage = client.call("ask", {"to": wem, "question": wahl["frage"]})
+                        gefragt = isinstance(frage, dict) and not frage.get("error")
+                    except Exception:  # noqa: BLE001 — dann eben der harte Fehler
+                        gefragt = False
+                if gefragt:
+                    result, err, status = (f"Wartet auf Antwort: {wahl['frage']}", "", "done")
+                    lauf_meta["fehlstart"] = "Projektverzeichnis unklar — Rückfrage gestellt"
+                    sicher_print(f"[{now()}] {agent}: {task_id} · Rückfrage an {wem}: "
+                                 f"project {projekt!r} fehlt")
+                elif wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
                     result, err, status = "", wd_fehler, "error"
+                    lauf_meta["fehlstart"] = wd_fehler
                 else:
                     try:
                         result, err, rc = run_claude_sitzung(
@@ -1687,7 +1781,14 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
         try:
             task["instruction"]  # fehlende instruction soll wie bisher scheitern
             instruction = merge_instruction(task)  # MCP-Hinweis: run_claude_sitzung
-            task_dir, wd_fehler = projekt_workdir(workdir, task.get("project"))
+            # Datei-Transport: keine Rückfrage möglich — Namens-Treffer und
+            # `project_fallback: basis` greifen trotzdem (#54).
+            wahl = projekt_aufloesen(workdir, task.get("project"),
+                                     einst.get("project_fallback"),
+                                     bool(task.get("nachtraege")))
+            task_dir, wd_fehler = wahl["dir"], wahl["fehler"]
+            if wahl["hinweis"]:
+                instruction = wahl["hinweis"] + "\n\n" + instruction
             # Rollen-Felder liegen beim Dateitransport direkt im Envelope;
             # Schnittmenge mit den Agenten-Rechten — nie erweitern (St.1).
             pm, at = wirksame_rechte(permission_mode, allowed_tools,
@@ -1695,6 +1796,7 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
                                      task.get("rollen_tools"))
             if wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
                 err = wd_fehler
+                lauf_meta["fehlstart"] = wd_fehler
                 result = fehler_result("", err)
             else:
                 result, err, rc = run_claude_sitzung(
@@ -1811,6 +1913,9 @@ def main() -> int:
     ap.add_argument("--leerlauf", type=float, default=CLAUDE_LEERLAUF,
                     help="Abbruch nach so vielen Sekunden ohne stream-json-Event "
                          f"(Default {CLAUDE_LEERLAUF:.0f}; 0 = aus)")
+    ap.add_argument("--project-fallback", choices=["basis"], default=None,
+                    help="fehlendes project-Verzeichnis: im Basisverzeichnis laufen "
+                         "statt Rückfrage (Issue #54)")
     ap.add_argument("--interval", type=float, default=2.0)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--once", action="store_true", help="einmal durchlaufen und beenden")
@@ -1823,7 +1928,8 @@ def main() -> int:
     workdir = Path(args.workdir).resolve()
     resume = {"an": not args.no_resume, "max_pause": args.resume_max_pause,
               "max_kontext": args.resume_max_kontext}
-    einst = {"timeout": args.timeout, "leerlauf": args.leerlauf}
+    einst = {"timeout": args.timeout, "leerlauf": args.leerlauf,
+             "project_fallback": args.project_fallback}
 
     # Nur EIN Watcher je Agent und PC (H2) — sonst führen zwei Instanzen
     # denselben Task doppelt aus (z.B. Netz-Flap: der Container startet einen

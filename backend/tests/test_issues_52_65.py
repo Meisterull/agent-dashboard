@@ -2,6 +2,8 @@
 
     cd backend && python -m tests.test_issues_52_65
 
+  #54  Fehlstart des Watchers steht als `fehlstart` im Ereignis-Log, nicht als
+       Handbetrieb; claim_task liefert sender + Zahl der Nachträge
   #65  Post, die einen Automatik-Agenten nicht weckt: Hinweis an den Absender,
        EIN Ereignis je Eintrag, Wahl aus dem Dashboard gewinnt gegen agents.yaml
 """
@@ -54,7 +56,36 @@ def test_65_absender_erfaehrt_dass_seine_post_nicht_weckt(ws: Path) -> None:
     assert weckruf.weck_arten(cfg, {}) == ["message", "question", "response"]
 
 
-TESTS = [test_65_absender_erfaehrt_dass_seine_post_nicht_weckt]
+def test_54_fehlstart_ist_kein_handbetrieb(ws: Path) -> None:
+    ms = _mcp_server_laden(ws)
+    from app import ereignisse
+    _boxen(ws, "dev", "erp")
+    t = _tools(ms)
+    g = t["send_task"](to="dev", instruction="x", sender="erp", project="Mess Daten")
+    claim = t["claim_task"](task_id=g["id"], agent="dev", watcher=True)
+    assert (claim["sender"], claim["nachtraege"]) == ("erp", 0), claim
+    t["complete_task"](task_id=g["id"], result="FEHLER", status="error", agent="dev",
+                       lauf={"fehlstart": "project-Verzeichnis fehlt: /home/x/Mess Daten"})
+    log = ereignisse.lies(ws / "mailboxes", "dev")["eintraege"]
+    assert [e["art"] for e in log] == ["fehlstart"], log
+    assert log[0]["schwere"] == "fehler" and "Start abgebrochen" in log[0]["text"], log
+    assert "Mess Daten" in log[0]["text"], log
+    # Sitzung (kein Watcher-Anspruch) ohne Laufdaten bleibt Handbetrieb
+    g2 = t["send_task"](to="dev", instruction="y", sender="erp")
+    t["claim_task"](task_id=g2["id"], agent="dev")
+    t["complete_task"](task_id=g2["id"], result="ok", agent="dev")
+    neu = ereignisse.lies(ws / "mailboxes", "dev")["eintraege"][0]
+    assert neu["art"] == "lauf" and neu["details"].get("handbetrieb") is True, neu
+    # Watcher-Anspruch ohne Zahlen (Kind schloss selbst ab): Lauf, kein Handbetrieb
+    g3 = t["send_task"](to="dev", instruction="z", sender="erp")
+    t["claim_task"](task_id=g3["id"], agent="dev", watcher=True)
+    t["complete_task"](task_id=g3["id"], result="ok", agent="dev")
+    neu = ereignisse.lies(ws / "mailboxes", "dev")["eintraege"][0]
+    assert neu["art"] == "lauf" and not neu["details"].get("handbetrieb"), neu
+
+
+TESTS = [test_54_fehlstart_ist_kein_handbetrieb,
+         test_65_absender_erfaehrt_dass_seine_post_nicht_weckt]
 
 
 def main() -> None:

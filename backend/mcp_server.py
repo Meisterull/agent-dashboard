@@ -420,6 +420,11 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             die des Agenten nur EINSCHRÄNKEN, nie erweitern. Verfügbare Rollen
             liefert list_rollen(); eine unbekannte Rolle ist ein Fehler.
 
+            `project` (optional) ist ein VERZEICHNISNAME unterhalb des
+            Arbeitsverzeichnisses des Empfängers (z.B. "backend_stack") — kein
+            Thema und kein Titel. Kennst du die Verzeichnisse dort nicht, lass
+            es weg; ein Thema gehört in `thread`.
+
             `nicht_vor` (optional, ISO-8601 in lokaler Serverzeit, z.B.
             "2026-09-02T22:00") plant den Task: er bleibt in der Inbox liegen
             und wird erst ab diesem Zeitpunkt ausgeführt.
@@ -609,6 +614,11 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 "status": "running",
                 "project": env.get("project"),
                 "files": env.get("files") or [],
+                # Auftraggeber + Zahl schon beantworteter Rückfragen (Issue
+                # #54): der Watcher fragt bei unklarem project-Verzeichnis
+                # nach — aber nur einmal.
+                "sender": env.get("sender"),
+                "nachtraege": len(env.get("nachtraege") or []),
                 # Vorgang + Laufzeit-Deckel (Issues #37/#38) — der Watcher
                 # wählt daraus seine Sitzung bzw. senkt seinen Timeout.
                 "thread": env.get("thread"),
