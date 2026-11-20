@@ -215,6 +215,16 @@ export default {
     "Nothing to wake — these entries were already queued as a wake-up once.",
   "Weckruf fehlgeschlagen: {0}": "Wake-up failed: {0}",
   "Jetzt wecken": "Wake now",
+  "Geheimnis löschen": "Delete secret",
+  "{0} für {1} löschen?": "Delete {0} for {1}?",
+  "Geheimnisse": "Secrets",
+  "Tokens und Passwörter für diesen Agenten. Automatik-Läufe bekommen sie als Umgebungsvariablen — im Befehl $NAME schreiben statt des Werts. Werte sind hier nie wieder lesbar; in Antworten und Logs werden sie durch ***NAME*** ersetzt.":
+    "Tokens and passwords for this agent. Automation runs receive them as environment variables — write $NAME in the command instead of the value. Values can never be read here again; in answers and logs they are replaced by ***NAME***.",
+  "Nicht verfügbar: Verschlüsselungs-Paket fehlt im Image.": "Not available: encryption package missing in the image.",
+  "Wert (wird ersetzt, falls der Name existiert)": "Value (replaces an existing one of the same name)",
+  "Setzen": "Set",
+  "Auch für interaktive Sitzungen: als ~/.agent-dashboard/env (nur für den Benutzer lesbar) auf der Maschine ablegen. In der Shell-Startdatei einbinden mit: . ~/.agent-dashboard/env":
+    "Also for interactive sessions: store as ~/.agent-dashboard/env (readable by the user only) on the machine. Source it in the shell startup file with: . ~/.agent-dashboard/env",
   "Immer erlauben": "Always allow",
   "Nie erlauben": "Never allow",
   "Dieses Muster gilt künftig für {0} ohne Rückfrage als erlaubt. Widerrufbar unter Agenten → Freigaben.":

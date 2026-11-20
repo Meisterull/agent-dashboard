@@ -15,6 +15,7 @@ import {
 } from "../api";
 import { bestaetigen, melden } from "./Dialog";
 import FreigabenDialog from "./FreigabenDialog";
+import GeheimnisseAbschnitt from "./GeheimnisseAbschnitt";
 import RollenDialog from "./RollenDialog";
 import ZeitplaeneDialog from "./ZeitplaeneDialog";
 import { t } from "../sprache";
@@ -1006,7 +1007,9 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
       </div>
       {rollenOffen && <RollenDialog onClose={() => setRollenOffen(false)} />}
       {freigabenOffen && selected && (
-        <FreigabenDialog agent={selected} onClose={() => setFreigabenOffen(false)} />
+        <FreigabenDialog agent={selected} onClose={() => setFreigabenOffen(false)}>
+          <GeheimnisseAbschnitt agent={selected} />
+        </FreigabenDialog>
       )}
       {plaeneOffen && (
         <ZeitplaeneDialog agents={agents} onClose={() => setPlaeneOffen(false)} />

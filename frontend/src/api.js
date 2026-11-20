@@ -83,6 +83,14 @@ export const entscheideFreigabe = (agent, id, erlauben, regel) =>
   });
 export const setFreigabeEinstellung = (agent, daten) =>
   jsend(`/api/freigaben/${encodeURIComponent(agent)}`, "PUT", daten);
+// Geheimnis-Speicher (Issue #64) — die API liefert nur Namen, nie Werte
+export const getGeheimnisse = (agent) => jget(`/api/geheimnisse/${encodeURIComponent(agent)}`);
+export const setzeGeheimnis = (agent, name, wert) =>
+  jsend(`/api/geheimnisse/${encodeURIComponent(agent)}/${encodeURIComponent(name)}`, "PUT", { wert });
+export const loescheGeheimnis = (agent, name) =>
+  jsend(`/api/geheimnisse/${encodeURIComponent(agent)}/${encodeURIComponent(name)}`, "DELETE");
+export const setzeGeheimnisEnvDatei = (agent, an) =>
+  jsend(`/api/geheimnisse/${encodeURIComponent(agent)}`, "PUT", { env_datei: an });
 export const getAutomatik = () => jget("/api/automatik");
 // `weckt` (Issue #65): beim Einschalten gleich festlegen, was außer Tasks weckt.
 export const setAutomatik = (name, an, weckt) =>

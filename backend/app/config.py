@@ -64,6 +64,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # {name: {an, timeout, immer: [Muster], nie: [Muster]}}. Gepflegt über
     # /api/freigaben (Dialog im Agenten-Panel).
     "freigaben": {},
+    # Geheimnisse (Issue #64): je Agent zusätzlich als ~/.agent-dashboard/env
+    # (0600) für interaktive Sitzungen ablegen? {name: true}. Die Werte selbst
+    # liegen verschlüsselt in keys/geheimnisse.json, nie hier.
+    "geheimnisse_env_datei": {},
     # Verbrauchszähler (Paket St.3): Tokens je Agent im rollierenden
     # 5-h-Fenster, ab denen der Zähler sich färbt und der Planer GEPLANTE
     # Tasks des Agenten pausiert. 0 = aus. Eine selbst gewählte Bremse —

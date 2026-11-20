@@ -469,6 +469,23 @@ class TestReineFunktionen(unittest.TestCase):
         self.assertNotIn("--permission-prompt-tool",
                          aw.baue_claude_cmd("claude", freigabe_tool="böse; rm"))
 
+    # --- Geheimnisse (Issue #64) -------------------------------------------
+
+    def test_geheimnisse_ueber_stdin_und_schwaerzen(self):
+        import base64
+        zeile = "env " + base64.b64encode(json.dumps(
+            {"ERP_DEV_TOKEN": "abc123def456", "klein": "x", "KURZ": "ab"}).encode()).decode()
+        try:
+            self.assertTrue(aw.setze_geheimnisse(zeile))
+            self.assertEqual(sorted(aw.GEHEIMNISSE), ["ERP_DEV_TOKEN", "KURZ"])
+            self.assertEqual(aw.schwaerze("curl -H token abc123def456 ab"),
+                             "curl -H token ***ERP_DEV_TOKEN*** ab")
+            self.assertFalse(aw.setze_geheimnisse("env kaputt!!"))
+            self.assertEqual(sorted(aw.GEHEIMNISSE), ["ERP_DEV_TOKEN", "KURZ"])
+        finally:
+            aw.GEHEIMNISSE.clear()
+            aw.ENV_DA.clear()
+
     # --- fehlerserie (Issue #14) -------------------------------------------
 
     def test_fehlerserie_erst_nach_schwelle(self):

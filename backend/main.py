@@ -119,7 +119,7 @@ from app.files import (
     write_file,
 )
 from app.remote_files import RemoteFilesError
-from app import austausch, freigaben, zwischenspeicher
+from app import austausch, freigaben, geheimnisse, zwischenspeicher
 from app import container
 from app import upload
 from app.austausch import AustauschError
@@ -1894,6 +1894,73 @@ async def freigabe_einstellung(agent: str, body: FreigabeEinstellungIn) -> dict:
                            + "; ".join(warnung)} if warnung else {})}
 
 
+# --- Geheimnis-Speicher (Issue #64) ----------------------------------------
+
+class GeheimnisIn(BaseModel):
+    wert: str
+
+
+class GeheimnisEnvIn(BaseModel):
+    env_datei: bool
+
+
+def _geheimnis_stand(agent: str) -> dict:
+    return {"agent": agent, "namen": geheimnisse.namen(agent),
+            "env_datei": bool((load_settings().get("geheimnisse_env_datei") or {}).get(agent)),
+            "verfuegbar": geheimnisse.verfuegbar()}
+
+
+async def _env_datei_jetzt(agent: str) -> None:
+    """Die env-Datei auf der Maschine gleich nachziehen (best effort — beim
+    nächsten Start der Automatik geschieht es ohnehin)."""
+    try:
+        async with remote_files.sftp_client(agent) as sftp:
+            await auto_watcher._env_datei_pflegen(sftp, agent)
+    except Exception:  # noqa: BLE001 — Token-Maschine oder gerade nicht erreichbar
+        pass
+
+
+@app.get("/api/geheimnisse/{agent}")
+async def geheimnisse_liste(agent: str) -> dict:
+    """Nur die NAMEN der Geheimnisse eines Agenten — Werte gibt die API nie zurück."""
+    return _geheimnis_stand(agent)
+
+
+@app.put("/api/geheimnisse/{agent}/{name}")
+async def geheimnis_setzen(agent: str, name: str, body: GeheimnisIn) -> dict:
+    try:
+        await asyncio.to_thread(geheimnisse.setze, agent, name, body.wert)
+    except geheimnisse.GeheimnisFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    auto_watcher.manager._weck.set()   # laufendem Watcher gleich nachreichen
+    await _env_datei_jetzt(agent)
+    return _geheimnis_stand(agent)
+
+
+@app.delete("/api/geheimnisse/{agent}/{name}")
+async def geheimnis_loeschen(agent: str, name: str) -> dict:
+    try:
+        await asyncio.to_thread(geheimnisse.loesche, agent, name)
+    except geheimnisse.GeheimnisFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    auto_watcher.manager._weck.set()
+    await _env_datei_jetzt(agent)
+    return _geheimnis_stand(agent)
+
+
+@app.put("/api/geheimnisse/{agent}")
+async def geheimnis_env_datei(agent: str, body: GeheimnisEnvIn) -> dict:
+    """Geheimnisse zusätzlich als ~/.agent-dashboard/env (0600) ablegen — für
+    interaktive Sitzungen (`. ~/.agent-dashboard/env` in der Shell-Startdatei)."""
+    if not AGENT_NAME_RE.fullmatch(agent or ""):
+        raise HTTPException(400, "ungültiger Agentenname")
+    schalter = dict(load_settings().get("geheimnisse_env_datei") or {})
+    schalter[agent] = bool(body.env_datei)
+    save_settings({"geheimnisse_env_datei": schalter})
+    await _env_datei_jetzt(agent)
+    return _geheimnis_stand(agent)
+
+
 # --- SSH-Terminal ----------------------------------------------------------
 
 @app.get("/api/ssh/sessions")
@@ -1919,6 +1986,8 @@ async def ssh_session_buffer(name: str, sid: str) -> dict:
     text = await hole_verlauf(name, sid)
     if text is None:
         raise HTTPException(404, f"Keine laufende Terminal-Session '{sid}' für '{name}'.")
+    # Issue #64: bekannte Geheimniswerte der Maschine nicht im Mitschnitt zeigen
+    text = await asyncio.to_thread(geheimnisse.schwaerze, name, text)
     return {"name": name, "sid": sid, "text": text}
 
 

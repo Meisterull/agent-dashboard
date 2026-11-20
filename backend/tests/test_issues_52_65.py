@@ -14,6 +14,8 @@
        behalten ihre Antwort; read_responses(archiv=True) findet Altes
   #62  Modell je Task nur aus der Allowlist des Empfängers; Rolle friert ihr
        Modell ein; claim reicht beides an den Watcher; Kosten je Modell
+  #64  Geheimnisse: verschlüsselt abgelegt, nur Namen lesbar, Schwärzen,
+       Übergabe-Zeile für den Watcher, Systemvariablen verboten
   #65  Post, die einen Automatik-Agenten nicht weckt: Hinweis an den Absender,
        EIN Ereignis je Eintrag, Wahl aus dem Dashboard gewinnt gegen agents.yaml
 """
@@ -321,7 +323,50 @@ def test_56_freigaben(ws: Path) -> None:
     assert len(frei) == 2 and frei[0]["optionen"] == ["erlauben", "ablehnen"] and frei[0]["fid"]
 
 
-TESTS = [test_56_freigaben,
+def test_64_geheimnisse(ws: Path) -> None:
+    ms = _mcp_server_laden(ws)
+    from app import geheimnisse
+    if not geheimnisse.verfuegbar():
+        print("    (ohne cryptography übersprungen)")
+        return
+    import base64
+    _boxen(ws, "dev", "erp")
+    geheimnisse.setze("dev", "ERP_DEV_TOKEN", "abc123def456:0123456789abcdef")
+    geheimnisse.setze("dev", "KURZ", "xy")
+    roh = (ws / "keys" / "geheimnisse.json").read_text(encoding="utf-8")
+    assert "abc123def456" not in roh and "ERP_DEV_TOKEN" in roh, "Wert liegt verschlüsselt"
+    assert oct((ws / "keys" / "geheimnisse.json").stat().st_mode & 0o777) == "0o600"
+    assert geheimnisse.namen("dev") == ["ERP_DEV_TOKEN", "KURZ"]
+    assert geheimnisse.werte("dev")["ERP_DEV_TOKEN"].startswith("abc123")
+    for boese in ("PATH", "klein", "LD_PRELOAD", "A B"):
+        try:
+            geheimnisse.setze("dev", boese, "x" * 10)
+            raise AssertionError(boese)
+        except geheimnisse.GeheimnisFehler:
+            pass
+    text = "curl -H 'Authorization: token abc123def456:0123456789abcdef' xy"
+    assert geheimnisse.schwaerze("dev", text) == "curl -H 'Authorization: token ***ERP_DEV_TOKEN***' xy"
+    assert geheimnisse.schwaerze("erp", text) == text
+    zeile = geheimnisse.env_zeile("dev")
+    assert zeile.startswith("env ") and "abc123" not in zeile
+    assert json.loads(base64.b64decode(zeile.split()[1]))["KURZ"] == "xy"
+    assert "export ERP_DEV_TOKEN='abc123def456:0123456789abcdef'" in geheimnisse.env_datei("dev")
+    sig = geheimnisse.signatur("dev")
+    geheimnisse.loesche("dev", "KURZ")
+    assert geheimnisse.signatur("dev") != sig and geheimnisse.signatur("erp") == ""
+    # Abschluss über MCP: Antwort und Log tragen nur den Namen
+    t = _tools(ms)
+    g = t["send_task"](to="dev", instruction="x", sender="erp")
+    t["claim_task"](task_id=g["id"], agent="dev")
+    t["complete_task"](task_id=g["id"], agent="dev", result="Token war abc123def456:0123456789abcdef")
+    antwort = t["read_responses"](worker="dev")[0]
+    assert antwort["result"] == "Token war ***ERP_DEV_TOKEN***", antwort
+    beim_chef = [e for e in _inbox(ws, "erp") if e["kind"] == "response"][0]
+    assert "abc123" not in json.dumps(beim_chef)
+
+
+TESTS = [test_64_geheimnisse,
+         test_56_freigaben,
          test_57_53_datei_tools,
          test_55_kostendeckel_und_sichtbarkeit,
          test_62_modell_je_task_rolle,

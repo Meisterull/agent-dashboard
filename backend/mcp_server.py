@@ -47,7 +47,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import austausch, freigaben, integrations, kosten, mcp_scope, rollen, weckruf, zwischenspeicher
+from app import austausch, freigaben, geheimnisse, integrations, kosten, mcp_scope, rollen, weckruf, zwischenspeicher
 from app.config import load_agents_full, load_settings
 from app.files import decode_text
 from datetime import datetime
@@ -768,6 +768,13 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             # sie mit, der Zähler aggregiert sie aus der Outbox. Optional.
             # `lauf` (Issues #37–#39): Sitzung, Timeout-Grund, verweigerte
             # Aufrufe — liefert nur der Watcher; ein Modell lässt es weg.
+            # Issue #64: bekannte Geheimniswerte des Agenten nicht im Klartext
+            # in Antwort und Log ablegen (der Watcher schwärzt selbst; das hier
+            # fängt den Eigenabschluss des Laufs und interaktive Sitzungen).
+            bekannte = geheimnisse.werte(wer)
+            if bekannte:
+                result = geheimnisse.schwaerze_mit(result, bekannte)
+                log = geheimnisse.schwaerze_mit(log, bekannte)
             box.write_response(task_id, result, status, log,
                                verbrauch if isinstance(verbrauch, dict) else None,
                                lauf if isinstance(lauf, dict) else None)

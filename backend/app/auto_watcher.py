@@ -38,7 +38,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from app import ereignisse, freigaben, kosten, weckruf
+from app import ereignisse, freigaben, geheimnisse, kosten, weckruf
 from app.config import load_agents_full, load_settings, save_settings
 
 RECONCILE_INTERVAL = 15   # Sekunden, bis settings-/agents-Änderungen greifen
@@ -230,6 +230,21 @@ def _modell_flags(cfg: dict[str, Any]) -> str:
     return teile
 
 
+async def _env_datei_pflegen(sftp, name: str) -> None:
+    """~/.agent-dashboard/env (0600) für interaktive Sitzungen (Issue #64) —
+    nur wenn im Dialog eingeschaltet; ausgeschaltet wird die Datei entfernt."""
+    pfad = ".agent-dashboard/env"
+    try:
+        if (load_settings().get("geheimnisse_env_datei") or {}).get(name):
+            async with sftp.open(pfad, "w") as f:
+                await f.write(geheimnisse.env_datei(name))
+            await sftp.chmod(pfad, 0o600)
+        elif await sftp.exists(pfad):
+            await sftp.remove(pfad)
+    except Exception as exc:  # noqa: BLE001 — Komfort, kein Grund für einen Fehlstart
+        print(f"{_zeit()} [automatik] {name}: env-Datei nicht gepflegt ({exc})", flush=True)
+
+
 def _kosten_grenzen(agent: dict[str, Any]) -> tuple[float, float]:
     """(max_kosten_tag, max_kosten_lauf) eines Agenten aus agents.yaml."""
     conn = agent.get("connection") or {}
@@ -289,6 +304,7 @@ class _Watcher:
         self.stop_grace = STOP_GRACE     # Sanft-Stopp-Frist dieses Agenten (s.o.)
         self.conn = None                 # asyncssh-Verbindung
         self.proc = None                 # asyncssh-Prozess
+        self.env_sig = ""                # Stand der übergebenen Geheimnisse (#64)
 
     def setze(self, status: str, detail: str = "") -> None:
         if status != self.status:
@@ -477,6 +493,16 @@ class AutoWatcherManager:
         for name, an in gewuenscht.items():
             w = self._watcher.get(name)
             laeuft = w is not None and w.task is not None and not w.task.done()
+            # Geänderte Geheimnisse (Issue #64) dem laufenden Watcher nachreichen
+            # — sie gelten ab dem nächsten Lauf, ohne Neustart.
+            if laeuft and w.proc is not None and not w.beenden:
+                sig = geheimnisse.signatur(name)
+                if sig != w.env_sig:
+                    try:
+                        w.proc.stdin.write(geheimnisse.env_zeile(name))
+                        w.env_sig = sig
+                    except Exception:  # noqa: BLE001 — beim nächsten Takt erneut
+                        pass
             if an and not notaus:
                 if w is not None and w.gesperrt:
                     continue  # Fehlerserie: erst wieder nach manuellem Schalten (M12)
@@ -512,6 +538,7 @@ class AutoWatcherManager:
                     async with conn.start_sftp_client() as sftp:
                         if not await sftp.isdir(".agent-dashboard"):
                             await sftp.mkdir(".agent-dashboard")
+                        await _env_datei_pflegen(sftp, name)
                         if await _script_hochladen(sftp, _watcher_script()):
                             print(f"{_zeit()} [automatik] {name}: agent_watcher.py aktualisiert",
                                   flush=True)
@@ -555,8 +582,19 @@ class AutoWatcherManager:
                     deckel = _ganzzahl(cfg.get("automatik_timeout"))
                     w.stop_grace = max(STOP_GRACE, (deckel if deckel and deckel >= 60
                                                     else WATCHER_TIMEOUT_DEFAULT) + 60)
+                    # Geheimnisse (Issue #64): Werte über stdin, nie als Argument.
+                    env_sig = geheimnisse.signatur(name)
+                    if env_sig:
+                        cmd += " --erwartet-env"
                     proc = await conn.create_process(cmd, stderr=asyncssh.STDOUT)
                     w.proc = proc
+                    if env_sig:
+                        try:
+                            proc.stdin.write(geheimnisse.env_zeile(name))
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"{_zeit()} [automatik] {name}: Geheimnisse nicht "
+                                  f"übergeben ({exc})", flush=True)
+                    w.env_sig = env_sig
                     w.setze("an", "")
                     print(f"{_zeit()} [automatik] {name}: Watcher läuft (MCP :{cfg['mcp_port']})", flush=True)
                     ereignisse.schreibe(MAILBOX_ROOT, name, "watcher_start",

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import difflib
 import json
 import os
@@ -169,6 +170,39 @@ def now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+# Geheimnisse (Issue #64): vom Dashboard über stdin gereicht (`env <base64>`),
+# gehen als Umgebungsvariablen an den claude-Prozess und werden in allem, was
+# der Watcher zurückmeldet, durch ***NAME*** ersetzt.
+GEHEIMNISSE: dict = {}
+ENV_DA = threading.Event()
+
+
+def setze_geheimnisse(zeile: str) -> bool:
+    """`env <base64(JSON)>` vom Dashboard übernehmen. True = verstanden."""
+    try:
+        daten = json.loads(base64.b64decode(zeile.split(None, 1)[1]).decode("utf-8"))
+    except Exception:  # noqa: BLE001 — kaputte Zeile: alte Werte behalten
+        return False
+    if not isinstance(daten, dict):
+        return False
+    neu = {str(k): str(v) for k, v in daten.items()
+           if re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", str(k)) and "\x00" not in str(v)}
+    GEHEIMNISSE.clear()
+    GEHEIMNISSE.update(neu)
+    ENV_DA.set()
+    return True
+
+
+def schwaerze(text):
+    """Bekannte Geheimniswerte unkenntlich machen (längste zuerst)."""
+    if not isinstance(text, str) or not text or not GEHEIMNISSE:
+        return text
+    for name, wert in sorted(list(GEHEIMNISSE.items()), key=lambda kv: -len(kv[1])):
+        if len(wert) >= 6 and wert in text:
+            text = text.replace(wert, f"***{name}***")
+    return text
+
+
 def sicher_print(text: str) -> None:
     """print, das eine tote stdout-Leitung überlebt.
 
@@ -176,7 +210,7 @@ def sicher_print(text: str) -> None:
     Netzabriss), wirft das nächste print BrokenPipeError — mitten in der
     Ausgabe-Schleife von run_claude würde das den Lauf verwaisen lassen."""
     try:
-        print(text, flush=True)
+        print(schwaerze(text), flush=True)
     except (BrokenPipeError, OSError, ValueError):
         pass
 
@@ -776,6 +810,9 @@ def run_claude(claude_bin: str, instruction: str, workdir: Path, dry_run: bool,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Geheimnisse als Umgebungsvariablen (Issue #64) — nie als
+            # Argument, sonst stünden sie in `ps`.
+            env=({**os.environ, **GEHEIMNISSE} if GEHEIMNISSE else None),
             # UTF-8 erzwingen (Review P2): text=True nähme die Locale-Kodierung
             # — auf Windows (cp1252) wurde claudes UTF-8 zu Mojibake, und
             # undefinierte Bytes warfen UnicodeDecodeError mitten im Lauf.
@@ -1417,7 +1454,11 @@ def run_claude_sitzung(resume: "dict | None", agent: str, task_id: str,
                      f"übernehmen mit: claude --resume {lauf['session_id']}"
                + (" (der Task setzt sie beim erneuten Anstoßen von selbst fort)"
                   if lauf_meta.get("fortsetzbar") else "")).strip()
-    return result, err, rc
+    # Issue #64: Geheimniswerte verlassen die Maschine nicht im Klartext.
+    for v in lauf_meta.get("verweigert") or []:
+        if isinstance(v, dict) and v.get("eingabe"):
+            v["eingabe"] = schwaerze(v["eingabe"])
+    return schwaerze(result), schwaerze(err), rc
 
 
 def wirksamer_timeout(agent_timeout: "float | None", task_timeout) -> float:
@@ -1486,6 +1527,12 @@ def stdin_stop_waechter() -> None:
     def _lauscher() -> None:
         try:
             for zeile in sys.stdin:
+                if zeile.startswith("env "):
+                    # Geheimnisse (Issue #64) — die Zeile selbst nie ausgeben
+                    if setze_geheimnisse(zeile.strip()):
+                        sicher_print(f"[{now()}] {len(GEHEIMNISSE)} Geheimnis(se) vom "
+                                     f"Dashboard übernommen")
+                    continue
                 kommando = zeile.strip().lower()
                 if kommando == "kill":
                     HART.set()
@@ -2110,6 +2157,9 @@ def main() -> int:
     ap.add_argument("--resume-kompakt-ab", type=int, default=RESUME_KOMPAKT_AB,
                     help="Kontext in Tokens, ab dem eine KALTE Sitzung nicht fortgesetzt "
                          "wird, sondern neu mit Übergabe beginnt; 0 = Regel aus")
+    ap.add_argument("--erwartet-env", action="store_true",
+                    help="vor dem ersten Task kurz auf die Geheimnisse vom Dashboard "
+                         "warten (stdin-Zeile `env …`, Issue #64)")
     ap.add_argument("--freigabe-tool", default=None,
                     help="MCP-Tool für Berechtigungs-Rückfragen, z.B. "
                          "mcp__dashboard__freigabe (Issue #56)")
@@ -2162,6 +2212,8 @@ def main() -> int:
         return 2
 
     stdin_stop_waechter()
+    if args.erwartet_env and not ENV_DA.wait(15):
+        print(f"[{now()}] Geheimnisse vom Dashboard blieben aus — starte ohne.", flush=True)
 
     # Review P1-2: kill/Reboot/systemd-Stopp beendete Python OHNE finally —
     # die claude-Prozessgruppe (eigene Session!) arbeitete verwaist weiter und
