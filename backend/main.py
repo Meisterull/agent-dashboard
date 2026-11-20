@@ -119,7 +119,7 @@ from app.files import (
     write_file,
 )
 from app.remote_files import RemoteFilesError
-from app import austausch, freigaben, geheimnisse, zwischenspeicher
+from app import austausch, erinnerungen, freigaben, geheimnisse, zwischenspeicher
 from app import container
 from app import upload
 from app.austausch import AustauschError
@@ -232,6 +232,32 @@ async def _events_start() -> None:
     events.start()
 
 
+ERINNERUNG_TAKT = float(os.environ.get("ERINNERUNG_TAKT", "30"))
+_erinnerung_task: asyncio.Task | None = None
+
+
+async def _erinnerungen_schleife() -> None:
+    """Fällige Erinnerungen (Issue #52) in die Inbox ihres Agenten legen —
+    auch verspätete: nach einem Neustart wird nachgeholt."""
+    while True:
+        try:
+            an = load_settings().get("automatik") or {}
+            zugestellt = await asyncio.to_thread(
+                erinnerungen.stelle_faellige_zu, MAILBOXES, lambda name: bool(an.get(name)))
+            for e in zugestellt:
+                print(f"{_log_zeit()} [erinnerung] {e['agent']}: {e['id']} zugestellt "
+                      f"als {e['art']}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — die Schleife darf nie sterben
+            print(f"{_log_zeit()} [erinnerung] Fehler: {exc}", flush=True)
+        await asyncio.sleep(ERINNERUNG_TAKT)
+
+
+@app.on_event("startup")
+async def _erinnerungen_start() -> None:
+    global _erinnerung_task
+    _erinnerung_task = asyncio.create_task(_erinnerungen_schleife())
+
+
 @app.on_event("startup")
 async def _planer_start() -> None:
     """Zeitpläne (Paket St.2): fällige Pläne als ganz normale Tasks posten —
@@ -245,6 +271,8 @@ async def _automatik_stop() -> None:
     # die Watcher nach dem Neustart aus settings.json neu.
     if _pflege_task is not None:
         _pflege_task.cancel()
+    if _erinnerung_task is not None:
+        _erinnerung_task.cancel()
     events.stop()
     zeitplaene.stop()
     # Reconcile ZUERST beenden (Review P1-9) — sonst startet er die gerade
@@ -590,6 +618,62 @@ def _agent_tasks_sync(name: str, base: Path) -> dict:
             schwelle=int(load_settings().get("verbrauch_schwelle_5h") or 0),
         ),
     }
+
+
+# --- Erinnerungs-Postfach (Issue #52) ---------------------------------------
+
+class ErinnerungIn(BaseModel):
+    when: str
+    text: str | None = None
+    project: str | None = None
+    als: str | None = None
+
+
+def _erinnerung_agent(name: str) -> str:
+    _agent_base(name)  # Namensprüfung
+    bekannt = {a.get("name") for a in load_agents_full()}
+    if MAILBOXES.is_dir():
+        bekannt |= {p.name for p in MAILBOXES.iterdir() if p.is_dir()}
+    if name not in bekannt:
+        raise HTTPException(404, f"unbekannter Agent '{name}'")
+    return name
+
+
+@app.get("/api/agents/{name}/erinnerungen")
+async def erinnerungen_liste(name: str, erledigte: bool = False) -> dict:
+    _agent_base(name)
+    return {"agent": name, "erinnerungen": await asyncio.to_thread(
+        erinnerungen.liste, MAILBOXES, name, erledigte)}
+
+
+@app.post("/api/agents/{name}/erinnerungen")
+async def erinnerung_anlegen(name: str, body: ErinnerungIn) -> dict:
+    """Der Mensch legt für einen Agenten eine Erinnerung an."""
+    _erinnerung_agent(name)
+    try:
+        return await asyncio.to_thread(
+            lambda: erinnerungen.lege_an(MAILBOXES, name, body.when, body.text or "",
+                                         body.project, body.als, von="dashboard"))
+    except erinnerungen.ErinnerungFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.put("/api/agents/{name}/erinnerungen/{eid}")
+async def erinnerung_verschieben(name: str, eid: str, body: ErinnerungIn) -> dict:
+    _agent_base(name)
+    try:
+        return await asyncio.to_thread(erinnerungen.verschiebe, MAILBOXES, name, eid, body.when)
+    except erinnerungen.ErinnerungFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/agents/{name}/erinnerungen/{eid}")
+async def erinnerung_loeschen(name: str, eid: str) -> dict:
+    _agent_base(name)
+    try:
+        return await asyncio.to_thread(erinnerungen.loesche, MAILBOXES, name, eid)
+    except erinnerungen.ErinnerungFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/agents/{name}/archiv")

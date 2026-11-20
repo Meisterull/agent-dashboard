@@ -41,6 +41,7 @@ KNOWN_TOOLS = frozenset({
     "write_project_file", "read_project_file",
     "send_file", "fetch_file", "upload_url", "deliver_upload",
     "freigabe",
+    "remind", "reminders", "cancel_reminder", "snooze_reminder",
     "list_integrations", "call_integration",
     "list_rollen",
     "agent_events",
@@ -64,6 +65,8 @@ TOKEN_GRUNDTOOLS = [
     "send_message", "ask", "answer", "list_agents",
     # Dateiaustausch ohne SSH (Issue #57): abholen bzw. hochladen per URL
     "fetch_file", "upload_url",
+    # Erinnerungen (Issue #52): wirken nur auf das eigene Postfach
+    "remind", "reminders", "cancel_reminder", "snooze_reminder",
 ]
 
 

@@ -47,7 +47,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app import austausch, freigaben, geheimnisse, integrations, kosten, mcp_scope, rollen, weckruf, zwischenspeicher
+from app import austausch, erinnerungen, freigaben, geheimnisse, integrations, kosten, mcp_scope, rollen, weckruf, zwischenspeicher
 from app.config import load_agents_full, load_settings
 from app.files import decode_text
 from datetime import datetime
@@ -1009,6 +1009,81 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                     quelle, liste, to, melder=identity or "orchestrator", nachricht=note
                 )
             except austausch.AustauschError as exc:
+                return {"error": str(exc)}
+
+    # --- Erinnerungs-Postfach (Issue #52) ------------------------------------
+
+    if on("remind"):
+        @werkzeug
+        def remind(when: str, text: str, project: str | None = None,
+                   als: str | None = None, agent: str | None = None) -> dict:
+            """Dir selbst eine Wiedervorlage setzen: zum Termin landet `text`
+            wieder in deiner Inbox — ohne dass ein Mensch daran denken muss.
+
+            `when` = ISO-Datum oder Datum mit Uhrzeit in Serverzeit
+            ("2026-11-26" = 08:00 Uhr, oder "2026-11-26T14:30"). `text` so
+            schreiben, dass du ihn OHNE heutigen Kontext verstehst: was prüfen,
+            warum, worauf achten, welcher Vorgang/welches Ticket. `als` =
+            "task" (wird abgearbeitet) oder "message" (nur Hinweis); ohne
+            Angabe: Task, wenn deine Automatik läuft, sonst Nachricht.
+            `project` = Verzeichnis für den späteren Lauf. `agent` auf einem
+            gebundenen Kanal weglassen. Rückgabe: die Erinnerung samt `id`.
+            """
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            unbekannt = _pruefe_empfaenger(wer)
+            if unbekannt:
+                return unbekannt
+            _log(kanal, "remind", agent=wer, when=when)
+            try:
+                return erinnerungen.lege_an(MAILBOX_ROOT, wer, when, text, project, als,
+                                            von=identity or "orchestrator")
+            except (erinnerungen.ErinnerungFehler, ValueError) as exc:
+                return {"error": str(exc)}
+
+    if on("reminders"):
+        @werkzeug
+        def reminders(include_done: bool = False, agent: str | None = None) -> list[dict]:
+            """Deine offenen Erinnerungen (mit `include_done` auch zugestellte
+            und gelöschte der letzten 30 Tage), nach Fälligkeit sortiert."""
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return [{"error": str(exc)}]
+            _log(kanal, "reminders", agent=wer)
+            try:
+                return erinnerungen.liste(MAILBOX_ROOT, wer, bool(include_done))
+            except ValueError as exc:
+                return [{"error": str(exc)}]
+
+    if on("cancel_reminder"):
+        @werkzeug
+        def cancel_reminder(reminder_id: str, agent: str | None = None) -> dict:
+            """Eine offene Erinnerung löschen (id aus remind/reminders)."""
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "cancel_reminder", agent=wer, id=reminder_id)
+            try:
+                return erinnerungen.loesche(MAILBOX_ROOT, wer, reminder_id)
+            except (erinnerungen.ErinnerungFehler, ValueError) as exc:
+                return {"error": str(exc)}
+
+    if on("snooze_reminder"):
+        @werkzeug
+        def snooze_reminder(reminder_id: str, when: str, agent: str | None = None) -> dict:
+            """Eine offene Erinnerung auf einen neuen Termin verschieben."""
+            try:
+                wer = ident(agent, "agent")
+            except ScopeError as exc:
+                return {"error": str(exc)}
+            _log(kanal, "snooze_reminder", agent=wer, id=reminder_id, when=when)
+            try:
+                return erinnerungen.verschiebe(MAILBOX_ROOT, wer, reminder_id, when)
+            except (erinnerungen.ErinnerungFehler, ValueError) as exc:
                 return {"error": str(exc)}
 
     # --- Freigaben der Automatik (Issue #56) ---------------------------------

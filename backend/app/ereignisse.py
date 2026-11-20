@@ -54,6 +54,8 @@ ARTEN = frozenset({
     "kosten",
     # Freigabe-Anfragen der Automatik (Issue #56): angefragt/erlaubt/abgelehnt/abgelaufen
     "freigabe",
+    # Erinnerungs-Postfach (Issue #52): angelegt/zugestellt/gelöscht
+    "erinnerung",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).

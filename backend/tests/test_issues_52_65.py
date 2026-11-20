@@ -2,6 +2,8 @@
 
     cd backend && python -m tests.test_issues_52_65
 
+  #52  Erinnerungen: nur fürs eigene Postfach, fällig → Task/Nachricht,
+       Verspätetes wird nachgeholt, löschen/verschieben
   #54  Fehlstart des Watchers steht als `fehlstart` im Ereignis-Log, nicht als
        Handbetrieb; claim_task liefert sender + Zahl der Nachträge
   #55  Tageskosten-Grenze: Rückfrage an den Menschen, Watcher-Claim gesperrt,
@@ -365,7 +367,48 @@ def test_64_geheimnisse(ws: Path) -> None:
     assert "abc123" not in json.dumps(beim_chef)
 
 
-TESTS = [test_64_geheimnisse,
+def test_52_erinnerungen(ws: Path) -> None:
+    from datetime import datetime, timedelta
+    ms = _mcp_server_laden(ws)
+    from app import ereignisse, erinnerungen
+    root = ws / "mailboxes"
+    _boxen(ws, "zabbix", "erp")
+    t = _tools(ms, identity="zabbix")
+    assert "error" in t["remind"](when="morgen früh", text="x")
+    assert "error" in t["remind"](when="2026-11-26", text=" ")
+    assert "error" in t["remind"](when="2026-11-26", text="x", agent="erp"), "nur eigenes Postfach"
+    e1 = t["remind"](when="2026-11-26", text="Trigger X prüfen – Ticket #123")
+    assert e1["faellig"].startswith("2026-11-26T08:00") and e1["status"] == "offen", e1
+    e2 = t["remind"](when="2026-11-27T14:30", text="nur Hinweis", als="message")
+    e3 = t["remind"](when="2026-12-01", text="später")
+    assert [e["id"] for e in t["reminders"]()] == [e1["id"], e2["id"], e3["id"]]
+    assert t["snooze_reminder"](reminder_id=e3["id"], when="2027-01-05")["faellig"].startswith("2027-01-05")
+    assert t["cancel_reminder"](reminder_id=e3["id"])["status"] == "geloescht"
+    assert "error" in t["cancel_reminder"](reminder_id=e3["id"])
+    # vor dem Termin passiert nichts
+    vorher = datetime.fromisoformat(e1["faellig"]) - timedelta(hours=1)
+    assert erinnerungen.stelle_faellige_zu(root, lambda n: True, vorher) == []
+    # Tage später (Server war aus): beide werden nachgeholt
+    spaeter = datetime.fromisoformat(e2["faellig"]) + timedelta(days=3)
+    zu = erinnerungen.stelle_faellige_zu(root, lambda n: True, spaeter)
+    assert sorted(z["art"] for z in zu) == ["message", "task"], zu
+    post = _inbox(ws, "zabbix")
+    aufgabe = [e for e in post if e.get("kind", "task") == "task"][0]
+    assert "Trigger X prüfen" in aufgabe["instruction"] and aufgabe["sender"] == "orchestrator"
+    assert any(e.get("kind") == "message" and "nur Hinweis" in e["text"] for e in post)
+    assert erinnerungen.stelle_faellige_zu(root, lambda n: True, spaeter) == [], "nur einmal"
+    assert t["reminders"]() == []
+    assert len(t["reminders"](include_done=True)) == 3
+    # ohne Automatik wird aus dem Default eine Nachricht
+    e4 = t["remind"](when="2026-11-20", text="ohne Automatik")
+    zu = erinnerungen.stelle_faellige_zu(root, lambda n: False, spaeter)
+    assert [z["art"] for z in zu] == ["message"] and zu[0]["id"] == e4["id"]
+    zustaende = [e["details"]["zustand"] for e in ereignisse.lies(root, "zabbix", art="erinnerung")["eintraege"]]
+    assert zustaende.count("angelegt") == 4 and zustaende.count("zugestellt") == 3, zustaende
+
+
+TESTS = [test_52_erinnerungen,
+         test_64_geheimnisse,
          test_56_freigaben,
          test_57_53_datei_tools,
          test_55_kostendeckel_und_sichtbarkeit,

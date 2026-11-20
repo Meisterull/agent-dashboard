@@ -91,6 +91,15 @@ export const loescheGeheimnis = (agent, name) =>
   jsend(`/api/geheimnisse/${encodeURIComponent(agent)}/${encodeURIComponent(name)}`, "DELETE");
 export const setzeGeheimnisEnvDatei = (agent, an) =>
   jsend(`/api/geheimnisse/${encodeURIComponent(agent)}`, "PUT", { env_datei: an });
+// Erinnerungs-Postfach (Issue #52)
+const erinnerungUrl = (agent, id) =>
+  `/api/agents/${encodeURIComponent(agent)}/erinnerungen${id ? `/${encodeURIComponent(id)}` : ""}`;
+export const getErinnerungen = (agent) => jget(erinnerungUrl(agent));
+export const legeErinnerungAn = (agent, when, text) =>
+  jsend(erinnerungUrl(agent), "POST", { when, text });
+export const verschiebeErinnerung = (agent, id, when) =>
+  jsend(erinnerungUrl(agent, id), "PUT", { when });
+export const loescheErinnerung = (agent, id) => jsend(erinnerungUrl(agent, id), "DELETE");
 export const getAutomatik = () => jget("/api/automatik");
 // `weckt` (Issue #65): beim Einschalten gleich festlegen, was außer Tasks weckt.
 export const setAutomatik = (name, an, weckt) =>

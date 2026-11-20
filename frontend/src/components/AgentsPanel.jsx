@@ -16,6 +16,7 @@ import {
 import { bestaetigen, melden } from "./Dialog";
 import FreigabenDialog from "./FreigabenDialog";
 import GeheimnisseAbschnitt from "./GeheimnisseAbschnitt";
+import Erinnerungen from "./Erinnerungen";
 import RollenDialog from "./RollenDialog";
 import ZeitplaeneDialog from "./ZeitplaeneDialog";
 import { t } from "../sprache";
@@ -678,6 +679,7 @@ export default function AgentsPanel({ refreshKey, sichtbar = true, onAttention }
             </span>
           </div>
         )}
+        <Erinnerungen agent={selected} refreshKey={localKey} />
         {/* Ereignis-Zeitleiste (Beobachtbarkeit): Läufe, Sitzungen,
             Verweigerungen, Fehlserien — dauerhaft, nicht nur der Roh-Log. */}
         <Ereignisse
