@@ -83,6 +83,10 @@ export const entscheideFreigabe = (agent, id, erlauben, regel) =>
   });
 export const setFreigabeEinstellung = (agent, daten) =>
   jsend(`/api/freigaben/${encodeURIComponent(agent)}`, "PUT", daten);
+// Zustellung in die Terminal-Sitzung (Issue #67)
+export const getZustellung = (agent) => jget(`/api/zustellung/${encodeURIComponent(agent)}`);
+export const setZustellung = (agent, daten) =>
+  jsend(`/api/zustellung/${encodeURIComponent(agent)}`, "PUT", daten);
 // Geheimnis-Speicher (Issue #64) — die API liefert nur Namen, nie Werte
 export const getGeheimnisse = (agent) => jget(`/api/geheimnisse/${encodeURIComponent(agent)}`);
 export const setzeGeheimnis = (agent, name, wert) =>

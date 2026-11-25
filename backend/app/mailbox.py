@@ -606,7 +606,8 @@ class Mailbox:
             return ergaenzt
 
     def claim_task(self, task_id: str, erneut: bool = False,
-                   von: str = CLAIM_SITZUNG) -> Optional[dict[str, Any]]:
+                   von: str = CLAIM_SITZUNG,
+                   an_sitzung: bool = False) -> Optional[dict[str, Any]]:
         """EINEN bestimmten Task beanspruchen (inbox → .processing).
 
         `von` (Issue #46): `CLAIM_WATCHER` kennzeichnet den Anspruch eines
@@ -659,11 +660,41 @@ class Mailbox:
             # der Watcher tut das alle paar Minuten, solange sein Lauf
             # arbeitet. Für die Pflege ist der Task damit nicht verwaist.
             laufend["zuletzt_aktiv"] = _now()
+            if an_sitzung:
+                # Issue #67: der Watcher hat den Task in die interaktive
+                # Terminal-Sitzung getippt — ab jetzt gilt die Sitzungs-Frist
+                # der Pflege (24 h) statt der Watcher-Regel (3 h, Zähler).
+                laufend["claim_von"] = CLAIM_SITZUNG
+                laufend["zustellung"] = "sitzung"
+                laufend.pop("requeues", None)
             try:
                 atomic_write_json(dst, laufend)
             except OSError:
                 pass  # Stempel ist Schutz, kein Grund den Aufruf scheitern zu lassen
             return laufend
+
+    def zurueckgeben(self, task_id: str) -> bool:
+        """Beanspruchten Task unverändert zurück in die Inbox (Issue #67: die
+        Automatik wurde gestoppt, während sie auf eine freie Terminal-Sitzung
+        wartete — sonst läge er bis zur Pflege-Frist verwaist herum)."""
+        task_id = _sichere_id(task_id, "Task-ID")
+        src = self.processing / f"{task_id}.json"
+        with self._lock():
+            try:
+                env = json.loads(src.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                return False
+            if env.get("status") == "needs_confirm":
+                return False
+            for feld in ("claimed_at", "zuletzt_aktiv", "claim_von", "zustellung"):
+                env.pop(feld, None)
+            env["status"] = "pending"
+            atomic_write_json(src, env)
+            try:
+                os.replace(src, self.inbox / src.name)
+            except FileNotFoundError:
+                return False
+            return True
 
     # --- Lebenszeichen des Agenten (Issue #42) -------------------------------
 

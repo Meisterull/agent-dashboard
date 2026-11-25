@@ -60,6 +60,9 @@ ARTEN = frozenset({
     "liegt",
     # Deploy-Pakete (Issue #61): Phasenwechsel eines gemeldeten Pakets
     "paket",
+    # Zustellung in die Terminal-Sitzung (Issue #67): wartet/zugestellt/
+    # erinnert/abgeschlossen/offen/rueckfall/zurueck/hooks
+    "zustellung",
 })
 # Immer pushen, auch innerhalb der Bündel-Sperre: dann steht die Automatik —
 # oder die Arbeit eines Tages ist als gescheitert gemeldet worden (aufgegeben).

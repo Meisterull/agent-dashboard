@@ -1705,6 +1705,467 @@ def liefere_ergebnis(client: "McpClient | None", url: str, task_id: str,
     return None, client, fehler
 
 
+# --- Zustellung in die interaktive Terminal-Sitzung (Issue #67) --------------
+#
+# Statt eines eigenen `claude --print` tippt der Watcher den Task in die
+# laufende Claude-Code-Sitzung des Projekt-Terminals (tmux auf DIESEM
+# Rechner). Der Mensch sieht live mit, kann dazwischenschreiben, und es gibt
+# nur einen Verlauf. Ablauf je Task:
+#   1. Sitzung finden: tmux-Fenster, dessen Ordner == Projektordner und in
+#      dem Claude läuft. Keine → headless wie bisher.
+#   2. Warten, bis sie frei ist: Hook-Datei (Stop/UserPromptSubmit) UND
+#      Bildschirm (leere Eingabezeile, kein „esc to interrupt") sagen frei.
+#      Frist = Wanduhr-Deckel des Tasks, danach headless.
+#   3. Anspruch auf `sitzung` umschreiben, Text per Bracketed Paste + Enter.
+#   4. Beobachten, bis der Task weg ist (complete_task aus der Sitzung).
+#      Wird die Sitzung frei, ohne abzuschließen: EINE Erinnerung. Frist um
+#      oder Sitzung weg: Fehlschlag „offen in der Sitzung" an den Absender.
+#   5. Verbrauch aus dem Transkript nachtragen (zweites complete_task, #43).
+# Gemessen am 25.11.2026 mit Claude Code 2.1.332 / tmux 3.4: Hooks in
+# .claude/settings.local.json greifen auch in einer schon laufenden Sitzung;
+# Esc (Unterbrechen) löst KEINEN Stop-Hook aus; mehrzeiliger Text muss als
+# Bracketed Paste kommen (send-keys -l schickte jede Zeile ab).
+
+SITZUNG_DIR = Path(os.environ.get("AGENT_DASHBOARD_SITZUNGEN")
+                   or Path.home() / ".agent-dashboard" / "sitzungen")
+SITZUNG_TAKT = 5.0          # s zwischen zwei Blicken auf die Sitzung
+SITZUNG_BESTAETIGUNG = 15.0  # s bis der UserPromptSubmit-Hook die Zustellung bestätigt
+SITZUNG_ERINNERN_NACH = 20.0  # s Ruhe nach dem Stop, bevor erinnert wird
+SITZUNG_HAENGT = 60.0       # s Bildschirm frei trotz Hook „arbeitet" (Esc) → frei
+HOOK_EREIGNISSE = ("UserPromptSubmit", "Stop", "SessionStart", "SessionEnd")
+HOOK_ZUSTAND = {"UserPromptSubmit": "arbeitet", "Stop": "frei",
+                "SessionStart": "frei", "SessionEnd": "zu"}
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# gedimmter Text (Platzhalter/Vorschlag in der Eingabezeile) bis zum Reset
+_DIM_RE = re.compile(r"\x1b\[2m.*?(?:\x1b\[(?:0|22)?m|$)")
+
+# Kosten-Schätzung aus dem Transkript (USD je Million Tokens; Eingabe,
+# Ausgabe, Cache-Lesen). Cache-Schreiben: 1,25× (5 min) bzw. 2× (1 h) Eingabe.
+# Stand 25.11.2026 (Anthropic-Preisliste). Unbekanntes Modell → nur Tokens.
+PREISE = (
+    ("claude-fable-5-2", 8.0, 40.0, 0.20), ("claude-mythos-5-2", 8.0, 40.0, 0.20),
+    ("claude-fable-5", 10.0, 50.0, 1.00), ("claude-mythos-5", 10.0, 50.0, 1.00),
+    ("claude-opus-5-5", 4.0, 20.0, 0.20), ("claude-opus-5", 5.0, 25.0, 0.50),
+    ("claude-opus-4", 5.0, 25.0, 0.50),
+    ("claude-sonnet-5-5", 2.0, 10.0, 0.10), ("claude-sonnet-5", 2.0, 10.0, 0.20),
+    ("claude-sonnet-4", 3.0, 15.0, 0.30),
+    ("claude-haiku-5-5", 0.10, 0.50, 0.01), ("claude-haiku-4", 1.0, 5.0, 0.10),
+)
+
+
+def sitzung_meldung(zustand: str, text: str, task_id: str | None = None,
+                    schwere: str = "info", **details) -> None:
+    """Maschinenlesbare Zeile für den Automatik-Manager (→ Ereignis
+    `zustellung` + Push) plus der Klartext fürs Panel-Log."""
+    daten = {"zustand": zustand, "text": text, "task_id": task_id, "schwere": schwere,
+             **{k: v for k, v in details.items() if v is not None}}
+    sicher_print("@@zustellung " + json.dumps(daten, ensure_ascii=False))
+    sicher_print(f"[{now()}] {(task_id + ' · ') if task_id else ''}{text}")
+
+
+def sitzung_datei(cwd: "str | os.PathLike") -> Path:
+    """Zustandsdatei je Projektordner (realpath), vom Hook geschrieben."""
+    import hashlib
+    schluessel = hashlib.sha1(os.path.realpath(str(cwd)).encode("utf-8")).hexdigest()[:16]
+    return SITZUNG_DIR / f"{schluessel}.json"
+
+
+def sitzung_hook(roh: str) -> int:
+    """`agent_watcher.py --sitzung-hook`: von Claude Code als Hook gerufen
+    (JSON auf stdin). Schreibt den Zustand der Sitzung; scheitert nie laut —
+    ein Hook-Fehler darf die Sitzung des Menschen nicht stören."""
+    try:
+        d = json.loads(roh or "{}")
+        ereignis = str(d.get("hook_event_name") or "")
+        zustand = HOOK_ZUSTAND.get(ereignis)
+        if not zustand or not d.get("cwd"):
+            return 0
+        SITZUNG_DIR.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(sitzung_datei(d["cwd"]), {
+            "zustand": zustand, "ereignis": ereignis, "zeit": time.time(),
+            "session_id": d.get("session_id"), "transcript": d.get("transcript_path"),
+            "cwd": d.get("cwd"),
+            # nur die ersten Zeichen: reicht, um die eigene Zustellung zu erkennen
+            "prompt": str(d.get("prompt") or "")[:300] or None,
+        })
+    except Exception:  # noqa: BLE001 — Hook bleibt stumm
+        pass
+    return 0
+
+
+def hook_befehl() -> str:
+    import shlex
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} --sitzung-hook"
+
+
+def hooks_einrichten(projekt: Path, befehl: "str | None" = None) -> bool:
+    """Die vier Hooks in `<projekt>/.claude/settings.local.json` ergänzen
+    (lokal, nicht eingecheckt). Fremde Einträge bleiben, doppelte entstehen
+    nicht. True = Datei geändert. Kaputtes JSON wird NICHT überschrieben."""
+    befehl = befehl or hook_befehl()
+    pfad = projekt / ".claude" / "settings.local.json"
+    try:
+        daten = json.loads(pfad.read_text(encoding="utf-8")) if pfad.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(daten, dict):
+        return False
+    hooks = daten.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        return False
+    geaendert = False
+    for ereignis in HOOK_EREIGNISSE:
+        liste = hooks.setdefault(ereignis, [])
+        if not isinstance(liste, list):
+            return False
+        da = any(isinstance(g, dict) and any(
+            isinstance(h, dict) and "--sitzung-hook" in str(h.get("command") or "")
+            for h in (g.get("hooks") or [])) for g in liste)
+        if not da:
+            liste.append({"hooks": [{"type": "command", "command": befehl, "timeout": 10}]})
+            geaendert = True
+    if geaendert:
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(pfad, daten)
+    return geaendert
+
+
+def _tmux(*args: str, eingabe: "str | None" = None, timeout: float = 10.0) -> "str | None":
+    try:
+        r = subprocess.run(["tmux", *args], input=eingabe, capture_output=True,
+                           text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def finde_sitzung(projekt: Path) -> "dict | None":
+    """tmux-Fenster auf diesem Rechner, das im Projektordner steht und in
+    dem Claude Code läuft (Prozessname `claude`, ältere npm-Fassung `node`)."""
+    if not shutil.which("tmux"):
+        return None
+    aus = _tmux("list-panes", "-a", "-F",
+                "#{session_name}\t#{pane_id}\t#{pane_current_path}\t#{pane_current_command}")
+    if not aus:
+        return None
+    ziel = os.path.realpath(str(projekt))
+    for zeile in aus.splitlines():
+        teile = zeile.split("\t")
+        if len(teile) != 4:
+            continue
+        sitzung, pane, pfad, befehl = teile
+        if os.path.realpath(pfad) != ziel:
+            continue
+        if "claude" in befehl.lower() or befehl == "node":
+            return {"sitzung": sitzung, "pane": pane, "pfad": ziel}
+    return None
+
+
+def bildschirm_lesen(text: str) -> dict:
+    """Aus `capture-pane -p -e` (mit Farbcodes) lesen, ob Claude Code auf
+    Eingabe wartet. Die Eingabe steht zwischen den beiden letzten
+    waagerechten Linien; Platzhalter und Vorschläge sind gedimmt (\\e[2m) und
+    zählen nicht als getippt. Läuft eine Antwort, steht „esc to interrupt"
+    in der Fußzeile; Dialoge (Rechte, Vertrauen) haben keine Eingabebox."""
+    zeilen = text.splitlines()
+    roh = [_ANSI_RE.sub("", z) for z in zeilen]
+    linien = [i for i, z in enumerate(roh) if z.strip() and set(z.strip()) <= {"─"}
+              and len(z.strip()) >= 10]
+    if len(linien) < 2:
+        return {"frei": False, "grund": "keine Eingabezeile (Dialog offen?)"}
+    oben, unten = linien[-2], linien[-1]
+    fuss = " ".join(roh[unten + 1:]).lower()
+    if "esc to interrupt" in fuss or "esc zum unterbrechen" in fuss:
+        return {"frei": False, "grund": "Claude arbeitet"}
+    eingabe = ""
+    for z in zeilen[oben + 1:unten]:
+        z = _ANSI_RE.sub("", _DIM_RE.sub("", z))
+        eingabe += z.replace("❯", "").replace(">", "", 1).replace("\xa0", " ").strip()
+    if not any("❯" in z or z.lstrip().startswith(">") for z in roh[oben + 1:unten]):
+        return {"frei": False, "grund": "keine Eingabezeile (Dialog offen?)"}
+    if eingabe:
+        return {"frei": False, "grund": "Eingabe nicht leer (jemand tippt)"}
+    return {"frei": True, "grund": "Eingabezeile leer"}
+
+
+def hook_lesen(projekt: Path) -> "dict | None":
+    try:
+        d = json.loads(sitzung_datei(projekt).read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def sitzung_pruefen(sitz: dict, projekt: Path, merker: dict) -> dict:
+    """Ist die Sitzung frei? Nur wenn Hook UND Bildschirm es sagen.
+    Ausnahme: Esc löst keinen Stop-Hook aus — steht der Hook auf „arbeitet",
+    der Bildschirm aber seit SITZUNG_HAENGT durchgehend auf frei, gilt frei.
+    → {frei, grund, hook} ; grund ist für Menschen."""
+    bild_roh = _tmux("capture-pane", "-p", "-e", "-t", sitz["pane"])
+    if bild_roh is None:
+        return {"frei": False, "grund": "Sitzung weg", "weg": True}
+    bild = bildschirm_lesen(bild_roh)
+    hook = hook_lesen(projekt)
+    if not bild["frei"]:
+        merker.pop("bild_frei_seit", None)
+        return {"frei": False, "grund": bild["grund"], "hook": hook}
+    merker.setdefault("bild_frei_seit", time.monotonic())
+    if hook is not None and hook.get("zustand") == "frei":
+        return {"frei": True, "grund": "frei", "hook": hook}
+    # Esc löst keinen Stop aus, und frisch eingetragene Hooks haben noch nichts
+    # gemeldet (gemessen 25.11.2026: Datei fehlt, bis das erste Ereignis kommt)
+    # → steht der Bildschirm lange genug durchgehend leer, gilt die Sitzung als frei.
+    if (hook is None or hook.get("zustand") == "arbeitet") and \
+            time.monotonic() - merker["bild_frei_seit"] >= SITZUNG_HAENGT:
+        return {"frei": True, "grund": "frei (Bildschirm ruhig)", "hook": hook}
+    return {"frei": False, "hook": hook,
+            "grund": "wartet auf Hook-Meldung" if hook is None else f"Hook: {hook.get('zustand')}"}
+
+
+def zustellen(sitz: dict, text: str) -> bool:
+    """Text als Bracketed Paste einfügen, dann Enter. Ein eigener
+    Puffername je Zustellung, -d räumt ihn danach weg."""
+    puffer = f"dashboard-{uuid.uuid4().hex[:8]}"
+    if _tmux("load-buffer", "-b", puffer, "-", eingabe=text) is None:
+        return False
+    if _tmux("paste-buffer", "-p", "-d", "-b", puffer, "-t", sitz["pane"]) is None:
+        return False
+    time.sleep(0.8)  # Claude Code verarbeitet das Einfügen, sonst geht Enter unter
+    return _tmux("send-keys", "-t", sitz["pane"], "Enter") is not None
+
+
+def zustell_text(agent: str, task_id: str, sender: "str | None", instruction: str,
+                 frist: float) -> str:
+    return (f"[Dashboard-Automatik · Task {task_id} von {sender or '?'} · "
+            f"Frist {int(frist // 60)} min]\n"
+            f"Bearbeite diesen Task und schließe ihn mit complete_task("
+            f"task_id=\"{task_id}\", result=…) ab (Rückfrage: ask). "
+            f"Du bist {agent}.\n\n{instruction}")
+
+
+def erinnerung_text(task_id: str) -> str:
+    return (f"[Dashboard-Automatik] Task {task_id} ist noch offen. Bitte mit "
+            f"complete_task(task_id=\"{task_id}\", result=…) abschließen — oder mit "
+            f"ask nachfragen, falls etwas fehlt.")
+
+
+def _preis(modell: str) -> "tuple | None":
+    for praefix, ein, aus, lesen in PREISE:
+        if modell.startswith(praefix):
+            return ein, aus, lesen
+    return None
+
+
+def transkript_verbrauch(pfad: "str | None", ab: float) -> dict:
+    """usage der Assistant-Nachrichten ab Zeitpunkt `ab` (Unix-Zeit) summieren.
+    Claude Code schreibt eine API-Antwort als mehrere Zeilen mit DERSELBEN
+    usage (je Inhaltsblock) → je message.id nur einmal zählen. Kosten sind
+    eine Schätzung nach PREISE (im Abo sind es keine echten Ausgaben)."""
+    summe = {"input_tokens": 0, "output_tokens": 0,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+    if not pfad:
+        return {}
+    je_nachricht: dict = {}
+    try:
+        with open(pfad, encoding="utf-8") as f:
+            for zeile in f:
+                try:
+                    d = json.loads(zeile)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("type") != "assistant" or not isinstance(d.get("message"), dict):
+                    continue
+                try:
+                    t = datetime.fromisoformat(str(d.get("timestamp")).replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if t.timestamp() < ab:
+                    continue
+                m = d["message"]
+                if isinstance(m.get("usage"), dict):
+                    je_nachricht[m.get("id") or d.get("uuid")] = (str(m.get("model") or ""),
+                                                                  m["usage"])
+    except OSError:
+        return {}
+    kosten, bekannt, modell = 0.0, True, ""
+    for modell_n, u in je_nachricht.values():
+        modell = modell_n or modell
+        werte = {f: int(_zahl(u.get(f))) for f in summe}
+        for f, w in werte.items():
+            summe[f] += w
+        preis = _preis(modell_n)
+        if preis is None:
+            bekannt = False
+            continue
+        ein, aus, lesen = preis
+        cc = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
+        eine_std = int(_zahl(cc.get("ephemeral_1h_input_tokens")))
+        fuenf = max(0, werte["cache_creation_input_tokens"] - eine_std)
+        kosten += (werte["input_tokens"] * ein + werte["output_tokens"] * aus
+                   + werte["cache_read_input_tokens"] * lesen
+                   + fuenf * ein * 1.25 + eine_std * ein * 2.0) / 1e6
+    if not je_nachricht:
+        return {}
+    erg: dict = dict(summe)
+    if bekannt:
+        erg["total_cost_usd"] = round(kosten, 6)
+        erg["kosten_geschaetzt"] = True
+    erg["modell"] = modell or None
+    return erg
+
+
+def _task_offen(client: "McpClient | None", task_id: str) -> "bool | None":
+    """Liegt der Task noch beansprucht beim Agenten? None = unklar (Netz)."""
+    if client is None:
+        return None
+    try:
+        r = client.call("claim_task", {"task_id": task_id, "erneut": True})
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(r, dict) and r.get("error"):
+        return False if "liegt nicht" in str(r["error"]) else None
+    return isinstance(r, dict)
+
+
+def in_sitzung_bearbeiten(client: "McpClient", agent: str, task_id: str,
+                          projekt: Path, instruction: str, sender: "str | None",
+                          frist: float, push: bool = False) -> dict:
+    """Ein beanspruchter Task über die Terminal-Sitzung. Ergebnis:
+      {"weg": "headless", "grund": …}         → Aufrufer startet den normalen Lauf
+      {"weg": "sitzung", "status": "erledigt"|"offen"|"weg"|"stopp", …}
+    Bei „offen"/„weg" liefert der Aufrufer den Fehlschlag ab, bei „erledigt"
+    trägt er den Verbrauch nach, bei „stopp" gibt er den Task zurück."""
+    sitz = finde_sitzung(projekt)
+    if sitz is None:
+        return {"weg": "headless", "grund": "keine Claude-Sitzung im Projekt-Terminal offen"}
+    if hooks_einrichten(projekt):
+        sitzung_meldung("hooks", f"Sitzungs-Hooks in {projekt}/.claude/settings.local.json "
+                        f"eingetragen", task_id)
+    merker: dict = {}
+    start = time.monotonic()
+    herz = time.monotonic()
+    gemeldet = False
+    while True:
+        if HART.is_set() or STOP.is_set():
+            return {"weg": "sitzung", "status": "stopp"}
+        lage = sitzung_pruefen(sitz, projekt, merker)
+        if lage.get("weg"):
+            return {"weg": "headless", "grund": "Sitzung wurde geschlossen"}
+        if lage["frei"]:
+            break
+        if not gemeldet and time.monotonic() - start >= 2 * SITZUNG_TAKT:
+            sitzung_meldung("wartet", f"wartet auf freie Sitzung „{sitz['sitzung']}“ "
+                            f"({lage['grund']})", task_id, sitzung=sitz["sitzung"])
+            gemeldet = True
+        if time.monotonic() - start >= frist:
+            return {"weg": "headless", "grund": f"Sitzung {int(frist // 60)} min belegt"}
+        if time.monotonic() - herz >= HERZSCHLAG:
+            herz = time.monotonic()
+            try:
+                client.call("claim_task", {"task_id": task_id, "erneut": True, "watcher": True})
+            except Exception:  # noqa: BLE001
+                pass
+        STOP.wait(SITZUNG_TAKT)
+    # Ab hier gehört der Task der Sitzung (24-h-Regel statt 3-h, Issue #46).
+    try:
+        client.call("claim_task", {"task_id": task_id, "erneut": True, "sitzung": True})
+    except Exception:  # noqa: BLE001 — Anspruch bleibt dann beim Watcher, harmlos
+        pass
+    zugestellt = time.time()
+    if not zustellen(sitz, zustell_text(agent, task_id, sender, instruction, frist)):
+        return {"weg": "headless", "grund": "tmux-Zustellung gescheitert"}
+    # Bestätigung: der UserPromptSubmit-Hook mit unserer Task-ID
+    bestaetigt = False
+    for versuch in range(2):
+        grenze = time.monotonic() + SITZUNG_BESTAETIGUNG
+        while time.monotonic() < grenze and not HART.is_set():
+            h = hook_lesen(projekt) or {}
+            if h.get("zeit", 0) >= zugestellt - 1 and task_id in str(h.get("prompt") or "") \
+                    or (h.get("zeit", 0) >= zugestellt - 1 and h.get("zustand") == "arbeitet"):
+                bestaetigt = True
+                break
+            time.sleep(1.0)
+        if bestaetigt or versuch:
+            break
+        _tmux("send-keys", "-t", sitz["pane"], "Enter")  # Enter ging unter
+    hook = hook_lesen(projekt) or {}
+    sitzung_meldung("zugestellt" if bestaetigt else "unbestaetigt",
+                    (f"in Sitzung „{sitz['sitzung']}“ zugestellt" if bestaetigt else
+                     f"in Sitzung „{sitz['sitzung']}“ getippt, aber kein Hook hat es "
+                     f"bestätigt — im Terminal nachsehen; ältere Claude-Code-Fassungen "
+                     f"lesen neue Hooks erst nach einem Neustart (/exit, claude --continue)"),
+                    task_id, schwere="info" if bestaetigt else "warnung",
+                    sitzung=sitz["sitzung"], projekt_pfad=str(projekt), push=push or None)
+    erinnert = False
+    ruhe_seit: "float | None" = None
+    ende = time.monotonic() + frist
+    while True:
+        if HART.is_set():
+            return {"weg": "sitzung", "status": "stopp_hart", "ab": zugestellt}
+        offen = _task_offen(client, task_id)
+        if offen is False:
+            hook = hook_lesen(projekt) or hook
+            return {"weg": "sitzung", "status": "erledigt", "ab": zugestellt,
+                    "session_id": hook.get("session_id"), "transcript": hook.get("transcript")}
+        if _tmux("has-session", "-t", "=" + sitz["sitzung"]) is None:
+            return {"weg": "sitzung", "status": "weg", "ab": zugestellt}
+        if time.monotonic() >= ende:
+            return {"weg": "sitzung", "status": "offen", "ab": zugestellt,
+                    "session_id": hook.get("session_id"), "transcript": hook.get("transcript")}
+        lage = sitzung_pruefen(sitz, projekt, merker)
+        h = lage.get("hook") or {}
+        nach_stop = lage["frei"] and h.get("zeit", 0) > zugestellt
+        if nach_stop and not erinnert:
+            ruhe_seit = ruhe_seit or time.monotonic()
+            if time.monotonic() - ruhe_seit >= SITZUNG_ERINNERN_NACH and offen is True:
+                if zustellen(sitz, erinnerung_text(task_id)):
+                    erinnert = True
+                    sitzung_meldung("erinnert", "Sitzung frei, Task noch offen — "
+                                    "Erinnerung getippt", task_id, schwere="warnung")
+        elif not lage["frei"]:
+            ruhe_seit = None
+        STOP.wait(SITZUNG_TAKT) if not STOP.is_set() else time.sleep(SITZUNG_TAKT)
+
+
+def sitzung_abschliessen(client: "McpClient | None", url: str, task_id: str, weg: dict,
+                         frist: float) -> tuple:
+    """Nachlauf einer Sitzungs-Zustellung (Issue #67) → wie liefere_ergebnis
+    (antwort, client, fehler)."""
+    status = weg["status"]
+    if status in ("stopp", "stopp_hart"):
+        if status == "stopp" and client is not None:
+            # noch nicht zugestellt: zurück in die Inbox statt 3 h verwaist
+            try:
+                client.call("claim_task", {"task_id": task_id, "zurueckgeben": True})
+                sitzung_meldung("zurueck", "Automatik gestoppt — Task zurück in die Inbox",
+                                task_id)
+            except Exception:  # noqa: BLE001
+                pass
+        return None, client, None
+    verbrauch = transkript_verbrauch(weg.get("transcript"), weg.get("ab") or time.time())
+    lauf = {"zustellung": "sitzung", "session_id": weg.get("session_id"),
+            "modell": verbrauch.pop("modell", None) if verbrauch else None}
+    lauf = {k: v for k, v in lauf.items() if v}
+    if status == "erledigt":
+        # Zweites complete_task: der Task ist schon abgeschlossen, der Server
+        # trägt nur Verbrauch und Lauf-Daten nach (Issue #43).
+        antwort, client, fehler = liefere_ergebnis(client, url, task_id, "", "done", "",
+                                                   verbrauch or None, lauf)
+        kosten = (verbrauch or {}).get("total_cost_usd")
+        sitzung_meldung("abgeschlossen", "in der Sitzung abgeschlossen"
+                        + (f" · ca. {kosten:.2f} $" if isinstance(kosten, (int, float)) else ""),
+                        task_id)
+        return antwort, client, None
+    grund = ("die Terminal-Sitzung wurde geschlossen" if status == "weg" else
+             f"nach {int(frist // 60)} min nicht mit complete_task abgeschlossen")
+    result = (f"[watcher] Task in die Terminal-Sitzung zugestellt, aber {grund}. "
+              f"Stand bitte in der Sitzung des Agenten prüfen"
+              + (f" (claude --resume {weg['session_id']})." if weg.get("session_id") else "."))
+    sitzung_meldung("offen", f"offen in der Sitzung — {grund}", task_id, schwere="warnung")
+    return liefere_ergebnis(client, url, task_id, result, "error", grund,
+                            verbrauch or None, lauf)
+
+
 def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: float,
              dry_run: bool, with_mcp_hint: bool, once: bool = False,
              permission_mode: str | None = None,
@@ -1842,6 +2303,25 @@ def mcp_loop(url: str, agent: str, claude_bin: str, workdir: Path, interval: flo
                 elif wd_fehler:  # falsches Verzeichnis wäre schlimmer als Abbruch (#19)
                     result, err, status = "", wd_fehler, "error"
                     lauf_meta["fehlstart"] = wd_fehler
+                if not gefragt and not wd_fehler and einst.get("zustellung") == "sitzung":
+                    # Issue #67: erst die Terminal-Sitzung, headless nur als Rückfall
+                    frist = wirksamer_timeout(einst.get("timeout"), claimed.get("timeout"))
+                    weg = in_sitzung_bearbeiten(
+                        client, agent, task_id, task_dir, instruction,
+                        claimed.get("sender") or env.get("sender"), frist,
+                        push=bool(einst.get("zustellung_push")))
+                    if weg["weg"] == "headless":
+                        sitzung_meldung("rueckfall", f"läuft im Hintergrund: {weg['grund']}",
+                                        task_id, schwere="info" if "keine" in weg["grund"]
+                                        else "warnung")
+                    else:
+                        fertig, client, liefer_fehler = sitzung_abschliessen(
+                            client, url, task_id, weg, frist)
+                        if weg["status"] in ("stopp", "stopp_hart"):
+                            break
+                        continue
+                if gefragt or wd_fehler:
+                    pass
                 else:
                     try:
                         result, err, rc = run_claude_sitzung(
@@ -2118,6 +2598,13 @@ def process_once(inbox: Path, processing: Path, outbox: Path,
 
 
 def main() -> int:
+    if "--sitzung-hook" in sys.argv[1:]:
+        # Claude-Code-Hook der Terminal-Sitzung (Issue #67): kein Watcher-Start
+        try:
+            roh = sys.stdin.read()
+        except (OSError, ValueError):
+            roh = ""
+        return sitzung_hook(roh)
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", required=True)
     ap.add_argument("--root", help="Mailbox-Wurzel (enthält <agent>/) — Datei-Transport")
@@ -2176,6 +2663,11 @@ def main() -> int:
     ap.add_argument("--project-fallback", choices=["basis"], default=None,
                     help="fehlendes project-Verzeichnis: im Basisverzeichnis laufen "
                          "statt Rückfrage (Issue #54)")
+    ap.add_argument("--zustellung", choices=["headless", "sitzung"], default="headless",
+                    help="sitzung = Tasks in die laufende Claude-Sitzung des Projekt-"
+                         "Terminals tippen (tmux), headless nur als Rückfall (Issue #67)")
+    ap.add_argument("--zustellung-push", action="store_true",
+                    help="Push, wenn ein Task in die Sitzung getippt wurde")
     ap.add_argument("--interval", type=float, default=2.0)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--once", action="store_true", help="einmal durchlaufen und beenden")
@@ -2199,7 +2691,9 @@ def main() -> int:
              "fallback_model": modell_ok(args.fallback_model),
              "modelle_erlaubt": [m.strip() for m in args.modelle_erlaubt.split(",")
                                  if m.strip()],
-             "model_nachlauf": modell_ok(args.model_nachlauf)}
+             "model_nachlauf": modell_ok(args.model_nachlauf),
+             "zustellung": args.zustellung,
+             "zustellung_push": args.zustellung_push}
 
     # Nur EIN Watcher je Agent und PC (H2) — sonst führen zwei Instanzen
     # denselben Task doppelt aus (z.B. Netz-Flap: der Container startet einen

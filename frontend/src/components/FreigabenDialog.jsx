@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
-import { getFreigaben, setFreigabeEinstellung } from "../api";
+import { getFreigaben, getZustellung, setFreigabeEinstellung, setZustellung } from "../api";
 import { melden } from "./Dialog";
 import { t } from "../sprache";
 
@@ -15,6 +15,9 @@ export default function FreigabenDialog({ agent, onClose, children }) {
   const fristRef = useRef(null);
   const immerRef = useRef(null);
   const nieRef = useRef(null);
+  const [zustellung, setZustellungStand] = useState(null); // Issue #67
+  const sitzungRef = useRef(null);
+  const pushRef = useRef(null);
 
   useEffect(() => {
     getFreigaben()
@@ -23,6 +26,9 @@ export default function FreigabenDialog({ agent, onClose, children }) {
         setEinst(d.agents?.[agent] || { an: false, timeout: 900, immer: [], nie: [] });
       })
       .catch((e) => setFehler(String(e.message || e)));
+    getZustellung(agent)
+      .then(setZustellungStand)
+      .catch(() => setZustellungStand({ sitzung: false, push: false }));
   }, [agent]);
 
   const speichern = async () => {
@@ -34,6 +40,11 @@ export default function FreigabenDialog({ agent, onClose, children }) {
         immer: zeilen(immerRef.current),
         nie: zeilen(nieRef.current),
       });
+      if (zustellung)
+        await setZustellung(agent, {
+          sitzung: !!sitzungRef.current?.checked,
+          push: !!pushRef.current?.checked,
+        });
       if (antwort.warnung) await melden({ title: t("Hinweis"), text: antwort.warnung });
       onClose();
     } catch (e) {
@@ -81,6 +92,23 @@ export default function FreigabenDialog({ agent, onClose, children }) {
             </span>
             <textarea ref={nieRef} rows={4} defaultValue={einst.nie.join("\n")} className={feld} />
           </label>
+          {zustellung && (
+            <div className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-700">
+              <label className="flex items-start gap-2">
+                <input ref={sitzungRef} type="checkbox" defaultChecked={zustellung.sitzung} className="mt-0.5" />
+                <span>
+                  {t("Tasks in die laufende Terminal-Sitzung tippen: ist im Projekt-Terminal Claude Code offen, bekommt es den Task dort (du siehst live mit und kannst dazwischenschreiben). Ist die Sitzung belegt, wartet der Task; ohne offene Sitzung läuft er wie bisher im Hintergrund.")}
+                  <span className="block text-xs text-slate-400">
+                    {t("Wirkt beim nächsten Start der Automatik. Nur mit tmux (Linux/Mac); der Watcher trägt dafür Hooks in .claude/settings.local.json des Projekts ein.")}
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2">
+                <input ref={pushRef} type="checkbox" defaultChecked={zustellung.push} className="mt-0.5" />
+                <span>{t("Push, wenn ein Task in die Sitzung getippt wurde")}</span>
+              </label>
+            </div>
+          )}
           {children}
           {fehler && <p className="text-xs text-red-600">{fehler}</p>}
           <div className="flex justify-end gap-2">

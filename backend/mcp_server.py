@@ -630,7 +630,8 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
     if on("claim_task"):
         @werkzeug
         def claim_task(task_id: str, agent: str | None = None, erneut: bool = False,
-                       watcher: bool = False) -> dict:
+                       watcher: bool = False, sitzung: bool = False,
+                       zurueckgeben: bool = False) -> dict:
             """Einen Task aus der eigenen Inbox annehmen, BEVOR du daran arbeitest.
 
             Markiert ihn als "in Arbeit" (inbox → .processing) — im Dashboard sichtbar,
@@ -638,13 +639,21 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
             auf einem gebundenen Kanal weglassen). Danach: Aufgabe erledigen und mit
             complete_task abschließen. Ein bereits laufender Task wird NICHT erneut
             vergeben; arbeitest du selbst daran und brauchst den Auftragstext noch
-            einmal, dann `erneut=True`. `watcher` setzt nur der Automatik-Watcher.
+            einmal, dann `erneut=True`. `watcher`, `sitzung` und `zurueckgeben`
+            setzt nur der Automatik-Watcher.
             """
             try:
                 wer = ident(agent, "agent")
             except ScopeError as exc:
                 return {"error": str(exc)}
             _log(kanal, "claim_task", agent=wer, task=task_id)
+            if zurueckgeben:
+                # Issue #67: Watcher gestoppt, bevor er zustellen konnte
+                try:
+                    ok = Mailbox(MAILBOX_ROOT, wer).zurueckgeben(task_id)
+                except ValueError as exc:
+                    return {"error": str(exc)}
+                return {"task_id": task_id, "zurueckgegeben": ok}
             # Kostendeckel (Issue #55): bei erreichter Tagesgrenze nimmt die
             # AUTOMATIK nichts Neues an (Fortsetzen eines schon laufenden
             # Tasks und der Handbetrieb bleiben frei).
@@ -659,7 +668,8 @@ def register_tools(mcp: FastMCP, identity: str | None, allowed: set[str] | None)
                 # die Aufgabe-Grenze der Pflege; alles andere ist eine Sitzung.
                 env = Mailbox(MAILBOX_ROOT, wer).claim_task(
                     task_id, erneut=erneut,
-                    von=CLAIM_WATCHER if watcher else CLAIM_SITZUNG)
+                    von=CLAIM_WATCHER if watcher else CLAIM_SITZUNG,
+                    an_sitzung=bool(sitzung and erneut))
             except AlreadyClaimed as exc:
                 return {
                     "error": str(exc) + ". Falls du selbst daran arbeitest: "

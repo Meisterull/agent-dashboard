@@ -313,6 +313,12 @@ export default {
   "lädt …": "loading …",
   "Freigaben über das Dashboard: braucht ein Automatik-Lauf eine Berechtigung, fragt er hier nach (Banner + Push), statt still abzulehnen.":
     "Approvals via the dashboard: when an automation run needs a permission it asks here (banner + push) instead of silently denying.",
+  // FreigabenDialog.jsx — Zustellung in die Terminal-Sitzung (Issue #67)
+  "Tasks in die laufende Terminal-Sitzung tippen: ist im Projekt-Terminal Claude Code offen, bekommt es den Task dort (du siehst live mit und kannst dazwischenschreiben). Ist die Sitzung belegt, wartet der Task; ohne offene Sitzung läuft er wie bisher im Hintergrund.":
+    "Type tasks into the running terminal session: if Claude Code is open in the project terminal, it gets the task there (you watch live and can interject). If the session is busy, the task waits; without an open session it runs in the background as before.",
+  "Wirkt beim nächsten Start der Automatik. Nur mit tmux (Linux/Mac); der Watcher trägt dafür Hooks in .claude/settings.local.json des Projekts ein.":
+    "Takes effect on the next automation start. Only with tmux (Linux/Mac); the watcher adds hooks to the project's .claude/settings.local.json for this.",
+  "Push, wenn ein Task in die Sitzung getippt wurde": "Push when a task was typed into the session",
   "Wirkt beim nächsten Start der Automatik. Voraussetzung: der Dashboard-MCP ist auf der Maschine registriert ({0}).":
     "Takes effect at the next automation start. Requires the dashboard MCP to be registered on the machine ({0}).",
   "Wartezeit auf deine Antwort (Minuten)": "Wait for your answer (minutes)",

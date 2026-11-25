@@ -38,7 +38,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from app import ereignisse, freigaben, geheimnisse, kosten, liegezeit, weckruf
+from app import ereignisse, freigaben, geheimnisse, kosten, liegezeit, weckruf, zustellung
 from app.config import load_agents_full, load_settings, save_settings
 
 RECONCILE_INTERVAL = 15   # Sekunden, bis settings-/agents-Änderungen greifen
@@ -376,6 +376,8 @@ class AutoWatcherManager:
                 "kosten": self._kosten.get(name),
                 # Freigaben über das Dashboard (Issue #56)
                 "freigaben": freigaben.einstellung(name, settings)["an"],
+                # Zustellung in die Terminal-Sitzung (Issue #67)
+                "zustellung": zustellung.einstellung(name, settings),
                 # Einmal-Lauf (Issue #59): schaltet sich nach getaner Arbeit ab
                 "einmal": bool((settings.get("automatik_einmal") or {}).get(name)),
                 **(w.als_dict() if w else {"status": "aus", "detail": "", "seit": None,
@@ -614,6 +616,8 @@ class AutoWatcherManager:
                                     f" --freigabe-timeout {int(frei['timeout'])}")
                     if str(cfg.get("project_fallback") or "").strip().lower() == "basis":
                         cmd += " --project-fallback basis"
+                    # Zustellung in die Terminal-Sitzung (Issue #67), Schalter im Panel
+                    cmd += zustellung.flags(name)
                     deckel = _ganzzahl(cfg.get("automatik_timeout"))
                     w.stop_grace = max(STOP_GRACE, (deckel if deckel and deckel >= 60
                                                     else WATCHER_TIMEOUT_DEFAULT) + 60)
@@ -636,6 +640,11 @@ class AutoWatcherManager:
                                         f"Watcher gestartet (MCP :{cfg['mcp_port']})")
                     async for zeile in proc.stdout:
                         zeile = zeile.rstrip()
+                        if zeile.startswith(zustellung.PRAEFIX):
+                            # Issue #67: Maschinenzeile → Ereignis; den Klartext
+                            # druckt der Watcher selbst in der Folgezeile.
+                            zustellung.verarbeite_zeile(MAILBOX_ROOT, name, zeile)
+                            continue
                         if zeile:
                             w.log.append(zeile)
                             w.detail = zeile

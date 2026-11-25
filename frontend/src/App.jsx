@@ -49,6 +49,15 @@ const TABS = [
   ["dateien", t("Dateien")],
 ];
 
+function projektAusUrl(params) {
+  const name = params.get("verbindung");
+  const projekt = params.get("projekt");
+  if (name && projekt)
+    window.dispatchEvent(
+      new CustomEvent("terminal:oeffnen", { detail: { name, sid: `p:${projekt}` } }),
+    );
+}
+
 export default function App() {
   const [sessionId, setSessionId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -245,6 +254,14 @@ export default function App() {
   // Der Service Worker meldet, wohin geklickt wurde (Issue #30) — sonst holt
   // ein Tipp auf die Benachrichtigung die App nur nach vorn und lässt sie auf
   // dem zuletzt benutzten Tab stehen.
+  // Push „Task in der Sitzung" (Issue #67): ?verbindung=…&projekt=… öffnet
+  // das Projekt-Terminal — beim Kaltstart kurz verzögert, bis das
+  // Terminal-Panel seinen Listener hat.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("projekt")) setTimeout(() => projektAusUrl(params), 800);
+  }, []);
+
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
     const onNachricht = (e) => {
@@ -255,6 +272,7 @@ export default function App() {
       // „zeige" öffnet in der laufenden App einen Dialog (Tagesbericht, #63)
       if (params.get("zeige"))
         window.dispatchEvent(new CustomEvent("dashboard:zeige", { detail: params.get("zeige") }));
+      projektAusUrl(params);
     };
     navigator.serviceWorker.addEventListener("message", onNachricht);
     return () =>

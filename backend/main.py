@@ -119,7 +119,7 @@ from app.files import (
     write_file,
 )
 from app.remote_files import RemoteFilesError
-from app import austausch, erinnerungen, freigaben, geheimnisse, liegezeit, zwischenspeicher
+from app import austausch, erinnerungen, freigaben, geheimnisse, liegezeit, zustellung, zwischenspeicher
 from app import pakete, tagesbericht, vorgaenge
 from app import container
 from app import upload
@@ -2003,6 +2003,30 @@ async def freigabe_einstellung(agent: str, body: FreigabeEinstellungIn) -> dict:
             **({"warnung": "Diese Muster enthalten etwas, das wie Zugangsdaten aussieht — "
                            "besser ein Geheimnis anlegen und im Befehl $NAME schreiben: "
                            + "; ".join(warnung)} if warnung else {})}
+
+
+# --- Zustellung in die Terminal-Sitzung (Issue #67) ---------------------------
+
+class ZustellungIn(BaseModel):
+    sitzung: bool | None = None
+    push: bool | None = None
+
+
+@app.get("/api/zustellung/{agent}")
+async def zustellung_lesen(agent: str) -> dict:
+    return {"agent": agent, **zustellung.einstellung(agent)}
+
+
+@app.put("/api/zustellung/{agent}")
+async def zustellung_setzen(agent: str, body: ZustellungIn) -> dict:
+    """Tasks in die laufende Claude-Sitzung des Projekt-Terminals tippen statt
+    headless — wirkt beim nächsten Start der Automatik dieses Agenten."""
+    try:
+        neu = await asyncio.to_thread(
+            lambda: zustellung.setze_einstellung(agent, body.sitzung, body.push))
+    except zustellung.ZustellFehler as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"agent": agent, **neu}
 
 
 # --- Tagesbericht (Issue #63) -------------------------------------------------

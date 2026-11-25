@@ -74,6 +74,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Einmal-Lauf (Issue #59): Automatik nur für die liegenden Tasks an —
     # der Manager schaltet sie wieder aus, sobald nichts mehr zu tun ist.
     "automatik_einmal": {},
+    # Zustellung der Automatik (Issue #67, app/zustellung.py): {agent: {sitzung:
+    # bool, push: bool}} — Tasks in die laufende Terminal-Sitzung tippen.
+    "zustellung": {},
     # Geheimnisse (Issue #64): je Agent zusätzlich als ~/.agent-dashboard/env
     # (0600) für interaktive Sitzungen ablegen? {name: true}. Die Werte selbst
     # liegen verschlüsselt in keys/geheimnisse.json, nie hier.

@@ -1,0 +1,36 @@
+
+[38;5;246m[48;5;237m❯ [38;5;231mSag nur ok.[39m
+
+[38;5;231m[49m●[39m ok
+
+[38;5;246m✻[39m [38;5;246mCogitated for 1s · done 18:16[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mFühre in der Shell 'sleep 20' aus.[39m
+
+[38;5;211m[49m●[39m [1mBash[0m(sleep 20)
+[38;5;246m  ⎿  Interrupted · What should Claude do inste…
+[39m
+[38;5;246m[48;5;237m❯ [38;5;231mErste Zeile: antworte nur mit dem Wort [39m
+  [38;5;231mBANANE.[39m
+  [38;5;231mZweite Zeile: und danach mit dem Wort KIWI.[39m
+  [38;5;231mDritte Zeile.[39m
+[49m
+[38;5;231m●[39m BANANE
+  KIWI
+
+[38;5;246m✻[39m [38;5;246mCogitated for 0s · done 18:16[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mFühre in der Shell 'sleep 15' aus.[39m
+
+[38;5;246m[49m [39m [1mBash[0m(sleep 15)
+[38;5;246m  ⎿  Running… (3s)[39m
+     [38;5;246m(ctrl+b ctrl+b (twice) to run in [39m
+     [38;5;246mbackground)[39m
+
+[38;5;174m·[39m [38;5;180mMustering…[38;5;174m [38;5;246m(4s · ↓[39m [38;5;246m82 tokens)[39m
+
+[38;5;244m───────────────────────────────────────────────
+[38;5;246m❯ [39m
+[38;5;244m───────────────────────────────────────────────
+[39m  [38;5;220m⏵⏵[39m [38;5;220mauto[39m [38;5;220mmode[39m [38;5;220mon[38;5;246m ·[39m [38;5;246mesc[39m [38;5;246mto[39m [38;5;246minterrupt[39m [38;5;246m·[39m [38;5;246m←[39m [38;5;246m2[39m [38;5;246ma…[39m
+

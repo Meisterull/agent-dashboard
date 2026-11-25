@@ -268,12 +268,41 @@ class EreignisPush:
                         "tag": f"liegt-{agent}", "art": "liegt", "agent": agent,
                         "optionen": ["automatik", "pause"], "url": "/?tab=agenten",
                     })
+                # Zustellung in die Terminal-Sitzung (Issue #67): eigener Push
+                # nur mit Schalter (`push` steht dann im Ereignis), Tipp öffnet
+                # das Projekt-Terminal.
+                if e.get("art") == "zustellung" and d.get("zustand") == "zugestellt" \
+                        and d.get("push"):
+                    meldungen.append({
+                        "titel": f"⌨ {agent}: Task in der Sitzung",
+                        "text": str(e.get("text") or "")[:180],
+                        "tag": f"zustellung-{e.get('task_id') or agent}",
+                        "art": "zustellung", "agent": agent,
+                        "url": _terminal_url(d.get("sitzung")),
+                    })
             probleme = [e for e in neue if e.get("schwere") in ("warnung", "fehler")
                         and e.get("art") not in ("freigabe", "liegt")]
             m = self.entscheide(agent, probleme, jetzt)
             if m:
                 meldungen.append(m)
         return meldungen
+
+
+def _terminal_url(sitzung: Any) -> str:
+    """Sprungziel ins Projekt-Terminal (Issue #67): tmux-Sitzungsname =
+    Projektname; die Verbindung sucht projekte.yaml heraus."""
+    from urllib.parse import quote
+    if not isinstance(sitzung, str) or not sitzung:
+        return "/?tab=terminal"
+    try:
+        from app import projekte
+        for verbindung, liste in projekte.lade_alle().items():
+            if any(p.get("name") == sitzung for p in liste):
+                return (f"/?tab=terminal&verbindung={quote(verbindung)}"
+                        f"&projekt={quote(sitzung)}")
+    except Exception:  # noqa: BLE001 — Sprung ins Terminal reicht dann
+        pass
+    return "/?tab=terminal"
 
 
 _ereignis_push = EreignisPush()

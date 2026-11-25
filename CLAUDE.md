@@ -231,6 +231,8 @@ cd backend && python -m tests.test_mcp_tools       # einzelnes Modul
 cd backend && python -m tests.test_projekte        # Projekt-Terminals: YAML, tmux-Zeile, Brücke
 cd backend && python -m tests.test_container       # Container-Fenster: Parser, Prüfungen, sudo-Rückfall, Shell-sid
 cd backend && python -m tests.test_issues_52_65    # Issues #52–#65 (Freigaben, Geheimnisse, Vorgänge, Kosten …)
+cd backend && python -m tests.test_issue_67        # Zustellung in die Terminal-Sitzung (echte Bildschirm-Aufnahmen)
+cd backend && python -m tests.test_issue_67_tmux   # dasselbe im Prüfstand: echtes tmux + nachgebautes Claude Code
 
 # Ganzer Stack
 docker compose up --build                      # nginx+api+mcp(+tunnel) via supervisord
@@ -654,8 +656,43 @@ Maschine, Geheimnis-Übergabe an einen echten Watcher, Abhol-/Upload-URL von ein
 Token-Maschine, Terminal-Upload gegen echtes SFTP, Push-Knöpfe am Handy. Nicht gebaut:
 Aufwandsstufe je Rolle (#62, Claude Code bietet headless keinen sicheren Schalter),
 harter Kostenabbruch mitten im Lauf (#55 — Kosten stehen erst im result-Event),
-„Sitzung anstupsen" (#59), Prüfung auf Klartext-Geheimnisse in ~/.claude/settings*.json (#64,
+„Sitzung anstupsen" (#59 — kam mit #67), Prüfung auf Klartext-Geheimnisse in ~/.claude/settings*.json (#64,
 optional), Meldung der Pakete direkt aus Shell-Skripten (#61 — heute über den Agenten).
+
+## Issue #67 (25.11.2026) — Automatik in die Terminal-Sitzung, per /ausfragen abgenommen
+
+Schalter je Agent im Dialog „Freigaben" (settings `zustellung: {agent: {sitzung, push}}`,
+`app/zustellung.py`, `/api/zustellung/{agent}`, wirkt beim nächsten Automatik-Start →
+Watcher-Flags `--zustellung sitzung [--zustellung-push]`). Default bleibt headless.
+Ablauf im Watcher (`in_sitzung_bearbeiten`, nur MCP-Transport, nur mit tmux):
+- **Sitzung finden:** `tmux list-panes -a`, Ordner == Projektordner des Tasks (realpath), Prozess
+  `claude`/`node`. Keine → headless wie bisher (Ereignis `rueckfall`).
+- **Frei-Erkennung = Hook UND Bildschirm.** Hooks (UserPromptSubmit/Stop/SessionStart/SessionEnd)
+  trägt der Watcher in `<projekt>/.claude/settings.local.json` ein (nur ergänzen, kaputtes JSON
+  bleibt); Hook = `agent_watcher.py --sitzung-hook` schreibt `~/.agent-dashboard/sitzungen/
+  <sha1(realpath)>.json`. Bildschirm = `capture-pane -p -e`: Eingabe zwischen den beiden letzten
+  `────`-Linien, gedimmter Text (\e[2m, Platzhalter/Vorschlag) zählt nicht, „esc to interrupt" in
+  der Fußzeile = arbeitet, keine Linien = Dialog. **Gemessen mit Claude Code 2.1.332:** Hooks
+  greifen auch in einer schon laufenden Sitzung, aber die Datei entsteht erst beim ersten
+  Ereignis; **Esc löst KEINEN Stop-Hook aus** → fehlt die Hook-Meldung oder steht sie auf
+  „arbeitet", gilt die Sitzung nach `SITZUNG_HAENGT` (60 s) durchgehend leerem Bildschirm als frei.
+- **Belegt:** Task wartet (Ereignis `wartet`) bis zur Frist (`wirksamer_timeout`), dann headless.
+  Stopp während des Wartens → `claim_task(zurueckgeben=True)` legt ihn zurück in die Inbox.
+- **Zustellen:** `claim_task(erneut, sitzung=True)` → `claim_von: sitzung` (24-h-Regel, Zähler weg),
+  dann **Bracketed Paste** (`load-buffer` + `paste-buffer -p`) und Enter — `send-keys -l` schickte
+  jede Zeile einzeln ab. Bestätigt durch den UserPromptSubmit-Hook, sonst einmal Enter nach.
+- **Abschluss:** die Sitzung ruft selbst `complete_task` (steht im Kopf des getippten Texts). Der
+  Watcher prüft per `claim_task(erneut)` („liegt nicht (mehr)" = erledigt); Sitzung frei ohne
+  Abschluss → EINE Erinnerung; Frist um / Sitzung geschlossen → Fehlschlag „offen in der Sitzung"
+  mit `claude --resume <id>`. Danach zweites `complete_task` mit `verbrauch` aus dem Transkript
+  (je `message.id` einmal, ab Zustellzeit; Kosten GESCHÄTZT nach `PREISE` im Watcher, Stand
+  25.11.2026 — Preise dort pflegen) und `lauf.zustellung = sitzung` (#43-Weg).
+- **Meldungen:** Watcher druckt `@@zustellung {json}`; der Manager macht daraus Ereignisse der Art
+  `zustellung` (nicht ins Panel-Log). Push nur mit Schalter, Tipp öffnet das Projekt-Terminal
+  (`?tab=terminal&verbindung=…&projekt=…` → Ereignis `terminal:oeffnen`).
+Echt geprüft 25.11.2026 auf dem Server: Claude Code (Haiku) in tmux, Hooks frisch eingetragen,
+mehrzeiliger Task zugestellt, Abschluss erkannt, Verbrauch aus dem Transkript. Nicht geprüft:
+gegen ein deploytes Dashboard (Ereignisse/Push/Dialog live), Windows (dort bleibt es headless).
 
 ## Bug-Hunt 22.10.2026 (Stand 268e28e)
 
