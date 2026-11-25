@@ -133,8 +133,9 @@ async def main() -> None:
                 if name not in gewarnt:
                     print(
                         f"[mcp-tunnel] {name}: kein Kanal in der Port-Map — Tunnel "
-                        f"ausgesetzt (MCP-Server neu starten, damit der gebundene "
-                        f"Kanal entsteht).",
+                        f"ausgesetzt. Abhilfe: `supervisorctl restart mcp` im "
+                        f"Container (legt den gebundenen Kanal an); der Tunnel "
+                        f"startet danach von selbst.",
                         flush=True,
                     )
                     gewarnt.add(name)

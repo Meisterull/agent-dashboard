@@ -83,6 +83,10 @@ services:
       # root angelegten Log-/Pid-Dateien beschreiben. Ohne DAC_OVERRIDE
       # verhält sich root wie ein normaler User und scheitert daran.
       - DAC_OVERRIDE
+      # supervisord (root) muss die Programme mit user=app (api, mcp,
+      # mcp-tunnel) signalisieren dürfen — ohne KILL scheitert
+      # `supervisorctl restart <prog>` mit PermissionError (#66).
+      - KILL
     deploy:
       resources:
         limits:
